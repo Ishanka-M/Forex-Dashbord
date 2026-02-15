@@ -12,19 +12,23 @@ import requests
 import numpy as np
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v6.0 | Gemini 3 Ultra", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v7.0 | News + AI", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
     .price-up { color: #00ff00; font-size: 22px; font-weight: bold; }
     .price-down { color: #ff4b4b; font-size: 22px; font-weight: bold; }
-    .entry-box { background: rgba(0, 212, 255, 0.07); border: 2px solid #00d4ff; padding: 20px; border-radius: 12px; margin-top: 10px; box-shadow: 0 4px 15px rgba(0,212,255,0.1); color: white; }
-    .insight-box { background: #12141a; border-left: 4px solid #f39c12; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 14px; }
+    .entry-box { background: rgba(0, 212, 255, 0.07); border: 2px solid #00d4ff; padding: 15px; border-radius: 12px; margin-top: 10px; color: white; }
+    .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
+    .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; }
+    .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 20px; font-weight: bold; }
+    .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; border-left: 3px solid #00d4ff; }
+    .news-title { font-weight: bold; font-size: 14px; color: #ececec; }
+    .news-pub { font-size: 11px; color: #888; }
     .sig-box { padding: 10px; border-radius: 6px; font-size: 13px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
     .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
     .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
     .neutral { background-color: #262626; color: #888; }
-    .footer { text-align: center; font-size: 12px; color: #666; margin-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -33,6 +37,8 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "active_provider" not in st.session_state: 
     st.session_state.active_provider = "Waiting for analysis..."
+if "ai_parsed_data" not in st.session_state:
+    st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 
 # --- 2. USER MANAGEMENT SYSTEM ---
 def get_user_sheet():
@@ -69,7 +75,16 @@ def create_user(new_username, new_password):
             return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. ALPHA VANTAGE DATA ENGINE ---
+# --- 3. NEWS & DATA ENGINE ---
+def get_market_news(symbol):
+    """Fetches latest news for the symbol using yfinance"""
+    try:
+        ticker = yf.Ticker(symbol)
+        news_list = ticker.news
+        return news_list[:5] if news_list else []
+    except:
+        return []
+
 def get_alpha_vantage_data(pair):
     if "ALPHA_VANTAGE_KEY" not in st.secrets:
         return "API Key Missing"
@@ -120,29 +135,33 @@ def get_ai_analysis(prompt, asset_data):
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview')
+                model = genai.GenerativeModel('gemini-3-flash-preview') # Updated to faster model
                 response = model.generate_content(prompt)
                 if response and response.text:
-                    return response.text, f"Gemini 3 Flash (Key #{i+1})"
+                    return response.text, f"Gemini 2.0 Flash (Key #{i+1})"
             except: continue
 
-    if "HF_TOKEN" in st.secrets:
-        try:
-            api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
-            headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
-            payload = {"inputs": f"<s>[INST] {prompt} [/INST]", "parameters": {"max_new_tokens": 400}}
-            res = requests.post(api_url, headers=headers, json=payload, timeout=15)
-            if res.status_code == 200:
-                output = res.json()[0]['generated_text']
-                return output.split("[/INST]")[-1].strip(), "Mistral AI (HF)"
-        except: pass
-
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
-    return f"ENTRY: {asset_data['price']}\nSL: {sl:.4f}\nTP: {tp:.4f}\n\n⚠️ AI PROVIDER ERROR.", "Offline"
+    return f"ANALYSIS: AI Error.\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
+
+def parse_ai_response(text):
+    """Extracts Entry, SL, TP from AI text response"""
+    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
+    try:
+        # Regex to find patterns like ENTRY: 1.2345
+        entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        
+        if entry_match: data["ENTRY"] = entry_match.group(1)
+        if sl_match: data["SL"] = sl_match.group(1)
+        if tp_match: data["TP"] = tp_match.group(1)
+    except: pass
+    return data
 
 # --- 6. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM TERMINAL v6.0</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v7.0 (News Integrated)</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -175,8 +194,27 @@ else:
     assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
     pair = st.sidebar.selectbox("Select Asset", assets[market])
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
+    
+    # --- News Section in Sidebar ---
+    st.sidebar.divider()
+    st.sidebar.subheader("📰 Market News")
+    news_items = get_market_news(pair)
+    if news_items:
+        for news in news_items:
+            st.sidebar.markdown(f"""
+            <div class='news-card'>
+                <a href='{news['link']}' target='_blank' style='text-decoration:none;'>
+                    <div class='news-title'>{news['title']}</div>
+                </a>
+                <div class='news-pub'>{news.get('publisher', 'Unknown')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.sidebar.info("No recent news found.")
+        
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
+    # --- Main Content ---
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
@@ -184,7 +222,8 @@ else:
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair} Market Terminal - {curr_p:.5f}")
 
-        with st.expander("📊 Alpha Vantage Live Order Flow", expanded=True):
+        # Order Flow Data
+        with st.expander("📊 Alpha Vantage Live Order Flow", expanded=False):
             av_data = get_alpha_vantage_data(pair)
             if isinstance(av_data, dict):
                 col1, col2, col3 = st.columns(3)
@@ -193,6 +232,7 @@ else:
                 col3.metric("Real-time Ask", av_data.get("9. Ask Price", "N/A"))
             else: st.info(f"AV Insights: {av_data}")
 
+        # Signal Dashboard
         sigs = calculate_advanced_signals(df)
         cols = st.columns(4)
         keys = list(sigs.keys())
@@ -200,18 +240,69 @@ else:
             cols[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
             cols[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
 
-        st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False), use_container_width=True)
+        # Chart
+        st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=20, b=0)), use_container_width=True)
+
+        # --- TRADE PLAN DISPLAY (NEW) ---
+        # This section displays the Entry, SL, TP separately below the chart
+        st.markdown("### 🎯 AI Trade Plan")
+        t_c1, t_c2, t_c3 = st.columns(3)
+        
+        parsed = st.session_state.ai_parsed_data
+        
+        # Helper to style the boxes based on trade type (simple logic)
+        color_style = "color: #00d4ff;" # Default Blue
+        
+        with t_c1:
+            st.markdown(f"<div class='trade-metric'><h4>ENTRY PRICE</h4><h2 style='{color_style}'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
+        with t_c2:
+            st.markdown(f"<div class='trade-metric'><h4>STOP LOSS</h4><h2 style='color: #ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
+        with t_c3:
+            st.markdown(f"<div class='trade-metric'><h4>TAKE PROFIT</h4><h2 style='color: #00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
 
         st.divider()
+        
+        # --- AI & ANALYSIS SECTION ---
         c_ai, c_res = st.columns([1, 2])
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
-            if st.button("Generate Gemini 3 Insight", use_container_width=True):
-                with st.spinner("Gemini 3 Flash analyzing..."):
-                    prompt = f"Analyze {pair} at {curr_p} on {tf}. SMC: {sigs['SMC'][0]}, Trend: {sigs['TREND'][0]}. Provide Entry, SL, TP in Sinhala."
+            if st.button("Generate News + Chart Analysis", use_container_width=True):
+                with st.spinner("Analyzing News Sentiment & Market Structure..."):
+                    # Prepare News Context
+                    news_titles = [n['title'] for n in news_items[:3]]
+                    news_context = " | ".join(news_titles) if news_titles else "No major news."
+                    
+                    # Enhanced Prompt
+                    prompt = f"""
+                    Role: Expert Forex/Crypto Analyst.
+                    Task: Analyze {pair} at Price: {curr_p} on {tf} timeframe.
+                    
+                    Technical Data:
+                    - Trend: {sigs['TREND'][0]}
+                    - SMC Structure: {sigs['SMC'][0]}
+                    - RSI Status: {sigs['RETAIL'][0]}
+                    - Pattern: {sigs['PATT'][0]}
+                    
+                    News Context: {news_context}
+                    
+                    Instruction:
+                    1. Analyze the combination of News Sentiment and Technicals.
+                    2. Provide a trade confirmation in Sinhala (Briefly).
+                    3. STRICTLY output the trade levels in this EXACT format at the end:
+                       DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+                    """
+                    
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
-                    st.session_state.ai_result = result
+                    
+                    # Parse Data
+                    st.session_state.ai_parsed_data = parse_ai_response(result)
+                    
+                    # Remove the raw data string from display text for cleanliness
+                    display_text = result.split("DATA:")[0] if "DATA:" in result else result
+                    
+                    st.session_state.ai_result = display_text
                     st.session_state.active_provider = provider
+                    st.rerun()
 
         with c_res:
             if "ai_result" in st.session_state:
