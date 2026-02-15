@@ -7,21 +7,22 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 import feedparser
-import urllib.parse
 
-# --- ADMIN පෞද්ගලික තොරතුරු (මෙහි ඔබේ තොරතුරු දාන්න) ---
-ADMIN_TELEGRAM_LINK = "https://t.me/YourUsername" # ඔබේ Telegram Link එක
-ADMIN_WHATSAPP_LINK = "https://wa.me/947XXXXXXXX" # ඔබේ WhatsApp අංකය
-
-# --- GOOGLE SHEETS සම්බන්ධතාවය ---
+# --- 1. GOOGLE SHEETS සම්බන්ධතාවය ---
 def get_user_sheet():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("Forex_User_DB").sheet1 
-    return sheet
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        # Streamlit Secrets වල 'gcp_service_account' ලෙස JSON එක තිබිය යුතුය
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        client = gspread.authorize(creds)
+        # ඔබගේ Google Sheet එකේ නම මෙහි නිවැරදිව ඇතුළත් කරන්න
+        sheet = client.open("Forex_User_DB").sheet1 
+        return sheet
+    except Exception as e:
+        st.error(f"Database දෝෂය: {e}")
+        return None
 
-# --- GEMINI KEY ROTATION LOGIC ---
+# --- 2. GEMINI KEY ROTATION LOGIC ---
 def get_ai_analysis(prompt):
     keys = st.secrets["GEMINI_KEYS"]
     if "key_index" not in st.session_state:
@@ -33,25 +34,26 @@ def get_ai_analysis(prompt):
             model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(prompt)
             return response.text
-        except:
+        except Exception:
             st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
-    return "කණගාටුයි, සියලුම AI සේවා මේ මොහොතේ කාර්යබහුලයි."
+    return "කණගාටුයි, සියලුම AI සේවා මේ මොහොතේ කාර්යබහුලයි. පසුව උත්සාහ කරන්න."
 
-# --- UI සැකසුම් ---
+# --- 3. UI සැකසුම් (PAGE CONFIG) ---
 st.set_page_config(page_title="Forex Pro Sinhala AI", layout="wide")
 
+# Session State මගින් Login තත්ත්වය පවත්වා ගැනීම
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# --- පද්ධතියට ඇතුල් වීමේ තිරය ---
+# --- 4. LOGIN තිරය ---
 def login_screen():
     st.title("🔐 Forex Pro පද්ධතියට ඇතුල් වන්න")
     user_input = st.text_input("පරිශීලක නාමය (Username)")
     pass_input = st.text_input("මුරපදය (Password)", type="password")
     
     if st.button("Log In"):
-        try:
-            sheet = get_user_sheet()
+        sheet = get_user_sheet()
+        if sheet:
             records = sheet.get_all_records()
             user_data = next((item for item in records if item["Username"] == user_input), None)
             
@@ -62,87 +64,92 @@ def login_screen():
                     st.session_state.user_data = user_data
                     st.rerun()
                 else:
-                    st.error("❌ ඔබේ පැකේජය අවසන් වී ඇත! කරුණාකර පහත Support මගින් Admin සම්බන්ධ කරගන්න.")
+                    st.error("❌ ඔබේ පැකේජය අවසන් වී ඇත! කරුණාකර Admin සම්බන්ධ කරගන්න.")
             else:
-                st.error("❌ වැරදි තොරතුරු ඇතුළත් කළා!")
-        except Exception as e:
-            st.error("Database සම්බන්ධතාවයේ දෝෂයකි. කරුණාකර පසුව උත්සාහ කරන්න.")
+                st.error("❌ වැරදි Username හෝ Password එකක්!")
 
     st.divider()
-    st.info("පැකේජ මිලදී ගැනීමට හෝ ගැටළු සඳහා Admin සම්බන්ධ කරගන්න:")
-    st.write(f"💬 [Telegram]({ADMIN_TELEGRAM_LINK}) | [WhatsApp]({ADMIN_WHATSAPP_LINK})")
+    st.info("පැකේජ ලබා ගැනීමට හෝ සහාය සඳහා: [WhatsApp](https://wa.me/947XXXXXXXX) | [Telegram](https://t.me/YourUsername)")
 
+# --- 5. පද්ධතියට ලොග් වූ පසු පෙනෙන කොටස ---
 if not st.session_state.logged_in:
     login_screen()
 else:
-    # --- ප්‍රධාන පද්ධතිය ---
     user = st.session_state.user_data
     expiry_date = datetime.strptime(user["Expiry_Date"], "%Y-%m-%d")
     days_left = (expiry_date - datetime.now()).days
 
-    # Sidebar
+    # Sidebar තොරතුරු
     st.sidebar.title(f"ආයුබෝවන්, {user['Username']}!")
     if days_left <= 5:
         st.sidebar.warning(f"⚠️ ඔබේ කාලය තව දින {days_left} කින් අවසන් වේ!")
     
-    # --- SUPPORT BUTTONS IN SIDEBAR ---
-    st.sidebar.divider()
     st.sidebar.subheader("🆘 උදව් සහ සහාය")
-    st.sidebar.write("ඔබට ගැටලුවක් තිබේද?")
-    st.sidebar.link_button("Telegram සහාය", ADMIN_TELEGRAM_LINK)
-    st.sidebar.link_button("WhatsApp සහාය", ADMIN_WHATSAPP_LINK)
+    st.sidebar.link_button("Contact Admin", "https://t.me/YourUsername")
     
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
 
-    # --- ADMIN PANEL ---
+    # Admin Panel (Admin ට පමණක් පෙනේ)
     if user["Role"] == "admin":
-        with st.expander("🛠️ Admin පාලක පැනලය (ඔබට පමණක් පෙනේ)"):
-            new_u = st.text_input("නව පාරිභෝගිකයාගේ නම")
-            new_p = st.text_input("මුරපදය")
-            sub_days = st.number_input("කාලය (දින ගණන)", value=30)
+        with st.expander("🛠️ Admin Panel - නව පාරිභෝගිකයන් එකතු කිරීම"):
+            new_u = st.text_input("New Username")
+            new_p = st.text_input("New Password")
+            sub_days = st.number_input("දින ගණන", value=30)
             if st.button("පාරිභෝගිකයා එකතු කරන්න"):
                 sheet = get_user_sheet()
-                exp = (datetime.now() + timedelta(days=sub_days)).strftime("%Y-%m-%d")
-                sheet.append_row([new_u, new_p, "user", exp])
-                st.success(f"{new_u} සාර්ථකව එකතු කළා!")
+                if sheet:
+                    exp = (datetime.now() + timedelta(days=sub_days)).strftime("%Y-%m-%d")
+                    sheet.append_row([new_u, new_p, "user", exp])
+                    st.success(f"{new_u} සාර්ථකව එකතු කළා!")
 
-    # --- TRADING SYSTEM ---
+    # Trading Dashboard
     st.title("📊 SMC + SK AI Trading Dashboard")
     
     pair = st.sidebar.selectbox("මුදල් යුගලය", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X"])
     tf = st.sidebar.selectbox("කාලරාමුව", ["15m", "1h", "4h"])
 
+    # Data Fetching
     df = yf.download(pair, period="60d", interval=tf)
     
-    # Structure Logic
-    last_c = df['Close'].iloc[-1]
-    prev_h = df['High'].iloc[-20:-1].max()
-    prev_l = df['Low'].iloc[-20:-1].min()
-    struct = "Bullish (ඉහළට) 🟢" if last_c > prev_h else "Bearish (පහළට) 🔴" if last_c < prev_l else "Ranging ↔️"
-
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.subheader(f"📈 {pair} සජීවී ප්‍රස්ථාරය")
-        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
-        st.write(f"වෙළඳපල ප්‍රවණතාවය: **{struct}**")
+    if not df.empty:
+        # --- නිවැරදි කරන ලද SMC LOGIC (ValueError Fix) ---
+        last_c = float(df['Close'].iloc[-1])
+        prev_h = float(df['High'].iloc[-20:-1].max())
+        prev_l = float(df['Low'].iloc[-20:-1].min())
         
+        if last_c > prev_h:
+            struct = "Bullish (ඉහළට) 🟢"
+        elif last_c < prev_l:
+            struct = "Bearish (පහළට) 🔴"
+        else:
+            struct = "Ranging ↔️"
 
-    with col2:
-        st.subheader("🤖 AI පුවත් විග්‍රහය")
-        if st.button("පුවත් Analyze කරන්න"):
-            with st.spinner("AI පුවත් සහ ප්‍රස්ථාරය අධ්‍යයනය කරමින් පවතියි..."):
-                feed = feedparser.parse("https://www.forexfactory.com/ff_calendar_thisweek.xml")
-                news_summary = "\n".join([e.title for e in feed.entries[:5]])
-                prompt = f"Analyze Forex news: {news_summary}. Current Price: {last_c}. Trend: {struct}. Provide a detailed trading recommendation in Sinhala."
-                st.info(get_ai_analysis(prompt))
+        col1, col2 = st.columns([2, 1])
         
-        st.divider()
-        st.subheader("🎯 SK Strategy Levels")
-        high_p, low_p = df['High'].max(), df['Low'].min()
-        fib_618 = low_p + (high_p - low_p) * 0.618
-        st.write(f"Discount Zone (0.618): **{fib_618:.5f}**")
+        with col1:
+            st.subheader(f"📈 {pair} සජීවී ප්‍රස්ථාරය")
+            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
+            st.plotly_chart(fig, use_container_width=True)
+            st.write(f"වෙළඳපල ප්‍රවණතාවය (Market Structure): **{struct}**")
+            
+
+        with col2:
+            st.subheader("🤖 AI පුවත් විශ්ලේෂණය")
+            if st.button("AI Analyze කරන්න"):
+                with st.spinner("පුවත් සහ ප්‍රස්ථාරය අධ්‍යයනය කරමින්..."):
+                    feed = feedparser.parse("https://www.forexfactory.com/ff_calendar_thisweek.xml")
+                    news_summary = "\n".join([e.title for e in feed.entries[:5]])
+                    prompt = f"Analyze Forex news: {news_summary}. Trend: {struct}. Pair: {pair}. Give trading advice in SINHALA."
+                    st.info(get_ai_analysis(prompt))
+            
+            st.divider()
+            st.subheader("🎯 SK Strategy Zones")
+            high_p, low_p = float(df['High'].max()), float(df['Low'].min())
+            fib_618 = low_p + (high_p - low_p) * 0.618
+            st.write(f"Discount Zone (0.618): **{fib_618:.5f}**")
+            
+    else:
+        st.error("දත්ත ලබා ගැනීමට නොහැකි විය. කරුණාකර පසුව උත්සාහ කරන්න.")
