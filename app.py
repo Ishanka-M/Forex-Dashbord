@@ -32,12 +32,16 @@ st.markdown("""
 # --- 2. USER MANAGEMENT SYSTEM (ADMIN/USER) ---
 def get_user_sheet():
     try:
+        # Scope allows read and WRITE access
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
-    except: return None
+    except Exception as e:
+        st.error(f"Database Error: {e}")
+        return None
 
 def check_login(username, password):
+    # Hardcoded Admin Access
     if username == "admin" and password == "admin123":
         return {"Username": "Admin", "Role": "Admin"}
         
@@ -50,6 +54,22 @@ def check_login(username, password):
                 return user
         except: return None
     return None
+
+def create_user(new_username, new_password):
+    sheet = get_user_sheet()
+    if sheet:
+        try:
+            # Check if username already exists
+            existing_users = sheet.col_values(1) # Assuming Username is in Column 1
+            if new_username in existing_users:
+                return False, "User already exists!"
+            
+            # Append new user [Username, Password, Role, Date]
+            sheet.append_row([new_username, new_password, "User", str(datetime.now())])
+            return True, "User created successfully!"
+        except Exception as e:
+            return False, f"Error: {e}"
+    return False, "Database Connection Failed"
 
 # --- 3. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df):
@@ -122,7 +142,7 @@ def get_ai_analysis(prompt, asset_data):
         for key in keys:
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview')
+                model = genai.GenerativeModel('gemini-2.0-flash') # Updated model name for better speed
                 response = model.generate_content(prompt)
                 return response.text
             except: continue
@@ -151,16 +171,41 @@ if not st.session_state.logged_in:
                 else:
                     st.error("Invalid Credentials")
 else:
-    # --- FIXED SIDEBAR LOGIC ---
+    # --- LOGGED IN DASHBOARD ---
     user_info = st.session_state.get('user', {})
     username = user_info.get('Username', 'Trader')
+    role = user_info.get('Role', 'User')
+
+    # --- SIDEBAR: USER INFO & ADMIN PANEL ---
     st.sidebar.title(f"👤 {username}")
+    st.sidebar.caption(f"Role: {role}")
     
+    # *** NEW ADMIN PANEL FEATURE ***
+    if role == "Admin":
+        with st.sidebar.expander("🛠 Admin Panel (Create User)", expanded=False):
+            with st.form("create_user_form"):
+                new_u = st.text_input("New Username")
+                new_p = st.text_input("New Password", type="password")
+                create_btn = st.form_submit_button("Create Account")
+                
+                if create_btn:
+                    if new_u and new_p:
+                        success, msg = create_user(new_u, new_p)
+                        if success:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                    else:
+                        st.warning("Fill all fields!")
+
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.session_state.user = None
         st.rerun()
     
+    st.sidebar.divider()
+    
+    # --- MARKET SELECTION ---
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     assets = {
         "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X"],
@@ -171,7 +216,7 @@ else:
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"], index=2)
     live = st.sidebar.checkbox("🔴 Live Data Refresh", value=True)
 
-    # DATA PROCESSING
+    # --- DATA & CHARTING ---
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
