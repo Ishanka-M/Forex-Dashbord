@@ -19,7 +19,10 @@ st.markdown("""
     .price-down { color: #ff0000; font-size: 24px; font-weight: bold; }
     .footer { position: fixed; bottom: 0; width: 100%; text-align: center; color: #00d4ff; padding: 10px; background: rgba(0,0,0,0.8); z-index: 100;}
     .entry-box { background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-    .summary-card { background: rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 15px; border: 1px solid #444; text-align: center; height: 100px; }
+    .summary-card { background: rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 15px; border: 1px solid #444; text-align: center; height: 110px; }
+    .signal-label { font-size: 26px; font-weight: bold; padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 15px; }
+    .buy-signal { background-color: rgba(0, 255, 0, 0.15); color: #00ff00; border: 2px solid #00ff00; }
+    .sell-signal { background-color: rgba(255, 0, 0, 0.15); color: #ff0000; border: 2px solid #ff0000; }
     .red-folder { background: rgba(255, 0, 0, 0.15); border: 1px solid #ff4b4b; padding: 12px; border-radius: 8px; margin-bottom: 8px; color: #ff4b4b; font-weight: bold; border-left: 5px solid #ff0000;}
 </style>
 """, unsafe_allow_html=True)
@@ -34,9 +37,8 @@ def get_user_sheet():
         return client.open("Forex_User_DB").sheet1 
     except: return None
 
-# AI Analysis function - Only refreshes when cache is cleared manually
-@st.cache_data(ttl=86400) # Cache for 24 hours unless cleared
-def get_ai_analysis(prompt, pair, price):
+@st.cache_data(ttl=86400)
+def get_ai_analysis(prompt, pair, price, sync_trigger):
     try:
         keys = st.secrets["GEMINI_KEYS"]
         genai.configure(api_key=keys[0])
@@ -51,6 +53,7 @@ def safe_float(value):
 # --- 3. LOGIN & SESSION ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "last_price" not in st.session_state: st.session_state.last_price = 0.0
+if "sync_token" not in st.session_state: st.session_state.sync_token = time.time()
 
 if not st.session_state.logged_in:
     st.title("🔐 Infinite System Login")
@@ -72,7 +75,6 @@ if st.session_state.logged_in:
     sl_tz = pytz.timezone('Asia/Colombo')
     now_sl = datetime.now(sl_tz)
     
-    # News Events (Mock for Feb 16, 2026)
     news_events = [
         {"event": "JPY: GDP Growth Rate", "time": datetime(2026, 2, 16, 5, 20, tzinfo=sl_tz)},
         {"event": "USD: Presidents' Day", "time": datetime(2026, 2, 16, 8, 0, tzinfo=sl_tz)},
@@ -88,7 +90,15 @@ if st.session_state.logged_in:
 
     st.sidebar.divider()
     live_mode = st.sidebar.toggle("🚀 LIVE MODE (Auto-Refresh Price)", value=True)
-    pair = st.sidebar.selectbox("Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "BTC-USD"])
+    
+    # --- Category Wise Asset Selection ---
+    market_cat = st.sidebar.radio("Market Category", ["Forex", "Crypto"])
+    
+    if market_cat == "Forex":
+        pair = st.sidebar.selectbox("Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "USDCHF=X"])
+    else:
+        pair = st.sidebar.selectbox("Asset", ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"])
+
     tf_choice = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4)
     
     # --- 5. DATA FETCH ---
@@ -101,57 +111,57 @@ if st.session_state.logged_in:
         st.session_state.last_price = curr_price
 
         # Header
-        c_header1, c_header2, c_header3 = st.columns([2,1,1])
-        with c_header1: st.title(f"📊 {pair} Terminal")
-        with c_header2: st.markdown(f"LIVE PRICE:<br><span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
-        with c_header3: 
+        c_h1, c_h2, c_h3 = st.columns([2,1,1])
+        with c_h1: st.title(f"📊 {pair} Terminal")
+        with c_h2: st.markdown(f"LIVE PRICE:<br><span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
+        with c_h3: 
             if st.button("🔄 Manual AI Sync"):
-                st.cache_data.clear()
+                st.session_state.sync_token = time.time()
                 st.rerun()
 
-        # --- 6. CHART ---
+        # --- 6. CHART (Slightly smaller as requested) ---
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", height=450, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
+        fig.update_layout(template="plotly_dark", height=380, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 7. SNIPER SUMMARY & PROGRESS (FIXED) ---
+        # --- 7. SNIPER SUMMARY & PROGRESS ---
         st.divider()
-        st.subheader("🎯 Sniper Trade Control")
         
-        # This prompt is cached - it won't run again during Live Mode refresh
-        prompt = f"Sniper signal for {pair} at {curr_price}. Use exact format: ENTRY: (price), SL: (price), TP: (price). In Sinhala."
-        analysis = get_ai_analysis(prompt, pair, curr_price)
+        prompt = f"Sniper signal for {pair} at {curr_price}. Start with 'DIRECTION: BUY' or 'DIRECTION: SELL'. Then provide ENTRY, SL, TP. In Sinhala."
+        analysis = get_ai_analysis(prompt, pair, curr_price, st.session_state.sync_token)
 
-        # Extraction Logic
+        # Logic to extract info
+        dir_match = re.search(r"DIRECTION[:\s]+(BUY|SELL)", analysis, re.IGNORECASE)
         entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", analysis, re.IGNORECASE)
         sl_match = re.search(r"SL[:\s]+([\d.]+)", analysis, re.IGNORECASE)
         tp_match = re.search(r"TP[:\s]+([\d.]+)", analysis, re.IGNORECASE)
 
+        direction = dir_match.group(1).upper() if dir_match else "N/A"
         e_val = entry_match.group(1) if entry_match else "N/A"
         s_val = sl_match.group(1) if sl_match else "N/A"
         t_val = tp_match.group(1) if tp_match else "N/A"
 
-        # Summary Row
+        # Signal Header
+        if direction != "N/A":
+            sig_color = "buy-signal" if direction == "BUY" else "sell-signal"
+            st.markdown(f"<div class='signal-label {sig_color}'>PRO SNIPER {direction} ORDER</div>", unsafe_allow_html=True)
+
         col_s1, col_s2, col_s3 = st.columns(3)
         with col_s1: st.markdown(f"<div class='summary-card'><b>ENTRY</b><br><span style='color:#00d4ff; font-size:22px;'>{e_val}</span></div>", unsafe_allow_html=True)
         with col_s2: st.markdown(f"<div class='summary-card'><b>STOP LOSS</b><br><span style='color:#ff4b4b; font-size:22px;'>{s_val}</span></div>", unsafe_allow_html=True)
         with col_s3: st.markdown(f"<div class='summary-card'><b>TAKE PROFIT</b><br><span style='color:#00ff00; font-size:22px;'>{t_val}</span></div>", unsafe_allow_html=True)
 
-        # Progress Bar Logic
+        # Progress Bar
         if e_val != "N/A":
             target = float(e_val)
             diff = abs(curr_price - target)
-            # Threshold adjusted for BTC vs Forex
-            threshold = 500.0 if "BTC" in pair else 0.0050
+            threshold = 500.0 if "BTC" in pair or "ETH" in pair else 0.0050
             progress = max(0.0, min(1.0, 1.0 - (diff / threshold)))
-            
             st.write(f"**Distance to Entry:** `{diff:.5f}`")
             st.progress(progress)
-            if diff < (0.0001 if "USD" in pair else 1.0):
+            if diff < (0.0001 if market_cat == "Forex" else 1.0):
                 st.balloons()
-                st.success("🚀 PRICE IS IN THE ENTRY ZONE!")
-        else:
-            st.warning("AI දත්ත හඳුනාගත නොහැක. කරුණාකර 'Manual AI Sync' ඔබන්න.")
+                st.success("🚀 PRICE IN ENTRY ZONE!")
 
         st.markdown(f"<div class='entry-box'><b>AI Breakdown:</b><br>{analysis}</div>", unsafe_allow_html=True)
 
@@ -161,15 +171,13 @@ if st.session_state.logged_in:
         col_n1, col_n2 = st.columns(2)
         with col_n1:
             st.info("💡 Fundamental Sentiment")
-            st.write(get_ai_analysis(f"Brief news for {pair} today. Sinhala.", pair, "fixed"))
+            st.write(get_ai_analysis(f"Brief news for {pair} today. Sinhala.", pair, "fixed", st.session_state.sync_token))
         with col_n2:
             st.warning("📐 Technical Concept")
-            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="SMC Market Structure")
+            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="Institutional Structure")
 
-    # Footer
-    st.markdown('<div class="footer">Infinite System v3.2 | Live Price Enabled | AI Manual Only | © 2026</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">Infinite System v3.5 | Live Price Enabled | AI Manual Only | © 2026</div>', unsafe_allow_html=True)
 
-    # Auto-refresh only for price (AI is cached)
     if live_mode:
         time.sleep(60)
         st.rerun()
