@@ -12,7 +12,7 @@ import requests
 import numpy as np
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v7.0 | News + AI", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v7.0 | Gemini 3 Flash", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -46,7 +46,7 @@ def get_user_sheet():
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
-    except Exception as e:
+    except:
         return None
 
 def check_login(username, password):
@@ -77,7 +77,6 @@ def create_user(new_username, new_password):
 
 # --- 3. NEWS & DATA ENGINE ---
 def get_market_news(symbol):
-    """Fetches latest news for the symbol using yfinance"""
     try:
         ticker = yf.Ticker(symbol)
         news_list = ticker.news
@@ -129,30 +128,27 @@ def calculate_advanced_signals(df):
     
     return signals
 
-# --- 5. AI ENGINE ---
+# --- 5. AI ENGINE (GEMINI 3 FLASH PREVIEW) ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') # Updated to faster model
+                model = genai.GenerativeModel('gemini-3-flash-preview') 
                 response = model.generate_content(prompt)
                 if response and response.text:
-                    return response.text, f"Gemini 2.0 Flash (Key #{i+1})"
+                    return response.text, f"Gemini 3 Flash (Key #{i+1})"
             except: continue
 
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
     return f"ANALYSIS: AI Error.\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
 
 def parse_ai_response(text):
-    """Extracts Entry, SL, TP from AI text response"""
     data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
     try:
-        # Regex to find patterns like ENTRY: 1.2345
         entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        
         if entry_match: data["ENTRY"] = entry_match.group(1)
         if sl_match: data["SL"] = sl_match.group(1)
         if tp_match: data["TP"] = tp_match.group(1)
@@ -161,7 +157,7 @@ def parse_ai_response(text):
 
 # --- 6. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v7.0 (News Integrated)</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v7.0</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -195,18 +191,21 @@ else:
     pair = st.sidebar.selectbox("Select Asset", assets[market])
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
-    # --- News Section in Sidebar ---
+    # --- FIXED NEWS SECTION ---
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
     if news_items:
         for news in news_items:
+            n_link = news.get('link', '#') # Using .get to avoid KeyError
+            n_title = news.get('title', 'No Title')
+            n_pub = news.get('publisher', 'Unknown')
             st.sidebar.markdown(f"""
             <div class='news-card'>
-                <a href='{news['link']}' target='_blank' style='text-decoration:none;'>
-                    <div class='news-title'>{news['title']}</div>
+                <a href='{n_link}' target='_blank' style='text-decoration:none;'>
+                    <div class='news-title'>{n_title}</div>
                 </a>
-                <div class='news-pub'>{news.get('publisher', 'Unknown')}</div>
+                <div class='news-pub'>{n_pub}</div>
             </div>
             """, unsafe_allow_html=True)
     else:
@@ -214,25 +213,21 @@ else:
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
-    # --- Main Content ---
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
-        st.title(f"{pair} Market Terminal - {curr_p:.5f}")
+        st.title(f"{pair} Terminal - {curr_p:.5f}")
 
-        # Order Flow Data
-        with st.expander("📊 Alpha Vantage Live Order Flow", expanded=False):
+        with st.expander("📊 Order Flow Data", expanded=False):
             av_data = get_alpha_vantage_data(pair)
             if isinstance(av_data, dict):
                 col1, col2, col3 = st.columns(3)
-                col1.metric("Exchange Rate", av_data.get("5. Exchange Rate", "N/A"))
-                col2.metric("Real-time Bid", av_data.get("8. Bid Price", "N/A"))
-                col3.metric("Real-time Ask", av_data.get("9. Ask Price", "N/A"))
-            else: st.info(f"AV Insights: {av_data}")
+                col1.metric("Rate", av_data.get("5. Exchange Rate", "N/A"))
+                col2.metric("Bid", av_data.get("8. Bid Price", "N/A"))
+                col3.metric("Ask", av_data.get("9. Ask Price", "N/A"))
 
-        # Signal Dashboard
         sigs = calculate_advanced_signals(df)
         cols = st.columns(4)
         keys = list(sigs.keys())
@@ -240,73 +235,43 @@ else:
             cols[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
             cols[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
 
-        # Chart
         st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=20, b=0)), use_container_width=True)
 
-        # --- TRADE PLAN DISPLAY (NEW) ---
-        # This section displays the Entry, SL, TP separately below the chart
+        # --- TRADE PLAN ---
         st.markdown("### 🎯 AI Trade Plan")
         t_c1, t_c2, t_c3 = st.columns(3)
-        
         parsed = st.session_state.ai_parsed_data
-        
-        # Helper to style the boxes based on trade type (simple logic)
-        color_style = "color: #00d4ff;" # Default Blue
-        
-        with t_c1:
-            st.markdown(f"<div class='trade-metric'><h4>ENTRY PRICE</h4><h2 style='{color_style}'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
-        with t_c2:
-            st.markdown(f"<div class='trade-metric'><h4>STOP LOSS</h4><h2 style='color: #ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
-        with t_c3:
-            st.markdown(f"<div class='trade-metric'><h4>TAKE PROFIT</h4><h2 style='color: #00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
+        with t_c1: st.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
+        with t_c2: st.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
+        with t_c3: st.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
 
         st.divider()
         
-        # --- AI & ANALYSIS SECTION ---
         c_ai, c_res = st.columns([1, 2])
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
-            if st.button("Generate News + Chart Analysis", use_container_width=True):
-                with st.spinner("Analyzing News Sentiment & Market Structure..."):
-                    # Prepare News Context
-                    news_titles = [n['title'] for n in news_items[:3]]
+            if st.button("Generate Gemini 3 Analysis", use_container_width=True):
+                with st.spinner("Gemini 3 Flash analyzing News + Technicals..."):
+                    news_titles = [n.get('title', '') for n in news_items[:3]]
                     news_context = " | ".join(news_titles) if news_titles else "No major news."
                     
-                    # Enhanced Prompt
                     prompt = f"""
-                    Role: Expert Forex/Crypto Analyst.
-                    Task: Analyze {pair} at Price: {curr_p} on {tf} timeframe.
-                    
-                    Technical Data:
-                    - Trend: {sigs['TREND'][0]}
-                    - SMC Structure: {sigs['SMC'][0]}
-                    - RSI Status: {sigs['RETAIL'][0]}
-                    - Pattern: {sigs['PATT'][0]}
-                    
+                    Analyze {pair} at Price: {curr_p} on {tf}.
+                    Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}.
                     News Context: {news_context}
                     
-                    Instruction:
-                    1. Analyze the combination of News Sentiment and Technicals.
-                    2. Provide a trade confirmation in Sinhala (Briefly).
-                    3. STRICTLY output the trade levels in this EXACT format at the end:
-                       DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+                    1. Provide trade confirmation in Sinhala.
+                    2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
                     """
-                    
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
-                    
-                    # Parse Data
                     st.session_state.ai_parsed_data = parse_ai_response(result)
-                    
-                    # Remove the raw data string from display text for cleanliness
-                    display_text = result.split("DATA:")[0] if "DATA:" in result else result
-                    
-                    st.session_state.ai_result = display_text
+                    st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                     st.session_state.active_provider = provider
                     st.rerun()
 
         with c_res:
             if "ai_result" in st.session_state:
-                st.markdown(f"**AI Provider:** `{st.session_state.get('active_provider', 'Unknown')}`")
+                st.markdown(f"**Provider:** `{st.session_state.active_provider}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     if live:
