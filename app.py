@@ -111,28 +111,40 @@ def calculate_advanced_signals(df):
     else: signals['PATT'] = ("None", "neutral")
     return signals
 
-# --- 4. AI ENGINE (API ROTATION LOGIC) ---
+# --- 4. AI ENGINE (MULTI-PROVIDER FALLBACK) ---
 def get_ai_analysis(prompt, asset_data):
+    # 1. Try Gemini Keys First
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
-        # Loop through each key in the list
         for i, key in enumerate(keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-1.5-flash') # Use flash for speed
+                model = genai.GenerativeModel('gemini-2.0-flash')
                 response = model.generate_content(prompt)
-                
-                # If successful, return response and key info
-                active_key_info = f"API Key #{i+1} (...{key[-4:]})"
-                return response.text, active_key_info
-            except Exception as e:
-                # If key fails, continue to next key
+                return response.text, f"Gemini Key #{i+1}"
+            except:
                 continue
-    
-    # Fallback if no keys work
+
+    # 2. Try Hugging Face if Gemini fails
+    if "HF_TOKEN" in st.secrets:
+        try:
+            api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
+            headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
+            payload = {"inputs": f"<s>[INST] {prompt} [/INST]", "parameters": {"max_new_tokens": 250}}
+            res = requests.post(api_url, headers=headers, json=payload, timeout=10)
+            if res.status_code == 200:
+                output = res.json()[0]['generated_text']
+                # Strip the instruction part from output
+                clean_output = output.split("[/INST]")[-1].strip()
+                return clean_output, "Hugging Face (Mistral)"
+        except:
+            pass
+
+    # 3. Final Fallback: Manual Calculation
     sl = asset_data['price'] * 0.995
     tp = asset_data['price'] * 1.01
-    return f"ENTRY: {asset_data['price']}\nSL: {sl}\nTP: {tp}\n\n⚠️ AI Servers are busy. Manual Zone Calculation.", "Offline"
+    manual_text = f"ENTRY: {asset_data['price']}\nSL: {sl:.4f}\nTP: {tp:.4f}\n\n⚠️ All AI Providers offline. Manual technical zone calculated."
+    return manual_text, "Offline (Manual)"
 
 # --- 5. MAIN APPLICATION ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
@@ -163,25 +175,28 @@ else:
     st.sidebar.caption(f"Role: {role}")
     
     if role == "Admin":
-        with st.sidebar.expander("🛠 Admin Panel", expanded=False):
+        with st.sidebar.expander("🛠 Admin Panel (Create User)", expanded=False):
             with st.form("create_user_form"):
                 new_u = st.text_input("New Username")
                 new_p = st.text_input("New Password", type="password")
-                if st.form_submit_button("Create Account"):
+                create_btn = st.form_submit_button("Create Account")
+                if create_btn:
                     if new_u and new_p:
                         success, msg = create_user(new_u, new_p)
                         if success: st.success(msg)
                         else: st.error(msg)
+                    else: st.warning("Fill all fields!")
 
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
+        st.session_state.user = None
         st.rerun()
     
     st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     assets = {
         "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD"],
+        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
         "Metals": ["XAUUSD=X", "XAGUSD=X"]
     }
     pair = st.sidebar.selectbox("Select Asset", assets[market])
@@ -222,24 +237,22 @@ else:
         with c_ai:
             st.subheader("🧠 AI Sniper")
             if st.button("🚀 Analyze & Find Entry", use_container_width=True):
-                with st.spinner("Rotating APIs & Scanning..."):
-                    prompt = f"Analyze {pair} at {curr_p}. SMC: {sigs['SMC'][0]}, ICT: {sigs['ICT'][0]}, RSI: {sigs['RETAIL'][0]}. ENTRY: [val], SL: [val], TP: [val]. Reason in Sinhala."
-                    
+                with st.spinner("Connecting to Best Available AI..."):
+                    prompt = f"Analyze {pair} at {curr_p}. SMC: {sigs['SMC'][0]}, ICT: {sigs['ICT'][0]}, RSI: {sigs['RETAIL'][0]}. PROVIDE: ENTRY, SL, TP. Reason in Sinhala."
                     analysis_text, active_key = get_ai_analysis(prompt, {'price': curr_p})
-                    
                     st.session_state.ai_result = analysis_text
                     st.session_state.active_key_info = active_key
                     
-                    if active_key != "Offline":
-                        st.toast(f"✅ Success! Connected via {active_key}", icon="🤖")
+                    if "Offline" not in active_key:
+                        st.toast(f"✅ Success: Using {active_key}", icon="🤖")
                     else:
-                        st.error("AI Rotation Failed. All keys are exhausted.")
+                        st.error("AI Systems Unavailable. Manual Mode Active.")
             
         with c_res:
             if "ai_result" in st.session_state:
                 res = st.session_state.ai_result
                 if "active_key_info" in st.session_state:
-                    st.caption(f"🟢 Active Server: {st.session_state.active_key_info}")
+                    st.caption(f"⚡ Active Provider: {st.session_state.active_key_info}")
 
                 entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", res, re.IGNORECASE)
                 entry_price = float(entry_match.group(1)) if entry_match else curr_p
