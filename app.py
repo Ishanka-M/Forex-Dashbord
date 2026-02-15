@@ -15,13 +15,12 @@ st.set_page_config(page_title="Infinite System | Pro AI Terminal", layout="wide"
 
 st.markdown("""
 <style>
-    .price-up { color: #00ff00; font-size: 24px; font-weight: bold; animation: fadein 0.5s; }
-    .price-down { color: #ff0000; font-size: 24px; font-weight: bold; animation: fadein 0.5s; }
+    .price-up { color: #00ff00; font-size: 24px; font-weight: bold; }
+    .price-down { color: #ff0000; font-size: 24px; font-weight: bold; }
     .footer { position: fixed; bottom: 0; width: 100%; text-align: center; color: #00d4ff; padding: 10px; background: rgba(0,0,0,0.8); z-index: 100;}
-    .entry-box { background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; line-height: 1.6;}
-    .news-card { background: rgba(255, 255, 255, 0.05); border-left: 5px solid #ffcc00; padding: 15px; border-radius: 5px; margin-top: 10px;}
+    .entry-box { background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
+    .summary-card { background: rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 15px; border: 1px solid #444; text-align: center; }
     .red-folder { background: rgba(255, 0, 0, 0.15); border: 1px solid #ff4b4b; padding: 12px; border-radius: 8px; margin-bottom: 8px; color: #ff4b4b; font-weight: bold; border-left: 5px solid #ff0000;}
-    @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 </style>
 """, unsafe_allow_html=True)
 
@@ -43,16 +42,15 @@ def get_ai_analysis(prompt):
         model = genai.GenerativeModel('gemini-3-flash-preview')
         response = model.generate_content(prompt)
         return response.text
-    except: return "AI Error: කරුණාකර Manual Sync ඔබන්න."
+    except: return "AI Error: Sync Error. කරුණාකර Manual Sync ඔබන්න."
 
 def safe_float(value):
     return float(value.iloc[0]) if isinstance(value, pd.Series) else float(value)
 
-# --- 3. SESSION STATE ---
+# --- 3. LOGIN LOGIC ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "last_price" not in st.session_state: st.session_state.last_price = 0.0
 
-# --- 4. LOGIN LOGIC ---
 if not st.session_state.logged_in:
     st.title("🔐 Infinite System Login")
     u = st.text_input("Username")
@@ -83,15 +81,14 @@ if st.session_state.logged_in:
                     sheet.append_row([new_u, new_p, "user", exp])
                     st.success(f"User {new_u} added!")
 
-    # --- 5. SIDEBAR: RED FOLDER & LIVE MODE ---
-    st.sidebar.markdown("### 🚨 High Impact News (Red Folder)")
+    # --- 4. SIDEBAR ---
+    st.sidebar.markdown("### 🚨 High Impact News")
     sl_tz = pytz.timezone('Asia/Colombo')
     now_sl = datetime.now(sl_tz)
     
-    # 2026 Feb 16 actual news schedule
     news_events = [
-        {"event": "JPY: GDP Growth Rate (Preliminary)", "time": datetime(2026, 2, 16, 5, 20, tzinfo=sl_tz)},
-        {"event": "USD: Presidents' Day (Bank Holiday)", "time": datetime(2026, 2, 16, 8, 0, tzinfo=sl_tz)},
+        {"event": "JPY: GDP Growth Rate", "time": datetime(2026, 2, 16, 5, 20, tzinfo=sl_tz)},
+        {"event": "USD: Presidents' Day", "time": datetime(2026, 2, 16, 8, 0, tzinfo=sl_tz)},
         {"event": "EUR: Eurogroup Meetings", "time": datetime(2026, 2, 16, 14, 30, tzinfo=sl_tz)}
     ]
 
@@ -100,22 +97,15 @@ if st.session_state.logged_in:
         if diff.total_seconds() > 0:
             h, rem = divmod(int(diff.total_seconds()), 3600)
             m, s = divmod(rem, 60)
-            st.sidebar.markdown(f"<div class='red-folder'>{news['event']}<br><small>ඉතිරි කාලය: {h:02d}h {m:02d}m {s:02d}s</small></div>", unsafe_allow_html=True)
-        else:
-            st.sidebar.markdown(f"<div class='red-folder' style='background:rgba(128,128,128,0.2); border-color:gray; color:gray;'>{news['event']} (PASSED/ACTIVE)</div>", unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='red-folder'>{news['event']}<br><small>Starts in: {h:02d}h {m:02d}m {s:02d}s</small></div>", unsafe_allow_html=True)
 
     st.sidebar.divider()
-    live_mode = st.sidebar.toggle("🚀 LIVE MODE (Auto-Refresh)", value=True)
-    if live_mode:
-        st.sidebar.caption("Refreshing every 60s...")
-
-    # --- 6. TERMINAL SETTINGS ---
-    st.sidebar.subheader("Terminal Settings")
-    pair = st.sidebar.selectbox("Select Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "BTC-USD"], index=0)
-    tf_choice = st.sidebar.selectbox("Select Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4)
+    live_mode = st.sidebar.toggle("🚀 LIVE MODE", value=True)
+    pair = st.sidebar.selectbox("Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "BTC-USD"])
+    tf_choice = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4)
     
-    period_map = {"1m": "1d", "5m": "5d", "15m": "5d", "30m": "5d", "1h": "1mo", "4h": "1mo", "1d": "6mo"}
-    df = yf.download(pair, period=period_map[tf_choice], interval=tf_choice, progress=False)
+    # --- 5. DATA FETCH ---
+    df = yf.download(pair, period="1mo", interval=tf_choice, progress=False)
     
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -123,76 +113,64 @@ if st.session_state.logged_in:
         price_class = "price-up" if curr_price >= st.session_state.last_price else "price-down"
         st.session_state.last_price = curr_price
 
-        # UI Header
-        c1, c2, c3 = st.columns([2,1,1])
-        with c1: st.title(f"📊 {pair} ({tf_choice})")
-        with c2: st.markdown(f"LIVE PRICE:<br><span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
-        with c3:
-            if st.button("🔄 Manual AI Sync"):
-                st.cache_data.clear()
-                st.rerun()
+        # Header
+        c1, c2 = st.columns([2,1])
+        with c1: st.title(f"📊 {pair} Analysis")
+        with c2: st.markdown(f"<br>LIVE PRICE: <span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
 
-        # --- 7. CHART & SNIPER ENTRY ---
-        col_chart, col_signal = st.columns([2, 1])
-        with col_chart:
-            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.update_layout(template="plotly_dark", height=500, margin=dict(l=10, r=10, t=10, b=10), xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
+        # --- 6. CHART ---
+        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+        fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-        with col_signal:
-            st.subheader("🎯 Sniper Entry Control")
-            signal_prompt = f"Trade signal for {pair} at {curr_price} on {tf_choice}. Provide ENTRY, SL, TP. Explain in Sinhala (SMC context)."
-            analysis = get_ai_analysis(signal_prompt)
-            st.markdown(f"<div class='entry-box'>{analysis}</div>", unsafe_allow_html=True)
-            
-            try:
-                entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", analysis, re.IGNORECASE)
-                if entry_match:
-                    entry_p = float(entry_match.group(1))
-                    diff_val = abs(curr_price - entry_p)
-                    thresh = 500.0 if "BTC" in pair else 0.0050
-                    prog = max(0.0, min(1.0, 1.0 - (diff_val / thresh)))
-                    st.write(f"**Distance to Entry:** `{diff_val:.5f}`")
-                    st.progress(prog)
-                    if diff_val < (0.0001 if "USD" in pair else 1.0):
-                        st.toast("🚀 ENTRY POINT REACHED!", icon="🔥")
-                        st.balloons()
-            except: pass
-
+        # --- 7. PROGRESS & SUMMARY (CHART එකට යටින්) ---
         st.divider()
-
-        # --- 8. AI INSIGHTS & SMC DIAGRAMS ---
-        st.subheader("📰 AI Deep Market Insights & SMC Visuals")
-        col_n1, col_n2 = st.columns([1, 1])
         
-        with col_n1:
-            st.info("💡 **Fundamental & Sentiment Analysis**")
-            news_prompt = f"Summarize fundamental impact for {pair} today {now_sl.date()}. Explain why banks are moving price. In Sinhala."
-            news_res = get_ai_analysis(news_prompt)
-            st.markdown(f"<div class='news-card'>{news_res}</div>", unsafe_allow_html=True)
+        signal_prompt = f"Give a sniper trade signal for {pair} at {curr_price}. ENTRY: (price), SL: (price), TP: (price). Sinhala explanation."
+        analysis = get_ai_analysis(signal_prompt)
         
-        with col_n2:
-            st.warning("📐 **SMC / ICT Technical Concepts**")
-            st.write("වර්තමාන Market Structure එක තේරුම් ගැනීමට මෙම Diagrams අධ්‍යයනය කරන්න:")
-            
-            # --- Diagram Section (Syntax Fixed) ---
-            st.markdown("#### 1. Market Structure (BOS & ChoCH)")
-            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="BOS & ChoCH: Trend එක වෙනස් වන ආකාරය")
-            
-            st.divider()
-            
-            st.markdown("#### 2. Order Block & Liquidity Sweep")
-            st.image("https://www.tradingview.com/x/z8V6E0Zk/", caption="Institutions ඇතුළු වන කලාප")
+        entry_p = re.search(r"ENTRY[:\s]+([\d.]+)", analysis, re.IGNORECASE)
+        sl_p = re.search(r"SL[:\s]+([\d.]+)", analysis, re.IGNORECASE)
+        tp_p = re.search(r"TP[:\s]+([\d.]+)", analysis, re.IGNORECASE)
 
-            st.divider()
-            
-            st.markdown("#### 3. Fair Value Gap (FVG)")
-            st.image("https://fvg-indicator.com/wp-content/uploads/2023/06/fvg-bearish-bullish.png", caption="Market Imbalance (පරතරය)")
+        col_sig, col_prog = st.columns([2, 1])
 
-    # Footer
-    st.markdown('<div class="footer">Infinite System v2.6 | Auto-Refreshed | © 2026</div>', unsafe_allow_html=True)
+        with col_sig:
+            st.subheader("📝 Sniper Trade Summary")
+            s1, s2, s3 = st.columns(3)
+            with s1: st.markdown(f"<div class='summary-card'><b>ENTRY</b><br><span style='color:#00d4ff; font-size:22px;'>{entry_p.group(1) if entry_p else 'N/A'}</span></div>", unsafe_allow_html=True)
+            with s2: st.markdown(f"<div class='summary-card'><b>STOP LOSS</b><br><span style='color:#ff4b4b; font-size:22px;'>{sl_p.group(1) if sl_p else 'N/A'}</span></div>", unsafe_allow_html=True)
+            with s3: st.markdown(f"<div class='summary-card'><b>TAKE PROFIT</b><br><span style='color:#00ff00; font-size:22px;'>{tp_p.group(1) if tp_p else 'N/A'}</span></div>", unsafe_allow_html=True)
 
-    # --- 9. AUTO REFRESH LOGIC ---
+        with col_prog:
+            st.subheader("🎯 Distance to Entry")
+            if entry_p:
+                target = float(entry_p.group(1))
+                diff = abs(curr_price - target)
+                threshold = 500.0 if "BTC" in pair else 0.0050
+                progress_val = max(0.0, min(1.0, 1.0 - (diff / threshold)))
+                st.write(f"Current Gap: `{diff:.5f}`")
+                st.progress(progress_val)
+                if diff < (0.0001 if "USD" in pair else 1.0):
+                    st.success("🚀 ENTRY ZONE REACHED!")
+
+        st.markdown(f"<div class='entry-box'><b>Detailed AI Analysis:</b><br>{analysis}</div>", unsafe_allow_html=True)
+
+        # --- 8. NEWS & SMC ---
+        st.divider()
+        st.subheader("📰 Insights & SMC Education")
+        cn1, cn2 = st.columns(2)
+        with cn1:
+            st.info("💡 Fundamental Analysis")
+            news_res = get_ai_analysis(f"Market news for {pair} today. Sinhala.")
+            st.write(news_res)
+        with cn2:
+            st.warning("📐 SMC Technical Concepts")
+            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="SMC Market Structure Guide")
+            st.image("https://fvg-indicator.com/wp-content/uploads/2023/06/fvg-bearish-bullish.png", caption="FVG Concept Guide")
+
+    st.markdown('<div class="footer">Infinite System v3.1 | Auto-Refresh: 60s | © 2026</div>', unsafe_allow_html=True)
+
     if live_mode:
         time.sleep(60)
         st.rerun()
