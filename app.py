@@ -19,10 +19,7 @@ st.markdown("""
     .price-down { color: #ff0000; font-size: 24px; font-weight: bold; }
     .footer { position: fixed; bottom: 0; width: 100%; text-align: center; color: #00d4ff; padding: 10px; background: rgba(0,0,0,0.8); z-index: 100;}
     .entry-box { background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-    .summary-card { background: rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 15px; border: 1px solid #444; text-align: center; height: 110px; }
-    .signal-label { font-size: 28px; font-weight: bold; padding: 10px; border-radius: 5px; text-align: center; margin-bottom: 10px; }
-    .buy-signal { background-color: rgba(0, 255, 0, 0.2); color: #00ff00; border: 2px solid #00ff00; }
-    .sell-signal { background-color: rgba(255, 0, 0, 0.2); color: #ff0000; border: 2px solid #ff0000; }
+    .summary-card { background: rgba(255, 255, 255, 0.07); border-radius: 10px; padding: 15px; border: 1px solid #444; text-align: center; }
     .red-folder { background: rgba(255, 0, 0, 0.15); border: 1px solid #ff4b4b; padding: 12px; border-radius: 8px; margin-bottom: 8px; color: #ff4b4b; font-weight: bold; border-left: 5px solid #ff0000;}
 </style>
 """, unsafe_allow_html=True)
@@ -37,24 +34,22 @@ def get_user_sheet():
         return client.open("Forex_User_DB").sheet1 
     except: return None
 
-# Fixed Manual Sync Logic using st.session_state for manual trigger
-@st.cache_data(ttl=86400)
-def get_ai_analysis(prompt, pair, price, trigger_time):
+@st.cache_data(ttl=3600)
+def get_ai_analysis(prompt):
     try:
         keys = st.secrets["GEMINI_KEYS"]
         genai.configure(api_key=keys[0])
         model = genai.GenerativeModel('gemini-3-flash-preview')
         response = model.generate_content(prompt)
         return response.text
-    except: return "AI Error: කරුණාකර 'Manual AI Sync' ඔබන්න."
+    except: return "AI Error: Sync Error. කරුණාකර Manual Sync ඔබන්න."
 
 def safe_float(value):
     return float(value.iloc[0]) if isinstance(value, pd.Series) else float(value)
 
-# --- 3. LOGIN & SESSION ---
+# --- 3. LOGIN LOGIC ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "last_price" not in st.session_state: st.session_state.last_price = 0.0
-if "sync_token" not in st.session_state: st.session_state.sync_token = time.time()
 
 if not st.session_state.logged_in:
     st.title("🔐 Infinite System Login")
@@ -71,6 +66,21 @@ if not st.session_state.logged_in:
                 st.rerun()
 
 if st.session_state.logged_in:
+    user = st.session_state.user_data
+    role = str(user.get("Role", "")).lower().strip()
+
+    # Admin Panel
+    if role == "admin":
+        with st.sidebar.expander("🛠️ Admin: Add User", expanded=False):
+            new_u = st.text_input("New Username")
+            new_p = st.text_input("New Password")
+            if st.button("Create Account"):
+                sheet = get_user_sheet()
+                if sheet:
+                    exp = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+                    sheet.append_row([new_u, new_p, "user", exp])
+                    st.success(f"User {new_u} added!")
+
     # --- 4. SIDEBAR ---
     st.sidebar.markdown("### 🚨 High Impact News")
     sl_tz = pytz.timezone('Asia/Colombo')
@@ -87,10 +97,10 @@ if st.session_state.logged_in:
         if diff.total_seconds() > 0:
             h, rem = divmod(int(diff.total_seconds()), 3600)
             m, s = divmod(rem, 60)
-            st.sidebar.markdown(f"<div class='red-folder'>{news['event']}<br><small>{h:02d}h {m:02d}m {s:02d}s</small></div>", unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='red-folder'>{news['event']}<br><small>Starts in: {h:02d}h {m:02d}m {s:02d}s</small></div>", unsafe_allow_html=True)
 
     st.sidebar.divider()
-    live_mode = st.sidebar.toggle("🚀 LIVE MODE (Auto-Refresh Price)", value=True)
+    live_mode = st.sidebar.toggle("🚀 LIVE MODE", value=True)
     pair = st.sidebar.selectbox("Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "BTC-USD"])
     tf_choice = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4)
     
@@ -104,67 +114,62 @@ if st.session_state.logged_in:
         st.session_state.last_price = curr_price
 
         # Header
-        c_h1, c_h2, c_h3 = st.columns([2,1,1])
-        with c_h1: st.title(f"📊 {pair} Terminal")
-        with c_h2: st.markdown(f"LIVE PRICE:<br><span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
-        with c_h3: 
-            if st.button("🔄 Manual AI Sync"):
-                st.session_state.sync_token = time.time() # Update token to bypass cache
-                st.rerun()
+        c1, c2 = st.columns([2,1])
+        with c1: st.title(f"📊 {pair} Analysis")
+        with c2: st.markdown(f"<br>LIVE PRICE: <span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
 
-        # --- 6. CHART (RESIZED) ---
+        # --- 6. CHART ---
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", height=380, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
+        fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=0, b=0), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 7. SNIPER SUMMARY & PROGRESS ---
+        # --- 7. PROGRESS & SUMMARY (CHART එකට යටින්) ---
         st.divider()
         
-        prompt = f"Sniper signal for {pair} at {curr_price}. Start with 'DIRECTION: BUY' or 'DIRECTION: SELL'. Format: ENTRY: (price), SL: (price), TP: (price). In Sinhala."
-        analysis = get_ai_analysis(prompt, pair, curr_price, st.session_state.sync_token)
+        signal_prompt = f"Give a sniper trade signal for {pair} at {curr_price}. ENTRY: (price), SL: (price), TP: (price). Sinhala explanation."
+        analysis = get_ai_analysis(signal_prompt)
+        
+        entry_p = re.search(r"ENTRY[:\s]+([\d.]+)", analysis, re.IGNORECASE)
+        sl_p = re.search(r"SL[:\s]+([\d.]+)", analysis, re.IGNORECASE)
+        tp_p = re.search(r"TP[:\s]+([\d.]+)", analysis, re.IGNORECASE)
 
-        # Detection Logic
-        dir_match = re.search(r"DIRECTION[:\s]+(BUY|SELL)", analysis, re.IGNORECASE)
-        entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", analysis, re.IGNORECASE)
-        sl_match = re.search(r"SL[:\s]+([\d.]+)", analysis, re.IGNORECASE)
-        tp_match = re.search(r"TP[:\s]+([\d.]+)", analysis, re.IGNORECASE)
+        col_sig, col_prog = st.columns([2, 1])
 
-        direction = dir_match.group(1).upper() if dir_match else "N/A"
-        e_val = entry_match.group(1) if entry_match else "N/A"
-        s_val = sl_match.group(1) if sl_match else "N/A"
-        t_val = tp_match.group(1) if tp_match else "N/A"
+        with col_sig:
+            st.subheader("📝 Sniper Trade Summary")
+            s1, s2, s3 = st.columns(3)
+            with s1: st.markdown(f"<div class='summary-card'><b>ENTRY</b><br><span style='color:#00d4ff; font-size:22px;'>{entry_p.group(1) if entry_p else 'N/A'}</span></div>", unsafe_allow_html=True)
+            with s2: st.markdown(f"<div class='summary-card'><b>STOP LOSS</b><br><span style='color:#ff4b4b; font-size:22px;'>{sl_p.group(1) if sl_p else 'N/A'}</span></div>", unsafe_allow_html=True)
+            with s3: st.markdown(f"<div class='summary-card'><b>TAKE PROFIT</b><br><span style='color:#00ff00; font-size:22px;'>{tp_p.group(1) if tp_p else 'N/A'}</span></div>", unsafe_allow_html=True)
 
-        # Signal Label (Buy/Sell)
-        if direction != "N/A":
-            css_class = "buy-signal" if direction == "BUY" else "sell-signal"
-            st.markdown(f"<div class='signal-label {css_class}'>SNIPER {direction} ORDER</div>", unsafe_allow_html=True)
+        with col_prog:
+            st.subheader("🎯 Distance to Entry")
+            if entry_p:
+                target = float(entry_p.group(1))
+                diff = abs(curr_price - target)
+                threshold = 500.0 if "BTC" in pair else 0.0050
+                progress_val = max(0.0, min(1.0, 1.0 - (diff / threshold)))
+                st.write(f"Current Gap: `{diff:.5f}`")
+                st.progress(progress_val)
+                if diff < (0.0001 if "USD" in pair else 1.0):
+                    st.success("🚀 ENTRY ZONE REACHED!")
 
-        col_s1, col_s2, col_s3 = st.columns(3)
-        with col_s1: st.markdown(f"<div class='summary-card'><b>ENTRY</b><br><span style='color:#00d4ff; font-size:22px;'>{e_val}</span></div>", unsafe_allow_html=True)
-        with col_s2: st.markdown(f"<div class='summary-card'><b>STOP LOSS</b><br><span style='color:#ff4b4b; font-size:22px;'>{s_val}</span></div>", unsafe_allow_html=True)
-        with col_s3: st.markdown(f"<div class='summary-card'><b>TAKE PROFIT</b><br><span style='color:#00ff00; font-size:22px;'>{t_val}</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='entry-box'><b>Detailed AI Analysis:</b><br>{analysis}</div>", unsafe_allow_html=True)
 
-        if e_val != "N/A":
-            diff = abs(curr_price - float(e_val))
-            threshold = 500.0 if "BTC" in pair else 0.0050
-            progress = max(0.0, min(1.0, 1.0 - (diff / threshold)))
-            st.write(f"**Distance to Entry:** `{diff:.5f}`")
-            st.progress(progress)
-
-        st.markdown(f"<div class='entry-box'><b>AI Breakdown:</b><br>{analysis}</div>", unsafe_allow_html=True)
-
-        # --- 8. INSIGHTS & SMC ---
+        # --- 8. NEWS & SMC ---
         st.divider()
-        st.subheader("📰 Insights & SMC")
-        col_n1, col_n2 = st.columns(2)
-        with col_n1:
-            st.info("💡 Fundamental Sentiment")
-            st.write(get_ai_analysis(f"Brief news for {pair} today. Sinhala.", pair, "fixed", st.session_state.sync_token))
-        with col_n2:
-            st.warning("📐 Technical Concept")
-            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="SMC Structure")
+        st.subheader("📰 Insights & SMC Education")
+        cn1, cn2 = st.columns(2)
+        with cn1:
+            st.info("💡 Fundamental Analysis")
+            news_res = get_ai_analysis(f"Market news for {pair} today. Sinhala.")
+            st.write(news_res)
+        with cn2:
+            st.warning("📐 SMC Technical Concepts")
+            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="SMC Market Structure Guide")
+            st.image("https://fvg-indicator.com/wp-content/uploads/2023/06/fvg-bearish-bullish.png", caption="FVG Concept Guide")
 
-    st.markdown('<div class="footer">Infinite System v3.3 | Manual Sync Fixed | © 2026</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">Infinite System v3.1 | Auto-Refresh: 60s | © 2026</div>', unsafe_allow_html=True)
 
     if live_mode:
         time.sleep(60)
