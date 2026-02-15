@@ -28,7 +28,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Initialize Session State (FIX FOR ATTRIBUTE ERROR) ---
+# --- Initialize Session State ---
 if "logged_in" not in st.session_state: 
     st.session_state.logged_in = False
 if "active_provider" not in st.session_state: 
@@ -41,7 +41,6 @@ def get_user_sheet():
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
     except Exception as e:
-        st.error(f"Database Error: {e}")
         return None
 
 def check_login(username, password):
@@ -51,8 +50,8 @@ def check_login(username, password):
     if sheet:
         try:
             records = sheet.get_all_records()
-            user = next((i for i in records if str(i["Username"]) == username), None)
-            if user and str(user["Password"]) == password:
+            user = next((i for i in records if str(i.get("Username")) == username), None)
+            if user and str(user.get("Password")) == password:
                 return user
         except: return None
     return None
@@ -84,8 +83,8 @@ def get_alpha_vantage_data(pair):
         r = requests.get(url, timeout=10)
         data = r.json()
         return data.get("Realtime Currency Exchange Rate", "No data available")
-    except Exception as e:
-        return f"Conn Error: {e}"
+    except:
+        return "Conn Error"
 
 # --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df):
@@ -115,7 +114,7 @@ def calculate_advanced_signals(df):
     
     return signals
 
-# --- 5. AI ENGINE (UPDATED TO GEMINI 3 FLASH PREVIEW) ---
+# --- 5. AI ENGINE ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
@@ -139,7 +138,7 @@ def get_ai_analysis(prompt, asset_data):
         except: pass
 
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
-    return f"ENTRY: {asset_data['price']}\nSL: {sl:.4f}\nTP: {tp:.4f}\n\n⚠️ AI PROVIDER ERROR: Manual calculation applied.", "Offline"
+    return f"ENTRY: {asset_data['price']}\nSL: {sl:.4f}\nTP: {tp:.4f}\n\n⚠️ AI PROVIDER ERROR.", "Offline"
 
 # --- 6. MAIN APPLICATION ---
 if not st.session_state.logged_in:
@@ -154,7 +153,6 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in, st.session_state.user = True, user
                     st.rerun()
                 else: st.error("Invalid Credentials")
-
 else:
     user_info = st.session_state.get('user', {})
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
@@ -165,7 +163,8 @@ else:
                 nu, npwd = st.text_input("New User"), st.text_input("New Pwd", type="password")
                 if st.form_submit_button("Create User"):
                     s, m = create_user(nu, npwd)
-                    st.success(m) if s else st.error(m)
+                    if s: st.success(m)
+                    else: st.error(m)
 
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
@@ -192,9 +191,7 @@ else:
                 col1.metric("Exchange Rate", av_data.get("5. Exchange Rate", "N/A"))
                 col2.metric("Real-time Bid", av_data.get("8. Bid Price", "N/A"))
                 col3.metric("Real-time Ask", av_data.get("9. Ask Price", "N/A"))
-                st.caption(f"Last Sync: {av_data.get('6. Last Refreshed', 'N/A')} UTC")
-            else:
-                st.info(f"AV Insights: {av_data}")
+            else: st.info(f"AV Insights: {av_data}")
 
         sigs = calculate_advanced_signals(df)
         cols = st.columns(4)
@@ -203,37 +200,21 @@ else:
             cols[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
             cols[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
 
-        st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False, margin=dict(l=20, r=20, t=20, b=20)), use_container_width=True)
+        st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False), use_container_width=True)
 
         st.divider()
         c_ai, c_res = st.columns([1, 2])
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Insight", use_container_width=True):
-                with st.spinner("Gemini 3 Flash analyzing market structure..."):
-                    prompt = f"""
-                    Analyze {pair} at {curr_p} on {tf} timeframe.
-                    Technical Signals:
-                    - SMC: {sigs['SMC'][0]}
-                    - Trend: {sigs['TREND'][0]}
-                    - RSI Sentiment: {sigs['RETAIL'][0]}
-                    - Liquidity: {sigs['LIQ'][0]}
-                    
-                    Provide a professional trading signal in Sinhala.
-                    Include:
-                    1. Entry Price
-                    2. Stop Loss (SL)
-                    3. Take Profit (TP)
-                    4. Brief reasoning for the trade.
-                    """
+                with st.spinner("Gemini 3 Flash analyzing..."):
+                    prompt = f"Analyze {pair} at {curr_p} on {tf}. SMC: {sigs['SMC'][0]}, Trend: {sigs['TREND'][0]}. Provide Entry, SL, TP in Sinhala."
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
                     st.session_state.ai_result = result
                     st.session_state.active_provider = provider
-                    st.toast(f"Powered by: {provider}")
 
         with c_res:
             if "ai_result" in st.session_state:
-                # SAFE ACCESS TO SESSION STATE
                 st.markdown(f"**AI Provider:** `{st.session_state.get('active_provider', 'Unknown')}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
