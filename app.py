@@ -9,118 +9,27 @@ from datetime import datetime
 import time
 import re
 import requests
+import numpy as np
 
-# --- 1. SETUP & ENHANCED UI STYLE ---
-st.set_page_config(page_title="Infinite System v4.5 | Pro AI Terminal", layout="wide", page_icon="⚡")
+# --- 1. SETUP & STYLE ---
+st.set_page_config(page_title="Infinite System v5.0 | Ultimate", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    .price-up { color: #00ff00; font-size: 26px; font-weight: bold; text-shadow: 0 0 10px #00ff0044; }
-    .price-down { color: #ff4b4b; font-size: 26px; font-weight: bold; text-shadow: 0 0 10px #ff4b4b44; }
-    .entry-box { background: rgba(0, 212, 255, 0.07); border: 1px solid #00d4ff; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 5px solid #00d4ff; }
-    .summary-card { background: #1e2130; border-radius: 10px; padding: 15px; border: 1px solid #3e4451; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-    .notif-badge { padding: 5px 12px; border-radius: 6px; font-size: 13px; font-weight: 600; margin-right: 8px; border: 1px solid rgba(255,255,255,0.1); }
-    .bg-smc { background-color: #ff9800; color: #111; }
-    .bg-ict { background-color: #f43f5e; color: white; }
-    .bg-trend { background-color: #3b82f6; color: white; }
+    .price-up { color: #00ff00; font-size: 22px; font-weight: bold; }
+    .price-down { color: #ff4b4b; font-size: 22px; font-weight: bold; }
+    .entry-box { background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; padding: 15px; border-radius: 10px; margin-top: 10px; }
+    .summary-card { background: #181a20; border-radius: 8px; padding: 10px; border: 1px solid #333; text-align: center; }
+    .signal-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; }
+    .sig-box { padding: 8px; border-radius: 5px; font-size: 12px; text-align: center; font-weight: bold; border: 1px solid #444; }
+    .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
+    .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
+    .neutral { background-color: #262626; color: #888; }
+    .stProgress > div > div > div > div { background-color: #00d4ff; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- NEW FUNCTION: AUTO CALCULATE FALLBACK LEVELS ---
-def calculate_fallback_levels(current_price, timeframe="1h"):
-    """AI වැඩ නැති විට ගණිතමය වශයෙන් SL/TP ගණනය කිරීම"""
-    # Timeframe එක අනුව volatility multiplier එක වෙනස් වේ
-    volatility = 0.002 if "m" in timeframe else 0.008
-    
-    sl = current_price - (current_price * volatility)
-    tp1 = current_price + (current_price * volatility * 1.5)
-    tp2 = current_price + (current_price * volatility * 3.0)
-    
-    return round(sl, 5), round(tp1, 5), round(tp2, 5)
-
-# --- 2. 2026 COMPLIANT AI ENGINE (WITH ROTATION & RETRY) ---
-def get_ai_analysis(prompt, asset_data=None):
-    """
-    Advanced AI Handler with:
-    1. API Key Rotation (Multiple Keys)
-    2. Smart Retry (For 429 Errors)
-    3. HuggingFace Backup
-    4. Mathematical Fallback
-    """
-    
-    # --- STRATEGY 1: GEMINI ROTATION ---
-    if "GEMINI_KEYS" in st.secrets:
-        keys = st.secrets["GEMINI_KEYS"] # මෙය list එකක් විය යුතුයි
-        
-        # Keys එකින් එක මාරු කරමින් උත්සාහ කිරීම (Rotation)
-        for i, key in enumerate(keys):
-            try:
-                genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview')
-                response = model.generate_content(prompt)
-                return response.text
-            except Exception as e:
-                error_msg = str(e)
-                if "429" in error_msg:
-                    # Quota Error නම් ඊළඟ Key එකට යන්න
-                    st.sidebar.warning(f"⚠️ Key {i+1} Quota Full. Rotating to next key...")
-                    time.sleep(1) # පොඩි විරාමයක්
-                    continue 
-                else:
-                    # වෙනත් බරපතල Error එකක් නම් Loop එක නවත්වන්න (HuggingFace වෙත යන්න)
-                    st.sidebar.error(f"Gemini Error on Key {i+1}: {error_msg[:40]}")
-                    break
-
-    # --- STRATEGY 2: HUGGING FACE BACKUP ---
-    try:
-        if "HF_TOKEN" in st.secrets:
-            st.sidebar.info("🔄 Switching to Hugging Face Node...")
-            API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
-            headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
-            payload = {"inputs": f"<s>[INST] {prompt} [/INST]", "parameters": {"max_new_tokens": 600}}
-            response = requests.post(API_URL, headers=headers, json=payload, timeout=12)
-            result = response.json()
-            if isinstance(result, list):
-                return result[0]['generated_text']
-    except: pass
-
-    # --- STRATEGY 3: LOCAL LOGIC (FALLBACK) ---
-    # AI සම්පූර්ණයෙන්ම Fail වුනොත් Regex වලට අහු වෙන්න Output එක හදනවා
-    if asset_data:
-        sl, tp1, tp2 = calculate_fallback_levels(asset_data['price'])
-        return (f"🚨 **SYSTEM ALERT: AI NODES BUSY**\n"
-                f"Applying Mathematical Strategy based on Market Structure.\n\n"
-                f"ENTRY: {asset_data['price']}\n"
-                f"SL: {sl}\n"
-                f"TP: {tp1}\n"
-                f"(Secondary TP: {tp2})\n\n"
-                f"Logic: Market Structure indicates Bullish flow, but AI Server is overloaded. "
-                f"Trade with caution using fixed Risk Ratios.")
-    
-    return "❌ Error: AI Authentication Failed."
-
-# --- 3. CORE TECHNICAL INDICATORS ---
-def calculate_signals(df):
-    signals = []
-    close = df['Close'].iloc[-1]
-    
-    # SMC: Break of Structure (BOS)
-    if close > df['High'].iloc[-15:-1].max():
-        signals.append(("SMC/BOS", "bg-smc", "Bullish Expansion Found"))
-    
-    # ICT: Fair Value Gap (FVG)
-    if df['Low'].iloc[-1] > df['High'].iloc[-3]:
-        signals.append(("ICT/FVG", "bg-ict", "Price Imbalance Detected"))
-    
-    # Fibonacci Golden Zone (0.618)
-    high, low = df['High'].max(), df['Low'].min()
-    fib_618 = high - (high - low) * 0.618
-    if abs(close - fib_618) / close < 0.001:
-        signals.append(("FIB/GOLD", "bg-trend", "Golden Pocket Rejection"))
-        
-    return signals
-
-# --- 4. DATA SYNCHRONIZATION ---
+# --- 2. USER MANAGEMENT SYSTEM (ADMIN/USER) ---
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -128,82 +37,244 @@ def get_user_sheet():
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
     except: return None
 
+def check_login(username, password):
+    # Emergency Bypass for Demo (Remove in production)
+    if username == "admin" and password == "admin123":
+        return {"Username": "Admin", "Role": "Admin"}
+        
+    sheet = get_user_sheet()
+    if sheet:
+        try:
+            records = sheet.get_all_records()
+            user = next((i for i in records if str(i["Username"]) == username), None)
+            if user and str(user["Password"]) == password:
+                return user
+        except: return None
+    return None
+
+# --- 3. ADVANCED SIGNAL ENGINE (SMC, ICT, SK, FIB, ETC.) ---
+def calculate_advanced_signals(df):
+    """
+    Requested Indicators: SMC, SK, ICT, Fib, Pattern, Indicators, TA, Retail, Liquidity, Trendlines
+    """
+    signals = {}
+    c = df['Close'].iloc[-1]
+    h = df['High'].iloc[-1]
+    l = df['Low'].iloc[-1]
+    prev_c = df['Close'].iloc[-2]
+    
+    # 1. SMC (Market Structure)
+    highs = df['High'].rolling(10).max()
+    lows = df['Low'].rolling(10).min()
+    if c > highs.iloc[-2]: signals['SMC'] = ("Bullish BOS", "bull")
+    elif c < lows.iloc[-2]: signals['SMC'] = ("Bearish BOS", "bear")
+    else: signals['SMC'] = ("Internal Struct", "neutral")
+
+    # 2. ICT (FVG)
+    if df['Low'].iloc[-1] > df['High'].iloc[-3]: signals['ICT'] = ("Bullish FVG", "bull")
+    elif df['High'].iloc[-1] < df['Low'].iloc[-3]: signals['ICT'] = ("Bearish FVG", "bear")
+    else: signals['ICT'] = ("No FVG", "neutral")
+
+    # 3. Fibonacci (0.618 Retracement)
+    period_high = df['High'].rolling(50).max().iloc[-1]
+    period_low = df['Low'].rolling(50).min().iloc[-1]
+    fib_618 = period_high - ((period_high - period_low) * 0.618)
+    if abs(c - fib_618) < (c * 0.0005): signals['FIB'] = ("Golden Zone", "bull")
+    else: signals['FIB'] = ("Ranging", "neutral")
+
+    # 4. Indicators (RSI & EMAs) - "Retail" View
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs)).iloc[-1]
+    
+    if rsi > 70: signals['RETAIL'] = ("Overbought (Sell)", "bear")
+    elif rsi < 30: signals['RETAIL'] = ("Oversold (Buy)", "bull")
+    else: signals['RETAIL'] = (f"Neutral ({int(rsi)})", "neutral")
+
+    # 5. Liquidity (Sweeps)
+    if l < df['Low'].iloc[-10:-1].min(): signals['LIQ'] = ("Liquidity Grab (L)", "bull")
+    elif h > df['High'].iloc[-10:-1].max(): signals['LIQ'] = ("Liquidity Grab (H)", "bear")
+    else: signals['LIQ'] = ("Holding", "neutral")
+
+    # 6. Trendline / S&R
+    ema_50 = df['Close'].rolling(50).mean().iloc[-1]
+    if c > ema_50: signals['TREND'] = ("Uptrend", "bull")
+    else: signals['TREND'] = ("Downtrend", "bear")
+
+    # 7. SK Strategy (Confluence of SMC + RSI + Trend)
+    # SK = Special Key strategy based on confluence
+    score = 0
+    if signals['SMC'][1] == "bull": score += 1
+    if signals['TREND'][1] == "bull": score += 1
+    if rsi < 40: score += 1
+    
+    if score >= 2: signals['SK'] = ("SK Buy Setup", "bull")
+    elif score <= -2: signals['SK'] = ("SK Sell Setup", "bear")
+    else: signals['SK'] = ("Waiting...", "neutral")
+
+    # 8. Patterns (Simple Engulfing)
+    if df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-2] < df['Open'].iloc[-2] and df['Close'].iloc[-1] > df['Open'].iloc[-2]:
+        signals['PATT'] = ("Engulfing", "bull")
+    else:
+        signals['PATT'] = ("None", "neutral")
+
+    return signals
+
+# --- 4. AI ENGINE (ROTATION & RETRY) ---
+def get_ai_analysis(prompt, asset_data):
+    """API Rotation & Retry Enabled"""
+    # ... (Previous API Rotation Logic) ...
+    if "GEMINI_KEYS" in st.secrets:
+        keys = st.secrets["GEMINI_KEYS"]
+        for i, key in enumerate(keys):
+            try:
+                genai.configure(api_key=key)
+                model = genai.GenerativeModel('gemini-3-flash-preview')
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                if "429" in str(e):
+                    time.sleep(1)
+                    continue
+                break
+    
+    # Fallback Calculation
+    sl = asset_data['price'] * 0.995
+    tp = asset_data['price'] * 1.01
+    return f"ENTRY: {asset_data['price']}\nSL: {sl}\nTP: {tp}\n\n⚠️ AI Offline. Manual Calculation."
+
+# --- 5. MAIN APPLICATION ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 
-# --- LOGIN BYPASS FOR DEMO (You can enable sheet login here) ---
 if not st.session_state.logged_in:
-    st.title("🔐 Infinite Terminal v4.5 Access")
-    u, p = st.text_input("Operator ID"), st.text_input("Security Key", type="password")
-    if st.button("Initialize Terminal"):
-        if u and p: # Simple validation (Add your sheet logic here)
-            st.session_state.logged_in = True
-            st.rerun()
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>🔐 INFINITE SYSTEM LOGIN</h1>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1,2,1])
+    with c2:
+        with st.form("login_form"):
+            u = st.text_input("Username")
+            p = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Access Terminal")
+            
+            if submit:
+                user = check_login(u, p)
+                if user:
+                    st.session_state.logged_in = True
+                    st.session_state.user = user
+                    st.success("Login Successful!")
+                    st.rerun()
+                else:
+                    st.error("Invalid Credentials or Database Error")
 else:
-    # --- 5. MAIN TRADING DASHBOARD ---
+    # --- DASHBOARD ---
+    
+    # 1. Sidebar & Asset Selection (Expanded)
+    st.sidebar.title(f"👤 {st.session_state.user.get('Username', 'Trader')}")
+    if st.sidebar.button("Logout"): st.session_state.logged_in = False; st.rerun()
+    
+    market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
+    
     assets = {
-        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "XAUUSD=X"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"]
+        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X"],
+        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
+        "Metals": ["XAUUSD=X", "XAGUSD=X"]
     }
     
-    st.sidebar.header("🕹️ AI Command Center")
-    m_type = st.sidebar.radio("Select Market", ["Forex", "Crypto"])
-    pair = st.sidebar.selectbox("Asset Pair", assets[m_type])
-    tf = st.sidebar.selectbox("Timeframe", ["5m", "15m", "1h", "4h", "1d"], index=2)
-    live_toggle = st.sidebar.toggle("🚀 LIVE FEED", value=True)
+    pair = st.sidebar.selectbox("Select Asset", assets[market])
+    tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"], index=2)
+    
+    # Live Feed Toggle
+    live = st.sidebar.checkbox("🔴 Live Data Refresh", value=True)
 
+    # 2. Data Fetching
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
         
-        # Header Metrics
+        # 3. UI Header
         c1, c2 = st.columns([3, 1])
         with c1:
-            st.title(f"📊 {pair} Analysis")
-            sig_list = calculate_signals(df)
-            badges = "".join([f'<span class="notif-badge {b}">{t}</span>' for t, b, m in sig_list])
-            st.markdown(badges, unsafe_allow_html=True)
-            
+            st.title(f"{pair}")
+            st.caption(f"Timeframe: {tf} | Strategy: Infinite AI Hybrid")
         with c2:
-            st.markdown(f"<div style='text-align:right'>REAL-TIME PRICE:<br><span class='price-up'>{curr_p:.5f}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align:right; font-size:30px;' class='price-up'>{curr_p:.4f}</div>", unsafe_allow_html=True)
 
-        # Candlestick Chart
+        # 4. Multi-Strategy Dashboard (The 10 Requirements)
+        sigs = calculate_advanced_signals(df)
+        
+        # Display as Grid
+        st.markdown("### 📡 Market Scanner")
+        r1_c1, r1_c2, r1_c3, r1_c4 = st.columns(4)
+        r2_c1, r2_c2, r2_c3, r2_c4 = st.columns(4)
+
+        # Row 1
+        with r1_c1: st.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
+        with r1_c2: st.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
+        with r1_c3: st.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>Fibonacci: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
+        with r1_c4: st.markdown(f"<div class='sig-box {sigs['SK'][1]}'>SK Strategy: {sigs['SK'][0]}</div>", unsafe_allow_html=True)
+        
+        # Row 2
+        with r2_c1: st.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>Liquidity: {sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
+        with r2_c2: st.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>Retail: {sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
+        with r2_c3: st.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>Trend: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
+        with r2_c4: st.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>Pattern: {sigs['PATT'][0]}</div>", unsafe_allow_html=True)
+
+        # 5. Compact Chart (Reduced Size)
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", height=450, margin=dict(l=0,r=0,t=20,b=0), xaxis_rangeslider_visible=False)
+        fig.update_layout(template="plotly_dark", height=350, margin=dict(l=0,r=0,t=10,b=0), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # AI Strategy Engine
+        # 6. AI & Entry Logic (Manual Trigger Only)
         st.divider()
-        if st.button("🧠 Execute Deep Reasoning (Gemini 3)"):
-            with st.spinner("AI Analysis in Progress..."):
-                prompt = f"Analyze {pair} at {curr_p}. Use SMC, ICT and Fibonacci. Format: ENTRY: (val), SL: (val), TP: (val). Explain logic in Sinhala."
-                
-                # Pass Data to AI Function for Fallback Calculation
-                analysis = get_ai_analysis(prompt, asset_data={'price': curr_p})
-                
-                # Signal Parsing
-                entry = re.search(r"ENTRY[:\s]+([\d.]+)", analysis, re.IGNORECASE)
-                sl = re.search(r"SL[:\s]+([\d.]+)", analysis, re.IGNORECASE)
-                tp = re.search(r"TP[:\s]+([\d.]+)", analysis, re.IGNORECASE)
-                
-                s1, s2, s3 = st.columns(3)
-                with s1: st.markdown(f"<div class='summary-card'><b>AI ENTRY</b><br><span style='color:#00d4ff'>{entry.group(1) if entry else 'Waiting'}</span></div>", unsafe_allow_html=True)
-                with s2: st.markdown(f"<div class='summary-card'><b>STOP LOSS</b><br><span style='color:#ff4b4b'>{sl.group(1) if sl else 'Waiting'}</span></div>", unsafe_allow_html=True)
-                with s3: st.markdown(f"<div class='summary-card'><b>TARGET (TP)</b><br><span style='color:#00ff00'>{tp.group(1) if tp else 'Waiting'}</span></div>", unsafe_allow_html=True)
-                
-                st.markdown(f"<div class='entry-box'><b>Deep Reasoning Strategy:</b><br>{analysis}</div>", unsafe_allow_html=True)
-
-        # Technical Education Guides
-        st.subheader("📚 Strategy References")
-        v1, v2 = st.columns(2)
-        with v1: st.info("SMC/BOS: Market structure breaks indicate institutional momentum.")
-        with v2: st.info("ICT FVG: Unfilled price gaps are magnet zones for future price action.")
+        c_ai, c_res = st.columns([1, 2])
         
-        
+        with c_ai:
+            st.subheader("🧠 AI Sniper")
+            # Manual Button to Trigger AI
+            if st.button("🚀 Analyze & Find Entry", use_container_width=True):
+                with st.spinner("Scanning Market Depth..."):
+                    # Build Prompt with all indicators
+                    prompt = f"""
+                    Act as a Pro Trader. Analyze {pair} at {curr_p}.
+                    Technical Data:
+                    - SMC: {sigs['SMC'][0]}
+                    - ICT: {sigs['ICT'][0]}
+                    - RSI Status: {sigs['RETAIL'][0]}
+                    - Trend: {sigs['TREND'][0]}
+                    
+                    Task: Provide a Sniper Entry, SL, and TP.
+                    Format exactly: ENTRY: [Price], SL: [Price], TP: [Price].
+                    Give a short reason in Sinhala based on Liquidity and Fib.
+                    """
+                    
+                    analysis = get_ai_analysis(prompt, {'price': curr_p})
+                    st.session_state.ai_result = analysis # Save to session
+            
+        with c_res:
+            if "ai_result" in st.session_state:
+                res = st.session_state.ai_result
+                
+                # Parse Result
+                entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", res, re.IGNORECASE)
+                entry_price = float(entry_match.group(1)) if entry_match else curr_p
+                
+                # Display Progress Bar (Proximity to Entry)
+                diff = abs(curr_p - entry_price)
+                max_diff = curr_p * 0.005 # 0.5% range
+                prog = max(0.0, min(1.0, 1.0 - (diff / max_diff)))
+                
+                st.write(f"**Zone Accuracy:** {int(prog*100)}%")
+                st.progress(prog)
+                
+                if prog > 0.9: st.success("🔥 PRICE IS IN ENTRY ZONE!")
+                elif prog > 0.5: st.warning("⚠️ Approaching Zone")
+                else: st.info("WAIT: Price is far from setup")
 
-    st.markdown(f'<div style="height:100px"></div><div class="footer">Infinite System v4.5 | {datetime.now().strftime("%Y-%m-%d %H:%M")} | Safe AI Mode Active</div>', unsafe_allow_html=True)
+                st.markdown(f"<div class='entry-box'>{res}</div>", unsafe_allow_html=True)
 
-    if live_toggle:
+    if live:
         time.sleep(60)
         st.rerun()
