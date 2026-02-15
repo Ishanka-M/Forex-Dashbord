@@ -26,13 +26,13 @@ st.markdown("""
     .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
     .neutral { background-color: #262626; color: #888; }
     .stProgress > div > div > div > div { background-color: #00d4ff; }
+    .footer { text-align: center; font-size: 12px; color: #666; margin-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 2. USER MANAGEMENT SYSTEM (ADMIN/USER) ---
 def get_user_sheet():
     try:
-        # Scope allows read and WRITE access
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
@@ -41,7 +41,6 @@ def get_user_sheet():
         return None
 
 def check_login(username, password):
-    # Hardcoded Admin Access
     if username == "admin" and password == "admin123":
         return {"Username": "Admin", "Role": "Admin"}
         
@@ -59,12 +58,10 @@ def create_user(new_username, new_password):
     sheet = get_user_sheet()
     if sheet:
         try:
-            # Check if username already exists
-            existing_users = sheet.col_values(1) # Assuming Username is in Column 1
+            existing_users = sheet.col_values(1)
             if new_username in existing_users:
                 return False, "User already exists!"
             
-            # Append new user [Username, Password, Role, Date]
             sheet.append_row([new_username, new_password, "User", str(datetime.now())])
             return True, "User created successfully!"
         except Exception as e:
@@ -135,21 +132,24 @@ def calculate_advanced_signals(df):
 
     return signals
 
-# --- 4. AI ENGINE ---
+# --- 4. AI ENGINE (UPDATED WITH KEY NOTIFICATION) ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
-        for key in keys:
+        for i, key in enumerate(keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-2.0-flash') # Updated model name for better speed
+                model = genai.GenerativeModel('gemini-2.0-flash')
                 response = model.generate_content(prompt)
-                return response.text
+                
+                # Identify which key worked (Masked for security)
+                active_key_info = f"Key #{i+1} (...{key[-4:]})"
+                return response.text, active_key_info
             except: continue
     
     sl = asset_data['price'] * 0.995
     tp = asset_data['price'] * 1.01
-    return f"ENTRY: {asset_data['price']}\nSL: {sl}\nTP: {tp}\n\n⚠️ AI Offline. Manual Calculation."
+    return f"ENTRY: {asset_data['price']}\nSL: {sl}\nTP: {tp}\n\n⚠️ AI Offline. Manual Calculation.", "Offline"
 
 # --- 5. MAIN APPLICATION ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
@@ -170,17 +170,20 @@ if not st.session_state.logged_in:
                     st.rerun()
                 else:
                     st.error("Invalid Credentials")
+    
+    # Login Page Footer
+    st.markdown("<div class='footer'>Developed by Infinite System</div>", unsafe_allow_html=True)
+
 else:
     # --- LOGGED IN DASHBOARD ---
     user_info = st.session_state.get('user', {})
     username = user_info.get('Username', 'Trader')
     role = user_info.get('Role', 'User')
 
-    # --- SIDEBAR: USER INFO & ADMIN PANEL ---
+    # --- SIDEBAR ---
     st.sidebar.title(f"👤 {username}")
     st.sidebar.caption(f"Role: {role}")
     
-    # *** NEW ADMIN PANEL FEATURE ***
     if role == "Admin":
         with st.sidebar.expander("🛠 Admin Panel (Create User)", expanded=False):
             with st.form("create_user_form"):
@@ -191,12 +194,9 @@ else:
                 if create_btn:
                     if new_u and new_p:
                         success, msg = create_user(new_u, new_p)
-                        if success:
-                            st.success(msg)
-                        else:
-                            st.error(msg)
-                    else:
-                        st.warning("Fill all fields!")
+                        if success: st.success(msg)
+                        else: st.error(msg)
+                    else: st.warning("Fill all fields!")
 
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
@@ -215,6 +215,14 @@ else:
     pair = st.sidebar.selectbox("Select Asset", assets[market])
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"], index=2)
     live = st.sidebar.checkbox("🔴 Live Data Refresh", value=True)
+
+    # --- SIDEBAR FOOTER (BRANDING) ---
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        "<div style='text-align: center; color: #888; font-size: 12px;'>"
+        "<b>Developed by Infinite System</b><br>v5.0 Ultimate</div>", 
+        unsafe_allow_html=True
+    )
 
     # --- DATA & CHARTING ---
     df = yf.download(pair, period="5d", interval=tf, progress=False)
@@ -255,11 +263,27 @@ else:
             if st.button("🚀 Analyze & Find Entry", use_container_width=True):
                 with st.spinner("Scanning..."):
                     prompt = f"Analyze {pair} at {curr_p}. SMC: {sigs['SMC'][0]}, ICT: {sigs['ICT'][0]}, RSI: {sigs['RETAIL'][0]}. ENTRY: [val], SL: [val], TP: [val]. Reason in Sinhala."
-                    st.session_state.ai_result = get_ai_analysis(prompt, {'price': curr_p})
+                    
+                    # Unpack result and key info
+                    analysis_text, active_key = get_ai_analysis(prompt, {'price': curr_p})
+                    
+                    st.session_state.ai_result = analysis_text
+                    st.session_state.active_key_info = active_key
+                    
+                    # Notify user about the API Key
+                    if active_key != "Offline":
+                        st.toast(f"✅ Analysis Complete! Using {active_key}", icon="🤖")
+                    else:
+                        st.error("AI Offline - Check Keys")
             
         with c_res:
             if "ai_result" in st.session_state:
                 res = st.session_state.ai_result
+                
+                # Show Used Key in UI (Optional, small text)
+                if "active_key_info" in st.session_state:
+                    st.caption(f"⚡ Server: {st.session_state.active_key_info}")
+
                 entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", res, re.IGNORECASE)
                 entry_price = float(entry_match.group(1)) if entry_match else curr_p
                 
