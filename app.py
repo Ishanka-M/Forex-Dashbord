@@ -30,7 +30,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. USER MANAGEMENT SYSTEM (ADMIN/USER) ---
+# --- 2. USER MANAGEMENT SYSTEM ---
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -43,7 +43,6 @@ def get_user_sheet():
 def check_login(username, password):
     if username == "admin" and password == "admin123":
         return {"Username": "Admin", "Role": "Admin"}
-        
     sheet = get_user_sheet()
     if sheet:
         try:
@@ -61,7 +60,6 @@ def create_user(new_username, new_password):
             existing_users = sheet.col_values(1)
             if new_username in existing_users:
                 return False, "User already exists!"
-            
             sheet.append_row([new_username, new_password, "User", str(datetime.now())])
             return True, "User created successfully!"
         except Exception as e:
@@ -74,48 +72,33 @@ def calculate_advanced_signals(df):
     c = df['Close'].iloc[-1]
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
-    
-    # 1. SMC (Market Structure)
     highs = df['High'].rolling(10).max()
     lows = df['Low'].rolling(10).min()
     if c > highs.iloc[-2]: signals['SMC'] = ("Bullish BOS", "bull")
     elif c < lows.iloc[-2]: signals['SMC'] = ("Bearish BOS", "bear")
     else: signals['SMC'] = ("Internal Struct", "neutral")
-
-    # 2. ICT (FVG)
     if df['Low'].iloc[-1] > df['High'].iloc[-3]: signals['ICT'] = ("Bullish FVG", "bull")
     elif df['High'].iloc[-1] < df['Low'].iloc[-3]: signals['ICT'] = ("Bearish FVG", "bear")
     else: signals['ICT'] = ("No FVG", "neutral")
-
-    # 3. Fibonacci
     period_high = df['High'].rolling(50).max().iloc[-1]
     period_low = df['Low'].rolling(50).min().iloc[-1]
     fib_618 = period_high - ((period_high - period_low) * 0.618)
     if abs(c - fib_618) < (c * 0.0005): signals['FIB'] = ("Golden Zone", "bull")
     else: signals['FIB'] = ("Ranging", "neutral")
-
-    # 4. RSI (Retail)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     rsi = 100 - (100 / (1 + rs)).iloc[-1]
-    
     if rsi > 70: signals['RETAIL'] = ("Overbought (Sell)", "bear")
     elif rsi < 30: signals['RETAIL'] = ("Oversold (Buy)", "bull")
     else: signals['RETAIL'] = (f"Neutral ({int(rsi)})", "neutral")
-
-    # 5. Liquidity
     if l < df['Low'].iloc[-10:-1].min(): signals['LIQ'] = ("Liquidity Grab (L)", "bull")
     elif h > df['High'].iloc[-10:-1].max(): signals['LIQ'] = ("Liquidity Grab (H)", "bear")
     else: signals['LIQ'] = ("Holding", "neutral")
-
-    # 6. Trendline
     ema_50 = df['Close'].rolling(50).mean().iloc[-1]
     if c > ema_50: signals['TREND'] = ("Uptrend", "bull")
     else: signals['TREND'] = ("Downtrend", "bear")
-
-    # 7. SK Strategy
     score = 0
     if signals['SMC'][1] == "bull": score += 1
     if signals['TREND'][1] == "bull": score += 1
@@ -123,33 +106,33 @@ def calculate_advanced_signals(df):
     if score >= 2: signals['SK'] = ("SK Buy Setup", "bull")
     elif score <= -2: signals['SK'] = ("SK Sell Setup", "bear")
     else: signals['SK'] = ("Waiting...", "neutral")
-
-    # 8. Patterns
     if df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-2] < df['Open'].iloc[-2] and df['Close'].iloc[-1] > df['Open'].iloc[-2]:
         signals['PATT'] = ("Engulfing", "bull")
-    else:
-        signals['PATT'] = ("None", "neutral")
-
+    else: signals['PATT'] = ("None", "neutral")
     return signals
 
-# --- 4. AI ENGINE (UPDATED WITH KEY NOTIFICATION) ---
+# --- 4. AI ENGINE (API ROTATION LOGIC) ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
+        # Loop through each key in the list
         for i, key in enumerate(keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-2.0-flash')
+                model = genai.GenerativeModel('gemini-1.5-flash') # Use flash for speed
                 response = model.generate_content(prompt)
                 
-                # Identify which key worked (Masked for security)
-                active_key_info = f"Key #{i+1} (...{key[-4:]})"
+                # If successful, return response and key info
+                active_key_info = f"API Key #{i+1} (...{key[-4:]})"
                 return response.text, active_key_info
-            except: continue
+            except Exception as e:
+                # If key fails, continue to next key
+                continue
     
+    # Fallback if no keys work
     sl = asset_data['price'] * 0.995
     tp = asset_data['price'] * 1.01
-    return f"ENTRY: {asset_data['price']}\nSL: {sl}\nTP: {tp}\n\n⚠️ AI Offline. Manual Calculation.", "Offline"
+    return f"ENTRY: {asset_data['price']}\nSL: {sl}\nTP: {tp}\n\n⚠️ AI Servers are busy. Manual Zone Calculation.", "Offline"
 
 # --- 5. MAIN APPLICATION ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
@@ -168,70 +151,52 @@ if not st.session_state.logged_in:
                     st.session_state.logged_in = True
                     st.session_state.user = user
                     st.rerun()
-                else:
-                    st.error("Invalid Credentials")
-    
-    # Login Page Footer
+                else: st.error("Invalid Credentials")
     st.markdown("<div class='footer'>Developed by Infinite System</div>", unsafe_allow_html=True)
 
 else:
-    # --- LOGGED IN DASHBOARD ---
     user_info = st.session_state.get('user', {})
     username = user_info.get('Username', 'Trader')
     role = user_info.get('Role', 'User')
 
-    # --- SIDEBAR ---
     st.sidebar.title(f"👤 {username}")
     st.sidebar.caption(f"Role: {role}")
     
     if role == "Admin":
-        with st.sidebar.expander("🛠 Admin Panel (Create User)", expanded=False):
+        with st.sidebar.expander("🛠 Admin Panel", expanded=False):
             with st.form("create_user_form"):
                 new_u = st.text_input("New Username")
                 new_p = st.text_input("New Password", type="password")
-                create_btn = st.form_submit_button("Create Account")
-                
-                if create_btn:
+                if st.form_submit_button("Create Account"):
                     if new_u and new_p:
                         success, msg = create_user(new_u, new_p)
                         if success: st.success(msg)
                         else: st.error(msg)
-                    else: st.warning("Fill all fields!")
 
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
-        st.session_state.user = None
         st.rerun()
     
     st.sidebar.divider()
-    
-    # --- MARKET SELECTION ---
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     assets = {
         "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
+        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD"],
         "Metals": ["XAUUSD=X", "XAGUSD=X"]
     }
     pair = st.sidebar.selectbox("Select Asset", assets[market])
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"], index=2)
     live = st.sidebar.checkbox("🔴 Live Data Refresh", value=True)
 
-    # --- SIDEBAR FOOTER (BRANDING) ---
     st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        "<div style='text-align: center; color: #888; font-size: 12px;'>"
-        "<b>Developed by Infinite System</b><br>v5.0 Ultimate</div>", 
-        unsafe_allow_html=True
-    )
+    st.sidebar.markdown("<div style='text-align: center; color: #888; font-size: 12px;'><b>Developed by Infinite System</b><br>v5.0 Ultimate</div>", unsafe_allow_html=True)
 
-    # --- DATA & CHARTING ---
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
         
-        # HEADER
         c1, c2 = st.columns([3, 1])
         with c1:
             st.title(f"{pair}")
@@ -239,54 +204,45 @@ else:
         with c2:
             st.markdown(f"<div style='text-align:right; font-size:30px;' class='price-up'>{curr_p:.4f}</div>", unsafe_allow_html=True)
 
-        # SIGNALS
         sigs = calculate_advanced_signals(df)
         st.markdown("### 📡 Market Scanner")
         r1 = st.columns(4)
         r2 = st.columns(4)
-        
         keys = list(sigs.keys())
         for i in range(4):
             r1[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
             r2[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
 
-        # CHART
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
         fig.update_layout(template="plotly_dark", height=350, margin=dict(l=0,r=0,t=10,b=0), xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # AI LOGIC
         st.divider()
         c_ai, c_res = st.columns([1, 2])
         with c_ai:
             st.subheader("🧠 AI Sniper")
             if st.button("🚀 Analyze & Find Entry", use_container_width=True):
-                with st.spinner("Scanning..."):
+                with st.spinner("Rotating APIs & Scanning..."):
                     prompt = f"Analyze {pair} at {curr_p}. SMC: {sigs['SMC'][0]}, ICT: {sigs['ICT'][0]}, RSI: {sigs['RETAIL'][0]}. ENTRY: [val], SL: [val], TP: [val]. Reason in Sinhala."
                     
-                    # Unpack result and key info
                     analysis_text, active_key = get_ai_analysis(prompt, {'price': curr_p})
                     
                     st.session_state.ai_result = analysis_text
                     st.session_state.active_key_info = active_key
                     
-                    # Notify user about the API Key
                     if active_key != "Offline":
-                        st.toast(f"✅ Analysis Complete! Using {active_key}", icon="🤖")
+                        st.toast(f"✅ Success! Connected via {active_key}", icon="🤖")
                     else:
-                        st.error("AI Offline - Check Keys")
+                        st.error("AI Rotation Failed. All keys are exhausted.")
             
         with c_res:
             if "ai_result" in st.session_state:
                 res = st.session_state.ai_result
-                
-                # Show Used Key in UI (Optional, small text)
                 if "active_key_info" in st.session_state:
-                    st.caption(f"⚡ Server: {st.session_state.active_key_info}")
+                    st.caption(f"🟢 Active Server: {st.session_state.active_key_info}")
 
                 entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", res, re.IGNORECASE)
                 entry_price = float(entry_match.group(1)) if entry_match else curr_p
-                
                 diff = abs(curr_p - entry_price)
                 prog = max(0.0, min(1.0, 1.0 - (diff / (curr_p * 0.005))))
                 
