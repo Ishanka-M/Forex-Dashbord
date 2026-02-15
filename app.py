@@ -12,10 +12,8 @@ import feedparser
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        # Streamlit Secrets වල 'gcp_service_account' ලෙස JSON එක තිබිය යුතුය
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         client = gspread.authorize(creds)
-        # ඔබගේ Google Sheet එකේ නම මෙහි නිවැරදිව ඇතුළත් කරන්න
         sheet = client.open("Forex_User_DB").sheet1 
         return sheet
     except Exception as e:
@@ -31,6 +29,7 @@ def get_ai_analysis(prompt):
     for _ in range(len(keys)):
         try:
             genai.configure(api_key=keys[st.session_state.key_index])
+            # අලුත්ම model එක භාවිතා කරමු
             model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(prompt)
             return response.text
@@ -38,86 +37,60 @@ def get_ai_analysis(prompt):
             st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
     return "කණගාටුයි, සියලුම AI සේවා මේ මොහොතේ කාර්යබහුලයි. පසුව උත්සාහ කරන්න."
 
-# --- 3. UI සැකසුම් (PAGE CONFIG) ---
+# --- 3. UI සැකසුම් ---
 st.set_page_config(page_title="Forex Pro Sinhala AI", layout="wide")
 
-# Session State මගින් Login තත්ත්වය පවත්වා ගැනීම
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# --- 4. LOGIN තිරය ---
+# LOGIN තිරය
 def login_screen():
     st.title("🔐 Forex Pro පද්ධතියට ඇතුල් වන්න")
-    user_input = st.text_input("පරිශීලක නාමය (Username)")
-    pass_input = st.text_input("මුරපදය (Password)", type="password")
-    
+    user_input = st.text_input("Username")
+    pass_input = st.text_input("Password", type="password")
     if st.button("Log In"):
         sheet = get_user_sheet()
         if sheet:
             records = sheet.get_all_records()
             user_data = next((item for item in records if item["Username"] == user_input), None)
-            
             if user_data and str(user_data["Password"]) == pass_input:
-                expiry_date = datetime.strptime(user_data["Expiry_Date"], "%Y-%m-%d")
+                expiry_date = datetime.strptime(str(user_data["Expiry_Date"]), "%Y-%m-%d")
                 if expiry_date > datetime.now():
                     st.session_state.logged_in = True
                     st.session_state.user_data = user_data
                     st.rerun()
                 else:
-                    st.error("❌ ඔබේ පැකේජය අවසන් වී ඇත! කරුණාකර Admin සම්බන්ධ කරගන්න.")
+                    st.error("❌ ඔබේ පැකේජය අවසන් වී ඇත!")
             else:
-                st.error("❌ වැරදි Username හෝ Password එකක්!")
+                st.error("❌ වැරදි තොරතුරු!")
 
-    st.divider()
-    st.info("පැකේජ ලබා ගැනීමට හෝ සහාය සඳහා: [WhatsApp](https://wa.me/947XXXXXXXX) | [Telegram](https://t.me/YourUsername)")
-
-# --- 5. පද්ධතියට ලොග් වූ පසු පෙනෙන කොටස ---
 if not st.session_state.logged_in:
     login_screen()
 else:
     user = st.session_state.user_data
-    expiry_date = datetime.strptime(user["Expiry_Date"], "%Y-%m-%d")
-    days_left = (expiry_date - datetime.now()).days
-
-    # Sidebar තොරතුරු
+    # Sidebar
     st.sidebar.title(f"ආයුබෝවන්, {user['Username']}!")
-    if days_left <= 5:
-        st.sidebar.warning(f"⚠️ ඔබේ කාලය තව දින {days_left} කින් අවසන් වේ!")
-    
-    st.sidebar.subheader("🆘 උදව් සහ සහාය")
-    st.sidebar.link_button("Contact Admin", "https://t.me/YourUsername")
-    
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
 
-    # Admin Panel (Admin ට පමණක් පෙනේ)
-    if user["Role"] == "admin":
-        with st.expander("🛠️ Admin Panel - නව පාරිභෝගිකයන් එකතු කිරීම"):
-            new_u = st.text_input("New Username")
-            new_p = st.text_input("New Password")
-            sub_days = st.number_input("දින ගණන", value=30)
-            if st.button("පාරිභෝගිකයා එකතු කරන්න"):
-                sheet = get_user_sheet()
-                if sheet:
-                    exp = (datetime.now() + timedelta(days=sub_days)).strftime("%Y-%m-%d")
-                    sheet.append_row([new_u, new_p, "user", exp])
-                    st.success(f"{new_u} සාර්ථකව එකතු කළා!")
-
     # Trading Dashboard
     st.title("📊 SMC + SK AI Trading Dashboard")
-    
     pair = st.sidebar.selectbox("මුදල් යුගලය", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X"])
     tf = st.sidebar.selectbox("කාලරාමුව", ["15m", "1h", "4h"])
 
-    # Data Fetching
     df = yf.download(pair, period="60d", interval=tf)
     
     if not df.empty:
-        # --- නිවැරදි කරන ලද SMC LOGIC (ValueError Fix) ---
-        last_c = float(df['Close'].iloc[-1])
-        prev_h = float(df['High'].iloc[-20:-1].max())
-        prev_l = float(df['Low'].iloc[-20:-1].min())
+        # --- FUTUREWARNINGS නිවැරදි කිරීම ---
+        # iloc[0] හෝ scalar අගයක් ලෙස ගැනීමෙන් warnings ඉවත් වේ
+        last_c = float(df['Close'].iloc[-1].iloc[0] if isinstance(df['Close'].iloc[-1], pd.Series) else df['Close'].iloc[-1])
+        
+        max_val = df['High'].iloc[-20:-1].max()
+        prev_h = float(max_val.iloc[0] if hasattr(max_val, 'iloc') else max_val)
+        
+        min_val = df['Low'].iloc[-20:-1].min()
+        prev_l = float(min_val.iloc[0] if hasattr(min_val, 'iloc') else min_val)
         
         if last_c > prev_h:
             struct = "Bullish (ඉහළට) 🟢"
@@ -129,27 +102,27 @@ else:
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.subheader(f"📈 {pair} සජීවී ප්‍රස්ථාරය")
+            st.subheader(f"📈 {pair} Chart")
             fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
-            st.plotly_chart(fig, use_container_width=True)
-            st.write(f"වෙළඳපල ප්‍රවණතාවය (Market Structure): **{struct}**")
+            # අලුත්ම Streamlit version එකට ගැලපෙන ලෙස width සැකසීම
+            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, width='stretch') 
+            st.write(f"Trend: **{struct}**")
             
 
         with col2:
             st.subheader("🤖 AI පුවත් විශ්ලේෂණය")
-            if st.button("AI Analyze කරන්න"):
-                with st.spinner("පුවත් සහ ප්‍රස්ථාරය අධ්‍යයනය කරමින්..."):
+            if st.button("AI Analyze"):
+                with st.spinner("AI අධ්‍යයනය කරමින්..."):
                     feed = feedparser.parse("https://www.forexfactory.com/ff_calendar_thisweek.xml")
                     news_summary = "\n".join([e.title for e in feed.entries[:5]])
-                    prompt = f"Analyze Forex news: {news_summary}. Trend: {struct}. Pair: {pair}. Give trading advice in SINHALA."
+                    prompt = f"Analyze Forex news: {news_summary}. Trend: {struct}. Advice in Sinhala."
                     st.info(get_ai_analysis(prompt))
             
             st.divider()
-            st.subheader("🎯 SK Strategy Zones")
-            high_p, low_p = float(df['High'].max()), float(df['Low'].min())
-            fib_618 = low_p + (high_p - low_p) * 0.618
-            st.write(f"Discount Zone (0.618): **{fib_618:.5f}**")
-            
-    else:
-        st.error("දත්ත ලබා ගැනීමට නොහැකි විය. කරුණාකර පසුව උත්සාහ කරන්න.")
+            high_all = df['High'].max()
+            low_all = df['Low'].min()
+            h_val = float(high_all.iloc[0] if hasattr(high_all, 'iloc') else high_all)
+            l_val = float(low_all.iloc[0] if hasattr(low_all, 'iloc') else low_all)
+            fib_618 = l_val + (h_val - l_val) * 0.618
+            st.write(f"🎯 SK Discount (0.618): **{fib_618:.5f}**")
