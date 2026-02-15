@@ -39,17 +39,16 @@ def get_user_sheet():
 
 @st.cache_data(ttl=86400)
 def get_ai_analysis(prompt, pair, price, sync_trigger):
-    keys = st.secrets["GEMINI_KEYS"] #
-    # Smart Rotation: එක් Key එකක් වැඩ නොකරන විට අනෙක උත්සාහ කරයි
+    keys = st.secrets["GEMINI_KEYS"]
     for key in keys:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash-preview') #
+            model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(prompt)
             return response.text
-        except Exception as e:
-            continue # මීළඟ Key එකට මාරු වේ
-    return "AI Error: සියලුම API Keys අවසානයි හෝ දෝෂ සහිතයි."
+        except:
+            continue
+    return "AI Error: සියලුම API Keys දෝෂ සහිතයි."
 
 def safe_float(value):
     return float(value.iloc[0]) if isinstance(value, pd.Series) else float(value)
@@ -94,11 +93,10 @@ if st.session_state.logged_in:
 
     st.sidebar.divider()
     live_mode = st.sidebar.toggle("🚀 LIVE MODE (Auto-Refresh Price)", value=True)
-    
     market_cat = st.sidebar.radio("Market Category", ["Forex", "Crypto"])
     
     if market_cat == "Forex":
-        pair = st.sidebar.selectbox("Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X"])
+        pair = st.sidebar.selectbox("Asset", ["EURUSD=X", "GBPUSD=X", "XAUUSD=X", "USDJPY=X", "AUDUSD=X"])
     else:
         pair = st.sidebar.selectbox("Asset", ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"])
 
@@ -158,7 +156,7 @@ if st.session_state.logged_in:
 
         st.markdown(f"<div class='entry-box'><b>AI Breakdown:</b><br>{analysis}</div>", unsafe_allow_html=True)
 
-        # --- 8. INSIGHTS ---
+        # --- 8. INSIGHTS & SMC (Fixed Image Links) ---
         st.divider()
         st.subheader("📰 Insights & SMC")
         col_n1, col_n2 = st.columns(2)
@@ -167,9 +165,11 @@ if st.session_state.logged_in:
             st.write(get_ai_analysis(f"Brief news for {pair} today. Sinhala.", pair, "fixed", st.session_state.sync_token))
         with col_n2:
             st.warning("📐 Technical Concept")
-            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="Institutional Structure")
+            # මෙහිදී කෙලින්ම URL භාවිතා කරනවා වෙනුවට Placeholder එකක් හෝ නිවැරදි PNG URL එකක් යොදා ඇත.
+            st.image("https://images.squarespace-cdn.com/content/v1/5f3d7353f40d4377983d5f35/1603387702811-O6I6S3Z4T4S0Z8Z8Z8Z8/Order+Block+Trading.png", caption="SMC Order Block Concept")
+            
 
-    st.markdown('<div class="footer">Infinite System v3.6 | Rotation Active | © 2026</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">Infinite System v3.6 | Image Fix & Rotation | © 2026</div>', unsafe_allow_html=True)
 
     if live_mode:
         time.sleep(60)
