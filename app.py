@@ -12,21 +12,18 @@ import requests
 import numpy as np
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v5.0 | Ultimate", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v6.0 | Gemini 3 Ultra", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
     .price-up { color: #00ff00; font-size: 22px; font-weight: bold; }
     .price-down { color: #ff4b4b; font-size: 22px; font-weight: bold; }
     .entry-box { background: rgba(0, 212, 255, 0.05); border: 1px solid #00d4ff; padding: 15px; border-radius: 10px; margin-top: 10px; }
-    .summary-card { background: #181a20; border-radius: 8px; padding: 10px; border: 1px solid #333; text-align: center; }
-    .signal-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; }
+    .insight-box { background: #12141a; border-left: 4px solid #f39c12; padding: 10px; border-radius: 5px; margin: 10px 0; font-size: 14px; }
     .sig-box { padding: 8px; border-radius: 5px; font-size: 12px; text-align: center; font-weight: bold; border: 1px solid #444; }
     .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
     .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
     .neutral { background-color: #262626; color: #888; }
-    .stProgress > div > div > div > div { background-color: #00d4ff; }
-    .footer { text-align: center; font-size: 12px; color: #666; margin-top: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,215 +50,138 @@ def check_login(username, password):
         except: return None
     return None
 
-def create_user(new_username, new_password):
-    sheet = get_user_sheet()
-    if sheet:
-        try:
-            existing_users = sheet.col_values(1)
-            if new_username in existing_users:
-                return False, "User already exists!"
-            sheet.append_row([new_username, new_password, "User", str(datetime.now())])
-            return True, "User created successfully!"
-        except Exception as e:
-            return False, f"Error: {e}"
-    return False, "Database Connection Failed"
+# --- 3. ALPHA VANTAGE DATA ENGINE ---
+def get_alpha_vantage_data(pair):
+    if "ALPHA_VANTAGE_KEY" not in st.secrets:
+        return "API Key Missing"
+    try:
+        if "=X" in pair:
+            base, quote = pair[:3], pair[3:6]
+            url = f'https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency={quote}&apikey={st.secrets["ALPHA_VANTAGE_KEY"]}'
+        else:
+            base = pair.split("-")[0]
+            url = f'https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency=USD&apikey={st.secrets["ALPHA_VANTAGE_KEY"]}'
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        return data.get("Realtime Currency Exchange Rate", "No data available")
+    except Exception as e:
+        return f"Conn Error: {e}"
 
-# --- 3. ADVANCED SIGNAL ENGINE ---
+# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df):
     signals = {}
-    c = df['Close'].iloc[-1]
-    h = df['High'].iloc[-1]
-    l = df['Low'].iloc[-1]
-    highs = df['High'].rolling(10).max()
-    lows = df['Low'].rolling(10).min()
-    if c > highs.iloc[-2]: signals['SMC'] = ("Bullish BOS", "bull")
-    elif c < lows.iloc[-2]: signals['SMC'] = ("Bearish BOS", "bear")
-    else: signals['SMC'] = ("Internal Struct", "neutral")
-    if df['Low'].iloc[-1] > df['High'].iloc[-3]: signals['ICT'] = ("Bullish FVG", "bull")
-    elif df['High'].iloc[-1] < df['Low'].iloc[-3]: signals['ICT'] = ("Bearish FVG", "bear")
-    else: signals['ICT'] = ("No FVG", "neutral")
-    period_high = df['High'].rolling(50).max().iloc[-1]
-    period_low = df['Low'].rolling(50).min().iloc[-1]
+    c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
+    highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
+    
+    signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
+    signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
+    
+    period_high, period_low = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
     fib_618 = period_high - ((period_high - period_low) * 0.618)
-    if abs(c - fib_618) < (c * 0.0005): signals['FIB'] = ("Golden Zone", "bull")
-    else: signals['FIB'] = ("Ranging", "neutral")
+    signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.0005) else ("Ranging", "neutral")
+    
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs)).iloc[-1]
-    if rsi > 70: signals['RETAIL'] = ("Overbought (Sell)", "bear")
-    elif rsi < 30: signals['RETAIL'] = ("Oversold (Buy)", "bull")
-    else: signals['RETAIL'] = (f"Neutral ({int(rsi)})", "neutral")
-    if l < df['Low'].iloc[-10:-1].min(): signals['LIQ'] = ("Liquidity Grab (L)", "bull")
-    elif h > df['High'].iloc[-10:-1].max(): signals['LIQ'] = ("Liquidity Grab (H)", "bear")
-    else: signals['LIQ'] = ("Holding", "neutral")
-    ema_50 = df['Close'].rolling(50).mean().iloc[-1]
-    if c > ema_50: signals['TREND'] = ("Uptrend", "bull")
-    else: signals['TREND'] = ("Downtrend", "bear")
-    score = 0
-    if signals['SMC'][1] == "bull": score += 1
-    if signals['TREND'][1] == "bull": score += 1
-    if rsi < 40: score += 1
-    if score >= 2: signals['SK'] = ("SK Buy Setup", "bull")
-    elif score <= -2: signals['SK'] = ("SK Sell Setup", "bear")
-    else: signals['SK'] = ("Waiting...", "neutral")
-    if df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-2] < df['Open'].iloc[-2] and df['Close'].iloc[-1] > df['Open'].iloc[-2]:
-        signals['PATT'] = ("Engulfing", "bull")
-    else: signals['PATT'] = ("None", "neutral")
+    rsi = 100 - (100 / (1 + (delta.where(delta > 0, 0).rolling(14).mean() / (-delta.where(delta < 0, 0).rolling(14).mean()))))
+    signals['RETAIL'] = ("Overbought", "bear") if rsi.iloc[-1] > 70 else (("Oversold", "bull") if rsi.iloc[-1] < 30 else (f"Neutral ({int(rsi.iloc[-1])})", "neutral"))
+    
+    signals['LIQ'] = ("Liquidity Grab", "bull") if l < df['Low'].iloc[-10:-1].min() else ("Holding", "neutral")
+    signals['TREND'] = ("Uptrend", "bull") if c > df['Close'].rolling(50).mean().iloc[-1] else ("Downtrend", "bear")
+    signals['SK'] = ("SK Setup", "bull") if signals['SMC'][1] == "bull" and signals['TREND'][1] == "bull" else ("Waiting", "neutral")
+    signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
+    
     return signals
 
-# --- 4. AI ENGINE (MULTI-PROVIDER FALLBACK) ---
+# --- 5. AI ENGINE (UPDATED TO GEMINI 3 FLASH) ---
 def get_ai_analysis(prompt, asset_data):
-    # 1. Try Gemini Keys First
+    # 1. Gemini 3 Try (Updated Model)
     if "GEMINI_KEYS" in st.secrets:
-        keys = st.secrets["GEMINI_KEYS"]
-        for i, key in enumerate(keys):
+        for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-2.0-flash')
+                # දත්ත වලට අනුව gemini-3-flash-preview යනු දැනට ඇති සාර්ථකම මාදිලියයි
+                model = genai.GenerativeModel('gemini-3-flash-preview') 
                 response = model.generate_content(prompt)
-                return response.text, f"Gemini Key #{i+1}"
-            except:
+                if response and response.text:
+                    return response.text, f"Gemini 3 Flash (Key #{i+1})"
+            except Exception as e:
                 continue
 
-    # 2. Try Hugging Face if Gemini fails
+    # 2. Hugging Face Fallback
     if "HF_TOKEN" in st.secrets:
         try:
             api_url = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
             headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
-            payload = {"inputs": f"<s>[INST] {prompt} [/INST]", "parameters": {"max_new_tokens": 250}}
-            res = requests.post(api_url, headers=headers, json=payload, timeout=10)
+            res = requests.post(api_url, headers=headers, json={"inputs": f"[INST] {prompt} [/INST]", "parameters": {"max_new_tokens": 300}}, timeout=10)
             if res.status_code == 200:
-                output = res.json()[0]['generated_text']
-                # Strip the instruction part from output
-                clean_output = output.split("[/INST]")[-1].strip()
-                return clean_output, "Hugging Face (Mistral)"
-        except:
-            pass
+                return res.json()[0]['generated_text'].split("[/INST]")[-1].strip(), "Mistral AI (HF)"
+        except: pass
 
-    # 3. Final Fallback: Manual Calculation
-    sl = asset_data['price'] * 0.995
-    tp = asset_data['price'] * 1.01
-    manual_text = f"ENTRY: {asset_data['price']}\nSL: {sl:.4f}\nTP: {tp:.4f}\n\n⚠️ All AI Providers offline. Manual technical zone calculated."
-    return manual_text, "Offline (Manual)"
+    # 3. Manual Fallback
+    return f"ENTRY: {asset_data['price']}\nSL: {asset_data['price']*0.995:.4f}\nTP: {asset_data['price']*1.01:.4f}\n⚠️ AI Offline.", "Manual Mode"
 
-# --- 5. MAIN APPLICATION ---
+# --- 6. MAIN APPLICATION ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>🔐 INFINITE SYSTEM LOGIN</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>🔐 INFINITE SYSTEM v6.0</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
-            u = st.text_input("Username")
-            p = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Access Terminal")
-            if submit:
+            u, p = st.text_input("Username"), st.text_input("Password", type="password")
+            if st.form_submit_button("Access Terminal"):
                 user = check_login(u, p)
                 if user:
-                    st.session_state.logged_in = True
-                    st.session_state.user = user
+                    st.session_state.logged_in, st.session_state.user = True, user
                     st.rerun()
                 else: st.error("Invalid Credentials")
-    st.markdown("<div class='footer'>Developed by Infinite System</div>", unsafe_allow_html=True)
-
 else:
-    user_info = st.session_state.get('user', {})
-    username = user_info.get('Username', 'Trader')
-    role = user_info.get('Role', 'User')
-
-    st.sidebar.title(f"👤 {username}")
-    st.sidebar.caption(f"Role: {role}")
-    
-    if role == "Admin":
-        with st.sidebar.expander("🛠 Admin Panel (Create User)", expanded=False):
-            with st.form("create_user_form"):
-                new_u = st.text_input("New Username")
-                new_p = st.text_input("New Password", type="password")
-                create_btn = st.form_submit_button("Create Account")
-                if create_btn:
-                    if new_u and new_p:
-                        success, msg = create_user(new_u, new_p)
-                        if success: st.success(msg)
-                        else: st.error(msg)
-                    else: st.warning("Fill all fields!")
-
+    # Sidebar UI
+    st.sidebar.title(f"👤 {st.session_state.user['Username']}")
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
-        st.session_state.user = None
         st.rerun()
     
-    st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-    assets = {
-        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
-        "Metals": ["XAUUSD=X", "XAGUSD=X"]
-    }
+    assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X"], "Crypto": ["BTC-USD", "ETH-USD"], "Metals": ["XAUUSD=X"]}
     pair = st.sidebar.selectbox("Select Asset", assets[market])
-    tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"], index=2)
-    live = st.sidebar.checkbox("🔴 Live Data Refresh", value=True)
+    tf = st.sidebar.selectbox("Timeframe", ["5m", "15m", "1h", "4h"], index=1)
+    live = st.sidebar.checkbox("🔴 Live Refresh", value=True)
 
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("<div style='text-align: center; color: #888; font-size: 12px;'><b>Developed by Infinite System</b><br>v5.0 Ultimate</div>", unsafe_allow_html=True)
-
+    # Data Fetching
     df = yf.download(pair, period="5d", interval=tf, progress=False)
-    
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
-        
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.title(f"{pair}")
-            st.caption(f"Timeframe: {tf} | Strategy: Infinite AI Hybrid")
-        with c2:
-            st.markdown(f"<div style='text-align:right; font-size:30px;' class='price-up'>{curr_p:.4f}</div>", unsafe_allow_html=True)
+        st.title(f"{pair} | {curr_p:.5f}")
 
+        # Alpha Vantage Info
+        with st.expander("📊 Market Insights (Alpha Vantage)"):
+            av_data = get_alpha_vantage_data(pair)
+            if isinstance(av_data, dict):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Exchange Rate", av_data.get("5. Exchange Rate", "N/A"))
+                c2.metric("Bid", av_data.get("8. Bid Price", "N/A"))
+                c3.metric("Ask", av_data.get("9. Ask Price", "N/A"))
+
+        # Signals
         sigs = calculate_advanced_signals(df)
-        st.markdown("### 📡 Market Scanner")
-        r1 = st.columns(4)
-        r2 = st.columns(4)
+        cols = st.columns(4)
         keys = list(sigs.keys())
         for i in range(4):
-            r1[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
-            r2[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
+            cols[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
+            cols[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
 
-        fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-        fig.update_layout(template="plotly_dark", height=350, margin=dict(l=0,r=0,t=10,b=0), xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=400, xaxis_rangeslider_visible=False), use_container_width=True)
 
-        st.divider()
-        c_ai, c_res = st.columns([1, 2])
-        with c_ai:
-            st.subheader("🧠 AI Sniper")
-            if st.button("🚀 Analyze & Find Entry", use_container_width=True):
-                with st.spinner("Connecting to Best Available AI..."):
-                    prompt = f"Analyze {pair} at {curr_p}. SMC: {sigs['SMC'][0]}, ICT: {sigs['ICT'][0]}, RSI: {sigs['RETAIL'][0]}. PROVIDE: ENTRY, SL, TP. Reason in Sinhala."
-                    analysis_text, active_key = get_ai_analysis(prompt, {'price': curr_p})
-                    st.session_state.ai_result = analysis_text
-                    st.session_state.active_key_info = active_key
-                    
-                    if "Offline" not in active_key:
-                        st.toast(f"✅ Success: Using {active_key}", icon="🤖")
-                    else:
-                        st.error("AI Systems Unavailable. Manual Mode Active.")
-            
-        with c_res:
-            if "ai_result" in st.session_state:
-                res = st.session_state.ai_result
-                if "active_key_info" in st.session_state:
-                    st.caption(f"⚡ Active Provider: {st.session_state.active_key_info}")
-
-                entry_match = re.search(r"ENTRY[:\s]+([\d.]+)", res, re.IGNORECASE)
-                entry_price = float(entry_match.group(1)) if entry_match else curr_p
-                diff = abs(curr_p - entry_price)
-                prog = max(0.0, min(1.0, 1.0 - (diff / (curr_p * 0.005))))
-                
-                st.write(f"**Zone Accuracy:** {int(prog*100)}%")
-                st.progress(prog)
-                st.markdown(f"<div class='entry-box'>{res}</div>", unsafe_allow_html=True)
+        # AI Analysis
+        if st.button("🚀 Gemini 3 AI Sniper Analysis", use_container_width=True):
+            with st.spinner("Gemini 3 Thinking..."):
+                prompt = f"Act as a professional trader. Analyze {pair} at price {curr_p}. Technicals: SMC {sigs['SMC'][0]}, Trend {sigs['TREND'][0]}, RSI {sigs['RETAIL'][0]}. Provide ENTRY, SL, TP. Explain reason in Sinhala briefly."
+                st.session_state.ai_res, st.session_state.active_ai = get_ai_analysis(prompt, {'price': curr_p})
+        
+        if "ai_res" in st.session_state:
+            st.caption(f"⚡ Model: {st.session_state.active_ai}")
+            st.markdown(f"<div class='entry-box'>{st.session_state.ai_res}</div>", unsafe_allow_html=True)
 
     if live:
         time.sleep(60)
