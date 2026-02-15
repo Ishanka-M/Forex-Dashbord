@@ -43,7 +43,7 @@ def get_ai_analysis(prompt):
         model = genai.GenerativeModel('gemini-3-flash-preview')
         response = model.generate_content(prompt)
         return response.text
-    except: return "AI Error: Sync Error. කරුණාකර Manual Sync ඔබන්න."
+    except: return "AI Error: කරුණාකර Manual Sync ඔබන්න."
 
 def safe_float(value):
     return float(value.iloc[0]) if isinstance(value, pd.Series) else float(value)
@@ -100,9 +100,9 @@ if st.session_state.logged_in:
         if diff.total_seconds() > 0:
             h, rem = divmod(int(diff.total_seconds()), 3600)
             m, s = divmod(rem, 60)
-            st.sidebar.markdown(f"<div class='red-folder'>{news['event']}<br><small>Starts in: {h:02d}h {m:02d}m {s:02d}s</small></div>", unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='red-folder'>{news['event']}<br><small>ඉතිරි කාලය: {h:02d}h {m:02d}m {s:02d}s</small></div>", unsafe_allow_html=True)
         else:
-            st.sidebar.markdown(f"<div class='red-folder' style='background:rgba(128,128,128,0.2); border-color:gray; color:gray;'>{news['event']} (ACTIVE/PASSED)</div>", unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='red-folder' style='background:rgba(128,128,128,0.2); border-color:gray; color:gray;'>{news['event']} (PASSED/ACTIVE)</div>", unsafe_allow_html=True)
 
     st.sidebar.divider()
     live_mode = st.sidebar.toggle("🚀 LIVE MODE (Auto-Refresh)", value=True)
@@ -128,7 +128,7 @@ if st.session_state.logged_in:
         with c1: st.title(f"📊 {pair} ({tf_choice})")
         with c2: st.markdown(f"LIVE PRICE:<br><span class='{price_class}'>{curr_price:.5f}</span>", unsafe_allow_html=True)
         with c3:
-            if st.button("🔄 Manual Sync"):
+            if st.button("🔄 Manual AI Sync"):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -141,7 +141,7 @@ if st.session_state.logged_in:
 
         with col_signal:
             st.subheader("🎯 Sniper Entry Control")
-            signal_prompt = f"Trade signal for {pair} at {curr_price} on {tf_choice}. ENTRY, SL, TP required. Sinhala explanation (SMC)."
+            signal_prompt = f"Trade signal for {pair} at {curr_price} on {tf_choice}. Provide ENTRY, SL, TP. Explain in Sinhala (SMC context)."
             analysis = get_ai_analysis(signal_prompt)
             st.markdown(f"<div class='entry-box'>{analysis}</div>", unsafe_allow_html=True)
             
@@ -152,9 +152,10 @@ if st.session_state.logged_in:
                     diff_val = abs(curr_price - entry_p)
                     thresh = 500.0 if "BTC" in pair else 0.0050
                     prog = max(0.0, min(1.0, 1.0 - (diff_val / thresh)))
-                    st.write(f"**Distance:** `{diff_val:.5f}`")
+                    st.write(f"**Distance to Entry:** `{diff_val:.5f}`")
                     st.progress(prog)
                     if diff_val < (0.0001 if "USD" in pair else 1.0):
+                        st.toast("🚀 ENTRY POINT REACHED!", icon="🔥")
                         st.balloons()
             except: pass
 
@@ -166,7 +167,7 @@ if st.session_state.logged_in:
         
         with col_n1:
             st.info("💡 **Fundamental & Sentiment Analysis**")
-            news_prompt = f"Summarize news impact for {pair} today {now_sl.date()}. Explain Smart Money movement in Sinhala."
+            news_prompt = f"Summarize fundamental impact for {pair} today {now_sl.date()}. Explain why banks are moving price. In Sinhala."
             news_res = get_ai_analysis(news_prompt)
             st.markdown(f"<div class='news-card'>{news_res}</div>", unsafe_allow_html=True)
         
@@ -174,26 +175,22 @@ if st.session_state.logged_in:
             st.warning("📐 **SMC / ICT Technical Concepts**")
             st.write("වර්තමාන Market Structure එක තේරුම් ගැනීමට මෙම Diagrams අධ්‍යයනය කරන්න:")
             
-            # Contextual Diagram Triggers
+            # --- Diagram Section (Syntax Fixed) ---
             st.markdown("#### 1. Market Structure (BOS & ChoCH)")
+            st.image("https://www.tradingview.com/x/Y8p5R5Nn/", caption="BOS & ChoCH: Trend එක වෙනස් වන ආකාරය")
             
-            st.caption("Trend එක වෙනස් වන ආකාරය සහ Continuation පෙන්වන ආකාරය.")
+            st.divider()
             
-            st.markdown("---")
             st.markdown("#### 2. Order Block & Liquidity Sweep")
-            
-            st.caption("ලොකු බැංකු (Institutions) ඇතුළු වන කලාප සහ Liquidity Grab වන ආකාරය.")
+            st.image("https://www.tradingview.com/x/z8V6E0Zk/", caption="Institutions ඇතුළු වන කලාප")
 
-            st.markdown("---")
+            st.divider()
+            
             st.markdown("#### 3. Fair Value Gap (FVG)")
-            
-
-[Image of Bullish and Bearish Fair Value Gap (FVG)]
-
-            st.caption("මිල වේගයෙන් ගමන් කිරීමේදී ඇතිවන Imbalance (පරතරය) පෙන්වන ආකාරය.")
+            st.image("https://fvg-indicator.com/wp-content/uploads/2023/06/fvg-bearish-bullish.png", caption="Market Imbalance (පරතරය)")
 
     # Footer
-    st.markdown('<div class="footer">Infinite System v2.5 | Auto-Refreshed | © 2026</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">Infinite System v2.6 | Auto-Refreshed | © 2026</div>', unsafe_allow_html=True)
 
     # --- 9. AUTO REFRESH LOGIC ---
     if live_mode:
