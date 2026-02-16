@@ -10,6 +10,7 @@ import time
 import re
 import requests
 import numpy as np
+import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
 st.set_page_config(page_title="Infinite System v7.0 | Gemini 3 Flash", layout="wide", page_icon="⚡")
@@ -75,38 +76,57 @@ def create_user(new_username, new_password):
             return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. NEWS & DATA ENGINE (UPDATED) ---
+# --- 3. NEWS & DATA ENGINE (ENHANCED) ---
 def get_market_news(symbol):
     news_list = []
+    # Clean symbol for better search results
+    search_sym = symbol.replace("=X", "").replace("-USD", "")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
     try:
-        # 1. Try yfinance native news
+        # Method 1: yfinance news
         ticker = yf.Ticker(symbol)
         news_list = ticker.news
+        if news_list:
+            return news_list[:5]
+    except:
+        pass
+
+    try:
+        # Method 2: Google News RSS (Very reliable for Forex)
+        url = f"https://news.google.com/rss/search?q={search_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
+        response = requests.get(url, headers=headers, timeout=7)
+        if response.status_code == 200:
+            root = ET.fromstring(response.text)
+            for item in root.findall('.//item')[:5]:
+                news_list.append({
+                    "title": item.find('title').text,
+                    "link": item.find('link').text,
+                    "publisher": item.find('source').text if item.find('source') is not None else "Google News"
+                })
+            if news_list: return news_list
+    except:
+        pass
+
+    try:
+        # Method 3: Yahoo RSS Direct
+        url = f"https://finance.yahoo.com/rss/headline?s={symbol}"
+        response = requests.get(url, headers=headers, timeout=7)
+        if response.status_code == 200:
+            items = re.findall(r'<item>(.*?)</item>', response.text, re.DOTALL)
+            for item in items[:5]:
+                title = re.search(r'<title>(.*?)</title>', item)
+                link = re.search(r'<link>(.*?)</link>', item)
+                if title and link:
+                    news_list.append({
+                        "title": title.group(1).replace("<![CDATA[", "").replace("]]>", ""),
+                        "link": link.group(1),
+                        "publisher": "Yahoo Finance"
+                    })
+    except:
+        pass
         
-        # 2. Backup: If yfinance fails, use Yahoo RSS Feed directly
-        if not news_list:
-            # Remove =X for better search (e.g. EURUSD=X -> EURUSD)
-            search_sym = symbol.replace("=X", "") if "=X" in symbol else symbol
-            url = f"https://finance.yahoo.com/rss/headline?s={search_sym}"
-            
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                # Simple Regex to extract RSS items
-                items = re.findall(r'<item>(.*?)</item>', response.text, re.DOTALL)
-                for item in items[:5]:
-                    title_match = re.search(r'<title>(.*?)</title>', item)
-                    link_match = re.search(r'<link>(.*?)</link>', item)
-                    
-                    if title_match and link_match:
-                        news_list.append({
-                            "title": title_match.group(1).replace("<![CDATA[", "").replace("]]>", ""),
-                            "link": link_match.group(1),
-                            "publisher": "Yahoo Finance (RSS)"
-                        })
-    except Exception:
-        return []
-        
-    return news_list[:5] if news_list else []
+    return news_list[:5]
 
 def get_alpha_vantage_data(pair):
     if "ALPHA_VANTAGE_KEY" not in st.secrets:
@@ -152,7 +172,7 @@ def calculate_advanced_signals(df):
     
     return signals
 
-# --- 5. AI ENGINE (GEMINI 3 FLASH PREVIEW) ---
+# --- 5. AI ENGINE ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
@@ -215,7 +235,7 @@ else:
     pair = st.sidebar.selectbox("Select Asset", assets[market])
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
-    # --- FIXED NEWS SECTION ---
+    # --- NEWS SECTION ---
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
@@ -238,11 +258,9 @@ else:
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
-    # Robust data download
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
-        # Check specifically for MultiIndex and flatten it
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
             
@@ -266,7 +284,6 @@ else:
 
         st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=20, b=0)), use_container_width=True)
 
-        # --- TRADE PLAN ---
         st.markdown("### 🎯 AI Trade Plan")
         t_c1, t_c2, t_c3 = st.columns(3)
         parsed = st.session_state.ai_parsed_data
