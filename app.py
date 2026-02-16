@@ -61,20 +61,37 @@ if "ai_parsed_data" not in st.session_state:
 # --- Helper Functions ---
 def get_user_sheet():
     try:
+        # Check if secrets exist
+        if "gcp_service_account" not in st.secrets:
+            return None
+            
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        # Load credentials from Streamlit secrets
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        return gspread.authorize(creds).open("Forex_User_DB").sheet1
-    except: return None
+        client = gspread.authorize(creds)
+        
+        # Open the specific sheet
+        return client.open("Forex_User_DB").sheet1
+    except Exception as e:
+        # st.error(f"Database Connection Error: {e}") # Debugging purpose only
+        return None
 
 def check_login(username, password):
-    if username == "admin" and password == "admin123": return {"Username": "Admin", "Role": "Admin"}
+    # Hardcoded Admin Login
+    if username == "admin" and password == "admin123": 
+        return {"Username": "Admin", "Role": "Admin"}
+    
+    # GSheet Login
     sheet = get_user_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
+            # Find user in the records
             user = next((i for i in records if str(i.get("Username")) == username), None)
-            if user and str(user.get("Password")) == password: return user
-        except: return None
+            if user and str(user.get("Password")) == password: 
+                return user
+        except: 
+            return None
     return None
 
 def get_sentiment_class(title):
