@@ -23,7 +23,13 @@ st.markdown("""
     .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
     .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; }
     .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 20px; font-weight: bold; }
-    .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; border-left: 3px solid #00d4ff; }
+    
+    /* Updated News Styles for Sentiment */
+    .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; }
+    .news-positive { border-left: 4px solid #00ff00; } /* Bullish - Green */
+    .news-negative { border-left: 4px solid #ff4b4b; } /* Bearish - Red */
+    .news-neutral { border-left: 4px solid #00d4ff; }  /* Neutral - Blue */
+    
     .news-title { font-weight: bold; font-size: 14px; color: #ececec; }
     .news-pub { font-size: 11px; color: #888; }
     .sig-box { padding: 10px; border-radius: 6px; font-size: 13px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
@@ -76,13 +82,27 @@ def create_user(new_username, new_password):
             return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. NEWS & DATA ENGINE (ROBUST UPDATE) ---
+# --- 3. NEWS & DATA ENGINE (ROBUST UPDATE & SENTIMENT) ---
+def get_sentiment_class(title):
+    title_lower = title.lower()
+    # Keywords for Bearish/Negative News
+    negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
+    # Keywords for Bullish/Positive News
+    positive_words = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
+    
+    if any(word in title_lower for word in negative_words):
+        return "news-negative"
+    elif any(word in title_lower for word in positive_words):
+        return "news-positive"
+    else:
+        return "news-neutral"
+
 def get_market_news(symbol):
     news_list = []
     clean_sym = symbol.replace("=X", "").replace("-USD", "")
     headers = {'User-Agent': 'Mozilla/5.0'}
     
-    # ක්‍රමය 1: Google News RSS (Highly Reliable)
+    # ක්‍රමය 1: Google News RSS
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, headers=headers, timeout=10)
@@ -97,7 +117,7 @@ def get_market_news(symbol):
             if news_list: return news_list
     except: pass
 
-    # ක්‍රමය 2: Yahoo Finance News (Backup)
+    # ක්‍රමය 2: Yahoo Finance News
     try:
         ticker = yf.Ticker(symbol)
         yf_news = ticker.news
@@ -150,20 +170,28 @@ def calculate_advanced_signals(df):
     
     return signals
 
-# --- 5. AI ENGINE (GEMINI 3 FLASH PREVIEW) ---
+# --- 5. AI ENGINE (GEMINI 3 FLASH - WITH ROTATION) ---
 def get_ai_analysis(prompt, asset_data):
+    # Key Rotation Logic: මෙය ස්වයංක්‍රීයව එක් Key එකක් වැඩ නොකළොත් අනෙක භාවිතා කරයි.
     if "GEMINI_KEYS" in st.secrets:
-        for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
+        keys = st.secrets["GEMINI_KEYS"]
+        # Ensure it's a list
+        if isinstance(keys, str):
+            keys = [keys]
+            
+        for i, key in enumerate(keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash') # Updated to latest fast model
                 response = model.generate_content(prompt)
                 if response and response.text:
                     return response.text, f"Gemini 3 Flash (Key #{i+1})"
-            except: continue
+            except Exception as e:
+                # If key fails (quota or auth), continue to next key
+                continue
 
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
-    return f"ANALYSIS: AI Error.\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
+    return f"ANALYSIS: AI Error (All Keys Failed).\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
 
 def parse_ai_response(text):
     data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
@@ -211,12 +239,11 @@ else:
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
     
-    # පිරිසිදුව පෙන්වීමට format_func භාවිතා කළා
     pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
     
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
-    # --- NEWS SECTION (STABLE UPDATE) ---
+    # --- NEWS SECTION (WITH COLOR LOGIC) ---
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
@@ -225,8 +252,12 @@ else:
             n_link = news.get('link') or news.get('url', '#')
             n_title = news.get('title', 'No Title')
             n_pub = news.get('publisher') or news.get('source', 'Financial News')
+            
+            # Determine Color Class based on keywords
+            color_class = get_sentiment_class(n_title)
+            
             st.sidebar.markdown(f"""
-            <div class='news-card'>
+            <div class='news-card {color_class}'>
                 <a href='{n_link}' target='_blank' style='text-decoration:none;'>
                     <div class='news-title'>{n_title}</div>
                 </a>
