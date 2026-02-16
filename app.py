@@ -75,14 +75,38 @@ def create_user(new_username, new_password):
             return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. NEWS & DATA ENGINE ---
+# --- 3. NEWS & DATA ENGINE (UPDATED) ---
 def get_market_news(symbol):
+    news_list = []
     try:
+        # 1. Try yfinance native news
         ticker = yf.Ticker(symbol)
         news_list = ticker.news
-        return news_list[:5] if news_list else []
-    except:
+        
+        # 2. Backup: If yfinance fails, use Yahoo RSS Feed directly
+        if not news_list:
+            # Remove =X for better search (e.g. EURUSD=X -> EURUSD)
+            search_sym = symbol.replace("=X", "") if "=X" in symbol else symbol
+            url = f"https://finance.yahoo.com/rss/headline?s={search_sym}"
+            
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                # Simple Regex to extract RSS items
+                items = re.findall(r'<item>(.*?)</item>', response.text, re.DOTALL)
+                for item in items[:5]:
+                    title_match = re.search(r'<title>(.*?)</title>', item)
+                    link_match = re.search(r'<link>(.*?)</link>', item)
+                    
+                    if title_match and link_match:
+                        news_list.append({
+                            "title": title_match.group(1).replace("<![CDATA[", "").replace("]]>", ""),
+                            "link": link_match.group(1),
+                            "publisher": "Yahoo Finance (RSS)"
+                        })
+    except Exception:
         return []
+        
+    return news_list[:5] if news_list else []
 
 def get_alpha_vantage_data(pair):
     if "ALPHA_VANTAGE_KEY" not in st.secrets:
@@ -134,10 +158,10 @@ def get_ai_analysis(prompt, asset_data):
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-1.5-flash') 
                 response = model.generate_content(prompt)
                 if response and response.text:
-                    return response.text, f"Gemini 3 Flash (Key #{i+1})"
+                    return response.text, f"Gemini Flash (Key #{i+1})"
             except: continue
 
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
@@ -195,9 +219,10 @@ else:
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
+    
     if news_items:
         for news in news_items:
-            n_link = news.get('link', '#') # Using .get to avoid KeyError
+            n_link = news.get('link', '#') 
             n_title = news.get('title', 'No Title')
             n_pub = news.get('publisher', 'Unknown')
             st.sidebar.markdown(f"""
@@ -213,10 +238,14 @@ else:
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
+    # Robust data download
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        # Check specifically for MultiIndex and flatten it
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair} Terminal - {curr_p:.5f}")
 
@@ -251,7 +280,7 @@ else:
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Analysis", use_container_width=True):
-                with st.spinner("Gemini 3 Flash analyzing News + Technicals..."):
+                with st.spinner("Gemini Flash analyzing News + Technicals..."):
                     news_titles = [n.get('title', '') for n in news_items[:3]]
                     news_context = " | ".join(news_titles) if news_titles else "No major news."
                     
