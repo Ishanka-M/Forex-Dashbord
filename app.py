@@ -35,6 +35,18 @@ st.markdown("""
     .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
     .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
     .neutral { background-color: #262626; color: #888; }
+
+    /* Notification Styling */
+    .notif-container {
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        border-left: 10px solid;
+        background: #121212;
+    }
+    .notif-buy { border-color: #00ff00; color: #00ff00; box-shadow: 0 0 15px rgba(0, 255, 0, 0.2); }
+    .notif-sell { border-color: #ff4b4b; color: #ff4b4b; box-shadow: 0 0 15px rgba(255, 75, 75, 0.2); }
+    .notif-wait { border-color: #555; color: #aaa; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -167,7 +179,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
     sk_signal = sigs['SK'][1]
     
     # Dynamic Volatility Check
-    volatility = "ඉහල (High)" if atr > (curr_p * 0.001) else "සාමාන්‍ය (Normal)"
+    volatility = "ඉහල (High)" if atr > (curr_p * 0.001) else "සාමාන්්‍ය (Normal)"
     
     # Logic for decision with Dynamic ATR
     if sk_signal == "bull" and news_score >= 0:
@@ -296,8 +308,9 @@ else:
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
     
-    # --- UPDATE: ANALYZING 1 MONTH OF HISTORY ---
-    df = yf.download(pair, period="1mo", interval=tf, progress=False)
+    # --- DYNAMIC DATA FETCHING LOGIC (1mo for 15m+, 7d for others) ---
+    data_period = "1mo" if tf in ["15m", "1h", "4h"] else "7d"
+    df = yf.download(pair, period=data_period, interval=tf, progress=False)
     
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -305,8 +318,17 @@ else:
         st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
 
         sigs, current_atr = calculate_advanced_signals(df)
-        keys_list = list(sigs.keys())
         
+        # --- NOTIFICATION INTERFACE ---
+        sk_signal = sigs['SK'][1]
+        if sk_signal == "bull":
+            st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>SIGNAL ALERT:</b> High probability BUY opportunity detected for {pair.replace('=X','')}!</div>", unsafe_allow_html=True)
+        elif sk_signal == "bear":
+            st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SIGNAL ALERT:</b> High probability SELL opportunity detected for {pair.replace('=X','')}!</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='notif-container notif-wait'>📡 <b>MONITORING:</b> System is waiting for a clear market structure (BOS/FVG).</div>", unsafe_allow_html=True)
+
+        keys_list = list(sigs.keys())
         cols = st.columns(3)
         for i in range(3):
             cols[i].markdown(f"<div class='sig-box {sigs[keys_list[i]][1]}'>{keys_list[i]}: {sigs[keys_list[i]][0]}</div>", unsafe_allow_html=True)
