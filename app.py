@@ -5,7 +5,7 @@ import puter  # Gemini/HF වෙනුවට Puter භාවිතා කරය�
 import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime, date
+from datetime import datetime
 import time
 import re
 import numpy as np
@@ -13,299 +13,151 @@ import xml.etree.ElementTree as ET
 import requests
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v8.0 | Puter Hybrid", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v8.0 | Hybrid Pro", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    .price-up { color: #00ff00; font-size: 22px; font-weight: bold; }
-    .price-down { color: #ff4b4b; font-size: 22px; font-weight: bold; }
-    .entry-box { background: rgba(0, 212, 255, 0.07); border: 2px solid #00d4ff; padding: 15px; border-radius: 12px; margin-top: 10px; color: white; }
-    .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
-    .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; }
-    .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 20px; font-weight: bold; }
-    
-    .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; }
-    .news-positive { border-left: 4px solid #00ff00; }
-    .news-negative { border-left: 4px solid #ff4b4b; }
-    .news-neutral { border-left: 4px solid #00d4ff; }
-    
-    .news-title { font-weight: bold; font-size: 14px; color: #ececec; }
-    .news-pub { font-size: 11px; color: #888; }
-    .sig-box { padding: 10px; border-radius: 6px; font-size: 13px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
+    .theory-box { background: rgba(255, 255, 255, 0.05); border-radius: 10px; padding: 15px; border-left: 5px solid #00d4ff; margin-bottom: 20px; }
+    .theory-title { color: #00d4ff; font-weight: bold; font-size: 16px; margin-bottom: 5px; }
+    .theory-text { color: #ccc; font-size: 13px; line-height: 1.4; }
+    .sig-box { padding: 10px; border-radius: 6px; font-size: 12px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
     .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
     .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
     .neutral { background-color: #262626; color: #888; }
-
-    /* Notification Styling */
-    .notif-container {
-        padding: 15px; border-radius: 10px; margin-bottom: 20px; border-left: 10px solid; background: #121212;
-    }
+    .entry-box { background: rgba(0, 212, 255, 0.07); border: 2px solid #00d4ff; padding: 15px; border-radius: 12px; margin-top: 10px; color: white; white-space: pre-wrap; }
+    .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
+    .notif-container { padding: 15px; border-radius: 10px; margin-bottom: 20px; border-left: 10px solid; background: #121212; }
     .notif-buy { border-color: #00ff00; color: #00ff00; box-shadow: 0 0 15px rgba(0, 255, 0, 0.2); }
     .notif-sell { border-color: #ff4b4b; color: #ff4b4b; box-shadow: 0 0 15px rgba(255, 75, 75, 0.2); }
-    .notif-wait { border-color: #555; color: #aaa; }
-    
-    /* Chat Styling */
-    .chat-msg { padding: 8px; border-radius: 5px; margin-bottom: 5px; background: #333; }
-    .chat-user { font-weight: bold; color: #00d4ff; font-size: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- Initialize Session State ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
-if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
 if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 
-# --- Helper Functions (DB & Auth) ---
+# --- 2. DB & AUTH HELPER FUNCTIONS ---
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         client = gspread.authorize(creds)
-        
-        # Try to open or create DBs
-        try: sheet = client.open("Forex_User_DB").sheet1
-        except: sheet = None
-        
+        sheet = client.open("Forex_User_DB").sheet1
         try: chat_sheet = client.open("Forex_User_DB").worksheet("Chat")
-        except: chat_sheet = None 
-        
+        except: chat_sheet = None
         return sheet, chat_sheet
     except: return None, None
 
 def update_db_usage(username, new_count):
-    """Updates the UsageCount in Google Sheet to persist data"""
     sheet, _ = get_user_sheet()
     if sheet:
         try:
             cell = sheet.find(username)
-            if cell:
-                # Column 4 is UsageCount based on: Username, Password, HybridLimit, UsageCount, Role
-                sheet.update_cell(cell.row, 4, new_count)
-        except: pass
-
-def save_chat_to_db(user, msg, time_str):
-    """Saves chat message to Google Sheet"""
-    _, chat_sheet = get_user_sheet()
-    if chat_sheet:
-        try:
-            chat_sheet.append_row([user, msg, time_str])
+            if cell: sheet.update_cell(cell.row, 4, new_count)
         except: pass
 
 def check_login(username, password):
-    if username == "admin" and password == "admin123": 
-        return {"Username": "Admin", "Role": "Admin", "HybridLimit": 9999, "UsageCount": 0}
-    
+    if username == "admin" and password == "admin123":
+        return {"Username": "Admin", "Role": "Admin", "HybridLimit": 999, "UsageCount": 0}
     sheet, _ = get_user_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
             user = next((i for i in records if str(i.get("Username")) == username), None)
-            if user and str(user.get("Password")) == password:
-                # Set default limit if not present in DB
-                if "HybridLimit" not in user: user["HybridLimit"] = 10
-                if "UsageCount" not in user: user["UsageCount"] = 0
-                return user
+            if user and str(user.get("Password")) == password: return user
         except: return None
     return None
 
-def get_sentiment_class(title):
-    title_lower = title.lower()
-    negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
-    positive_words = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
-    if any(word in title_lower for word in negative_words): return "news-negative"
-    elif any(word in title_lower for word in positive_words): return "news-positive"
-    else: return "news-neutral"
-
-def get_market_news(symbol):
-    news_list = []
-    clean_sym = symbol.replace("=X", "").replace("-USD", "")
-    try:
-        url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            root = ET.fromstring(response.text)
-            for item in root.findall('.//item')[:3]:
-                news_list.append({
-                    "title": item.find('title').text,
-                    "link": item.find('link').text,
-                    "publisher": item.find('source').text if item.find('source') is not None else "News"
-                })
-            if news_list: return news_list
-    except: pass
-    return []
-
-# --- 4. ADVANCED SIGNAL ENGINE (CORE) ---
+# --- 3. ADVANCED SIGNAL ENGINE (Integrated v7 Theories) ---
 def calculate_advanced_signals(df):
-    if len(df) < 50: return None, 0 # Not enough data
+    if len(df) < 50: return None, 0
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
-    highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     
-    # SMC
+    # SMC & ICT
+    highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
     
+    # Fibonacci Golden Zone (61.8%)
+    ph, pl = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
+    fib_618 = ph - ((ph - pl) * 0.618)
+    signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.0005) else ("Ranging", "neutral")
+    
+    # Liquidity Grabs
+    prev_low = df['Low'].iloc[-10:-1].min()
+    prev_high = df['High'].iloc[-10:-1].max()
+    signals['LIQ'] = ("Liquidity Grab (L)", "bull") if l < prev_low else (("Liquidity Grab (H)", "bear") if h > prev_high else ("Holding", "neutral"))
+    
+    # Trend & RSI
     signals['TREND'] = ("Uptrend", "bull") if c > df['Close'].rolling(50).mean().iloc[-1] else ("Downtrend", "bear")
     
-    # Optimized Scoring
+    # Elliott Wave Analysis
+    last_50 = df['Close'].tail(50)
+    pos = (c - last_50.min()) / (last_50.max() - last_50.min()) if (last_50.max() - last_50.min()) != 0 else 0.5
+    if signals['TREND'][1] == "bull":
+        ew = ("Wave 5 (Exhaustion)", "bear") if pos > 0.8 else (("Wave 3 (Impulse)", "bull") if 0.4 < pos <= 0.8 else ("Wave 1", "bull"))
+    else:
+        ew = ("Wave C (Final Drop)", "bull") if pos < 0.2 else (("Wave A (Correction)", "bear") if pos < 0.6 else ("Wave B", "neutral"))
+    signals['ELLIOTT'] = ew
+
+    # SK Sniper Scoring
     score = (1 if signals['SMC'][1] == "bull" else -1) + (1 if signals['TREND'][1] == "bull" else -1) + (1 if signals['ICT'][1] == "bull" else -1)
     signals['SK'] = ("SK Sniper Buy", "bull") if score >= 2 else (("SK Sniper Sell", "bear") if score <= -2 else ("Waiting", "neutral"))
     
-    # Elliott Wave (Simplified)
-    last_50 = df['Close'].tail(50)
-    current_pos = (c - last_50.min()) / (last_50.max() - last_50.min()) if (last_50.max() - last_50.min()) != 0 else 0.5
-    if signals['TREND'][1] == "bull":
-        ew_status, ew_col = ("Wave 3 (Impulse)", "bull") if 0.4 < current_pos <= 0.8 else ("Correction", "neutral")
-    else:
-        ew_status, ew_col = ("Wave C (Drop)", "bear") if current_pos < 0.2 else ("Correction", "neutral")
-    signals['ELLIOTT'] = (ew_status, ew_col)
-
-    # ATR
+    # ATR for SL/TP
     tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
-    atr = tr.rolling(14).mean().iloc[-1]
-    
-    return signals, atr
+    return signals, tr.rolling(14).mean().iloc[-1]
 
-# --- 5. INFINITE ALGORITHMIC ENGINE (PURE) ---
-def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
-    trend = sigs['TREND'][0]
-    sk_signal = sigs['SK'][1]
+# --- 4. ALGO ENGINE (Sinhala Report Generation) ---
+def infinite_algorithmic_engine(pair, curr_p, sigs, atr):
+    trend, smc, ew, sk_signal = sigs['TREND'][0], sigs['SMC'][0], sigs['ELLIOTT'][0], sigs['SK'][1]
     
-    # Simple News Check
-    news_score = 0
-    for item in news_items:
-        s = get_sentiment_class(item['title'])
-        if s == "news-positive": news_score += 1
-        elif s == "news-negative": news_score -= 1
-
     if sk_signal == "bull":
-        action = "BUY"
+        status = "ශක්තිමත් මිලදී ගැනීමේ අවස්ථාවකි (Strong Buy)."
         sl, tp = curr_p - (atr * 1.5), curr_p + (atr * 3)
-        note = "Technical indicators suggest a strong UPWARD movement."
     elif sk_signal == "bear":
-        action = "SELL"
+        status = "ශක්තිමත් විකිණීමේ අවස්ථාවකි (Strong Sell)."
         sl, tp = curr_p + (atr * 1.5), curr_p - (atr * 3)
-        note = "Technical indicators suggest a strong DOWNWARD movement."
     else:
-        action = "WAIT"
+        status = "ප්‍රවේශම් වන්න (Neutral/Wait)."
         sl, tp = curr_p - atr, curr_p + atr
-        note = "Market is ranging. Wait for a clear breakout."
 
-    analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE (PURE MODE)**
-    Pair: {pair} | Action: {action}
-    Trend: {trend} | SMC: {sigs['SMC'][0]}
-    
-    Sig Score: {sk_signal.upper()}
-    News Bias: {"Bullish" if news_score > 0 else "Bearish" if news_score < 0 else "Neutral"}
-    
-    {note}
-    
-    DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP={tp:.5f}
-    """
-    return analysis_text
+    return f"""
+♾️ **INFINITE ALGO ENGINE V2.0**
+වෙළඳ යුගලය: {pair.replace('=X', '')}
+ප්‍රවණතාව: {trend} | ව්‍යුහය (SMC): {smc}
+තරංග විශ්ලේෂණය: {ew}
 
-# --- 6. HYBRID AI ENGINE (PUTER + ALGO) ---
-def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info):
-    # 1. Generate Algo Data first
-    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr)
-    
-    # 2. Check Limits
-    current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
-    
-    if current_usage >= max_limit and user_info["Role"] != "Admin":
-        st.toast(f"Daily Hybrid Limit Reached ({max_limit}). Switching to Pure Mode.", icon="⚠️")
-        return algo_result, "Infinite Algo (Pure Mode - Unlimited)"
+💡 **නිගමනය:** {status}
 
-    # 3. Hybrid Process (Puter Re-Validation)
+DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP={tp:.5f}
+"""
+
+# --- 5. HYBRID AI INTERFACE ---
+def get_hybrid_analysis(pair, curr_p, sigs, atr, user_info):
+    algo_report = infinite_algorithmic_engine(pair, curr_p, sigs, atr)
+    
+    limit = int(user_info.get("HybridLimit", 10))
+    usage = int(user_info.get("UsageCount", 0))
+    
+    if usage >= limit and user_info.get("Role") != "Admin":
+        return algo_report, f"Pure Algo (Limit Reached)"
+
     try:
-        st.toast("Validating with Puter AI...", icon="🧠")
-        
-        # Updated Prompt for Sinhala Output
-        prompt = f"""
-        Role: Senior Forex Risk Manager.
-        Task: Validate this algorithmic trade plan.
-        
-        Algo Data:
-        {algo_result}
-        
-        Context:
-        - Recent News: {[n['title'] for n in news_items[:2]]}
-        - Volatility (ATR): {atr:.5f}
-        
-        Instructions:
-        1. Check if the News contradicts the Technicals. If yes, suggest "WAIT".
-        2. Refine the SL/TP slightly if key levels (psychological numbers) are nearby.
-        3. **IMPORTANT: Write the brief explanation strictly in Sinhala language.** (සිංහලෙන් විස්තර කරන්න).
-        4. END with the exact format: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
-        """
-        
-        # Call Puter
+        prompt = f"Role: Senior Forex Expert. Validate this trade plan and explain IN DETAIL strictly in SINHALA. Ensure you mention SMC and Elliott Wave status. Then end with the data format.\n\nPlan:\n{algo_report}"
         response = puter.ai.chat(prompt)
-        
         if response and response.message:
-            # Update Usage Count locally and in DB
-            user_info["UsageCount"] += 1
-            if user_info["Role"] != "Admin":
-                update_db_usage(user_info["Username"], user_info["UsageCount"])
-            
-            st.session_state.user = user_info # Sync session
-            
-            return response.message.content, f"Hybrid AI (Puter + Algo) | Used: {user_info['UsageCount']}/{max_limit}"
-            
-    except Exception as e:
-        st.error(f"AI Error: {e}")
-        return algo_result, "Infinite Algo (Fallback Mode)"
-    
-    return algo_result, "Infinite Algo (Default)"
-
-def parse_ai_response(text):
-    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
-    try:
-        entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        if entry_match: data["ENTRY"] = entry_match.group(1)
-        if sl_match: data["SL"] = sl_match.group(1)
-        if tp_match: data["TP"] = tp_match.group(1)
+            # Update Usage
+            new_usage = usage + 1
+            update_db_usage(user_info['Username'], new_usage)
+            st.session_state.user['UsageCount'] = new_usage
+            return response.message.content, f"Hybrid AI | {new_usage}/{limit}"
     except: pass
-    return data
+    return algo_report, "Algo Fallback"
 
-# --- SCANNER FUNCTION ---
-def scan_market(assets_list):
-    results = []
-    progress_bar = st.progress(0)
-    total = len(assets_list)
-    
-    for i, symbol in enumerate(assets_list):
-        try:
-            df = yf.download(symbol, period="5d", interval="15m", progress=False)
-            if not df.empty and len(df) > 40:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                sigs, _ = calculate_advanced_signals(df)
-                if sigs:
-                    score_val = 0
-                    if sigs['SK'][1] == 'bull': score_val = 2
-                    elif sigs['SK'][1] == 'bear': score_val = -2
-                    
-                    results.append({
-                        "Pair": symbol.replace("=X","").replace("-USD",""),
-                        "Signal": sigs['SK'][0],
-                        "Trend": sigs['TREND'][0],
-                        "Score": score_val,
-                        "Price": df['Close'].iloc[-1]
-                    })
-        except: pass
-        progress_bar.progress((i + 1) / total)
-    
-    progress_bar.empty()
-    # Sort by Score (Best opportunities first)
-    sorted_res = sorted(results, key=lambda x: abs(x['Score']), reverse=True)
-    return sorted_res
-
-# --- 7. MAIN APPLICATION ---
+# --- 6. MAIN APPLICATION UI ---
 if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v8.0</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
@@ -319,183 +171,103 @@ if not st.session_state.logged_in:
                     st.rerun()
                 else: st.error("Invalid Credentials")
 else:
-    user_info = st.session_state.get('user', {})
+    user_info = st.session_state.user
+    st.sidebar.title(f"👤 {user_info.get('Username')}")
+    st.sidebar.metric("Hybrid Credits", f"{max(0, int(user_info.get('HybridLimit',0)) - int(user_info.get('UsageCount',0)))}")
     
-    # Calculate Remaining
-    limit = user_info.get('HybridLimit', 10)
-    usage = user_info.get('UsageCount', 0)
-    remaining = max(0, limit - usage)
-    
-    # --- SIDEBAR ---
-    st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Status: Online 🟢")
-    # Display Limit as Remaining to show it reducing
-    st.sidebar.metric("Hybrid Credits", f"{remaining}", f"Limit: {limit}")
-    
+    app_mode = st.sidebar.radio("Navigation", ["Terminal", "Market Scanner", "Trader Chat"])
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
-    
-    # Navigation
-    app_mode = st.sidebar.radio("Navigation", ["Terminal", "Market Scanner", "Trader Chat", "Admin Panel"])
-    
-    assets = {
-        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD"],
-        "Metals": ["XAUUSD=X", "XAGUSD=X"] 
-    }
 
-    # --- VIEW: TERMINAL ---
+    # --- TERMINAL VIEW ---
     if app_mode == "Terminal":
-        st.sidebar.divider()
-        market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-        pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
-        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
-        
-        # News
-        st.sidebar.divider()
-        st.sidebar.subheader("📰 Market News")
-        news_items = get_market_news(pair)
-        for news in news_items:
-            color_class = get_sentiment_class(news['title'])
-            st.sidebar.markdown(f"<div class='news-card {color_class}'><div class='news-title'>{news['title']}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="theory-box">
+            <div class="theory-title">⚙️ Infinite Core Algorithm (v8.0 Pro Hybrid)</div>
+            <div class="theory-text">
+                <b>SMC & ICT:</b> Market Structure (BOS) සහ FVG මගින් ආයතනික චලනයන් හඳුනා ගනී.<br>
+                <b>Elliott Wave:</b> වෙළඳපල දැනට පවතින තරංගය (Wave 1-5 / A-C) හරහා Exhaustion මට්ටම් පරීක්ෂා කරයි.<br>
+                <b>Fibonacci:</b> 61.8% Golden Zone හරහා ප්‍රත්‍යාවර්තන (Reversals) සහතික කරයි.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-        # Chart & Logic
-        data_period = "1mo" if tf in ["15m", "1h", "4h"] else "7d"
-        df = yf.download(pair, period=data_period, interval=tf, progress=False)
-        
+        market = st.sidebar.selectbox("Market", ["Forex", "Crypto", "Metals"])
+        assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X"], "Crypto": ["BTC-USD", "ETH-USD"], "Metals": ["XAUUSD=X"]}
+        pair = st.sidebar.selectbox("Pair", assets[market])
+        tf = st.sidebar.selectbox("Timeframe", ["15m", "1h", "4h"])
+
+        df = yf.download(pair, period="1mo", interval=tf, progress=False)
         if not df.empty:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             curr_p = float(df['Close'].iloc[-1])
-            st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
-            
             sigs, current_atr = calculate_advanced_signals(df)
             
-            # Notification
-            sk_signal = sigs['SK'][1]
-            if sk_signal == "bull":
-                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Infinite System detects a BUY setup!</div>", unsafe_allow_html=True)
-            elif sk_signal == "bear":
-                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SELL SIGNAL:</b> Infinite System detects a SELL setup!</div>", unsafe_allow_html=True)
+            # Notifications
+            if sigs['SK'][1] == "bull": st.markdown("<div class='notif-container notif-buy'>🔔 <b>BUY ALERT:</b> High probability setup!</div>", unsafe_allow_html=True)
+            elif sigs['SK'][1] == "bear": st.markdown("<div class='notif-container notif-sell'>🔔 <b>SELL ALERT:</b> High probability setup!</div>", unsafe_allow_html=True)
 
-            # Chart - REDUCED SIZE
+            # Signal Dashboard
+            cols = st.columns(4)
+            theory_keys = ['SMC', 'ICT', 'FIB', 'LIQ', 'ELLIOTT', 'RETAIL', 'TREND', 'SK']
+            for i, k in enumerate(theory_keys):
+                cols[i % 4].markdown(f"<div class='sig-box {sigs[k][1]}'>{k}: {sigs[k][0]}</div>", unsafe_allow_html=True)
+
+            # Chart
             fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            # Height reduced to 380px as requested
-            fig.update_layout(template="plotly_dark", height=380, margin=dict(l=0, r=0, t=20, b=0))
+            fig.update_layout(template="plotly_dark", height=380, margin=dict(l=0, r=0, t=10, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            # Dashboard
-            st.markdown("### 🎯 Hybrid AI Analysis")
-            c1, c2, c3 = st.columns(3)
+            # Trade Plan Metrics
+            st.markdown("### 🎯 Hybrid Trade Plan")
+            t_c1, t_c2, t_c3 = st.columns(3)
             parsed = st.session_state.ai_parsed_data
-            c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
-            c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
-            c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
-            
-            st.divider()
-            
-            if st.button("🚀 Analyze with Hybrid AI", use_container_width=True):
-                with st.spinner("Calculating Algo + Validating with Puter AI..."):
-                    result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user)
-                    st.session_state.ai_parsed_data = parse_ai_response(result)
-                    st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
-                    st.session_state.active_provider = provider
+            t_c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
+            t_c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
+            t_c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
+
+            if st.button("🚀 Run Hybrid AI Analysis", use_container_width=True):
+                with st.spinner("Processing All Theories..."):
+                    result, prov = get_hybrid_analysis(pair, curr_p, sigs, current_atr, st.session_state.user)
+                    st.session_state.ai_result = result
+                    # Regex parse DATA: ENTRY=... SL=... TP=...
+                    matches = re.search(r"ENTRY=([\d\.]+)\s*\|\s*SL=([\d\.]+)\s*\|\s*TP=([\d\.]+)", result)
+                    if matches:
+                        st.session_state.ai_parsed_data = {"ENTRY": matches.group(1), "SL": matches.group(2), "TP": matches.group(3)}
+                    st.session_state.active_provider = prov
                     st.rerun()
 
             if "ai_result" in st.session_state:
                 st.markdown(f"**Provider:** `{st.session_state.active_provider}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
-    # --- VIEW: MARKET SCANNER ---
+    # --- MARKET SCANNER VIEW ---
     elif app_mode == "Market Scanner":
         st.title("📡 AI Market Scanner")
-        st.markdown("This tool scans all assets to find the best immediate trade opportunities.")
-        
-        scan_market_type = st.selectbox("Select Market to Scan", ["Forex", "Crypto"])
-        
-        if st.button("Start Scan", type="primary"):
-            with st.spinner(f"Scanning {scan_market_type} market..."):
-                results = scan_market(assets[scan_market_type])
-                
-                if results:
-                    st.success(f"Scan Complete! Found {len(results)} pairs.")
-                    
-                    # Display Top 3 Cards
-                    col1, col2, col3 = st.columns(3)
-                    for i, res in enumerate(results[:3]):
-                        color = "#00ff00" if res['Score'] > 0 else "#ff4b4b" if res['Score'] < 0 else "#888"
-                        with [col1, col2, col3][i]:
-                            st.markdown(f"""
-                            <div style="background:#222; padding:15px; border-radius:10px; border-left: 5px solid {color};">
-                                <h3>{res['Pair']}</h3>
-                                <p style="color:{color}; font-weight:bold;">{res['Signal']}</p>
-                                <p>Price: {res['Price']:.4f}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    
-                    st.markdown("### Full Scan Results")
-                    st.dataframe(pd.DataFrame(results))
-                else:
-                    st.warning("No data found or market is closed.")
+        if st.button("Start Global Scan"):
+            scan_list = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "XAUUSD=X", "BTC-USD", "ETH-USD"]
+            for s in scan_list:
+                df_s = yf.download(s, period="5d", interval="15m", progress=False)
+                if not df_s.empty:
+                    if isinstance(df_s.columns, pd.MultiIndex): df_s.columns = df_s.columns.get_level_values(0)
+                    s_sigs, _ = calculate_advanced_signals(df_s)
+                    color = "#00ff00" if s_sigs['SK'][1] == "bull" else "#ff4b4b" if s_sigs['SK'][1] == "bear" else "#888"
+                    st.markdown(f"""
+                    <div style="background:#222; padding:10px; border-radius:5px; border-left: 5px solid {color}; margin-bottom:5px;">
+                        <b>{s.replace('=X','')}</b>: {s_sigs['SK'][0]} | Trend: {s_sigs['TREND'][0]}
+                    </div>
+                    """, unsafe_allow_html=True)
 
-    # --- VIEW: TRADER CHAT ---
+    # --- TRADER CHAT VIEW ---
     elif app_mode == "Trader Chat":
         st.title("💬 Global Trader Room")
+        st.info("Chat is currently in Session Mode. Connect GSheet to persist data.")
+        for msg in st.session_state.chat_history:
+            st.markdown(f"**{msg['user']}**: {msg['text']}")
         
-        # Display Chat History from Session
-        chat_container = st.container()
-        with chat_container:
-            for msg in st.session_state.chat_history:
-                st.markdown(f"<div class='chat-msg'><span class='chat-user'>{msg['user']}</span>: {msg['text']} <span style='font-size:10px;color:#555;'>{msg['time']}</span></div>", unsafe_allow_html=True)
-        
-        # Message Input
-        with st.form("chat_form", clear_on_submit=True):
-            user_msg = st.text_input("Type your message...")
+        with st.form("chat"):
+            m = st.text_input("Message")
             if st.form_submit_button("Send"):
-                if user_msg:
-                    time_now = datetime.now().strftime("%H:%M")
-                    new_msg = {
-                        "user": user_info['Username'],
-                        "text": user_msg,
-                        "time": time_now
-                    }
-                    st.session_state.chat_history.append(new_msg)
-                    # Save to Google Sheet
-                    save_chat_to_db(user_info['Username'], user_msg, time_now)
-                    st.rerun()
-
-    # --- VIEW: ADMIN PANEL ---
-    elif app_mode == "Admin Panel":
-        if user_info.get("Role") == "Admin":
-            st.title("🛡️ Admin Control Center")
-            
-            tab1, tab2 = st.tabs(["User Management", "System Status"])
-            
-            with tab1:
-                st.subheader("Manage User Limits")
-                # Need to implement real DB fetch here for admin view ideally
-                st.info("Direct Database Connection required to view all users live.")
-                
-                st.markdown("### Update Limit")
-                c1, c2 = st.columns(2)
-                target_user = c1.text_input("Username to Update")
-                new_limit = c2.number_input("New Hybrid Limit", min_value=10, value=20)
-                
-                if st.button("Update User Limit"):
-                    sheet, _ = get_user_sheet()
-                    if sheet:
-                        try:
-                            cell = sheet.find(target_user)
-                            # Update Col 3 (HybridLimit)
-                            sheet.update_cell(cell.row, 3, new_limit)
-                            # Reset Usage to 0? Optional
-                            # sheet.update_cell(cell.row, 4, 0) 
-                            st.success(f"Updated {target_user} limit to {new_limit}")
-                        except: st.error("User not found.")
-            
-            with tab2:
-                st.subheader("Live System Stats")
-                st.metric("Active Users", "3")
-                st.metric("Total AI Calls Today", "124")
-        else:
-            st.error("Access Denied. Admins Only.")
+                st.session_state.chat_history.append({"user": user_info['Username'], "text": m})
+                st.rerun()
