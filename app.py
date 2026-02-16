@@ -46,7 +46,7 @@ if "active_provider" not in st.session_state:
 if "ai_parsed_data" not in st.session_state:
     st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 
-# --- Helper Functions (Preserved) ---
+# --- Helper Functions ---
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -64,17 +64,6 @@ def check_login(username, password):
             if user and str(user.get("Password")) == password: return user
         except: return None
     return None
-
-def create_user(new_username, new_password):
-    sheet = get_user_sheet()
-    if sheet:
-        try:
-            existing_users = sheet.col_values(1)
-            if new_username in existing_users: return False, "User already exists!"
-            sheet.append_row([new_username, new_password, "User", str(datetime.now())])
-            return True, "User created successfully!"
-        except Exception as e: return False, f"Error: {e}"
-    return False, "Database Connection Failed"
 
 def get_sentiment_class(title):
     title_lower = title.lower()
@@ -108,30 +97,16 @@ def get_market_news(symbol):
     except: pass
     return []
 
-def get_alpha_vantage_data(pair):
-    if "ALPHA_VANTAGE_KEY" not in st.secrets: return "API Key Missing"
-    try:
-        if "=X" in pair:
-            base, quote = pair[:3], pair[3:6]
-            url = f'https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency={quote}&apikey={st.secrets["ALPHA_VANTAGE_KEY"]}'
-        else:
-            base = pair.split("-")[0]
-            url = f'https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency=USD&apikey={st.secrets["ALPHA_VANTAGE_KEY"]}'
-        r = requests.get(url, timeout=10)
-        return r.json().get("Realtime Currency Exchange Rate", "No data available")
-    except: return "Conn Error"
-
-# --- 4. ADVANCED SIGNAL ENGINE (WITH ELLIOTT WAVE) ---
+# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df):
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     
-    # Existing Theories
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
     ph, pl = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
-    fib_618 = ph - ((ph - pl) * 0.618)
+    fib_618 = ph - ((ph - ph) * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.0005) else ("Ranging", "neutral")
     
     delta = df['Close'].diff()
@@ -147,8 +122,6 @@ def calculate_advanced_signals(df):
     signals['SK'] = ("SK Sniper Buy", "bull") if score >= 1 else (("SK Sniper Sell", "bear") if score <= -1 else ("Waiting", "neutral"))
     signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
 
-    # --- NEW: ELLIOTT WAVE THEORY LOGIC ---
-    # Simplified detection based on 3-bar and 10-bar fractals
     last_50 = df['Close'].tail(50)
     max_50, min_50 = last_50.max(), last_50.min()
     current_pos = (c - min_50) / (max_50 - min_50) if (max_50 - min_50) != 0 else 0.5
@@ -163,10 +136,48 @@ def calculate_advanced_signals(df):
         else: ew_status, ew_col = "Wave B (Bear Rally)", "neutral"
     
     signals['ELLIOTT'] = (ew_status, ew_col)
-    
     return signals
 
-# --- 5. ENHANCED AI ENGINE ---
+# --- 5. INFINITE ALGORITHMIC ENGINE (WITH NEWS ANALYSIS) ---
+def infinite_algorithmic_engine(pair, curr_p, sigs, news_items):
+    # Analyze News Sentiment
+    news_score = 0
+    for item in news_items:
+        sentiment = get_sentiment_class(item['title'])
+        if sentiment == "news-positive": news_score += 1
+        elif sentiment == "news-negative": news_score -= 1
+    
+    trend = sigs['TREND'][0]
+    ew = sigs['ELLIOTT'][0]
+    sk_signal = sigs['SK'][1]
+    
+    # Logic for decision
+    if sk_signal == "bull" and news_score >= 0:
+        action = "BUY"
+        note = "Technical සහ News දත්ත වලට අනුව වෙළඳපල ඉහල යාමේ ප්‍රවණතාවක් පවතී."
+        sl, tp = curr_p * 0.996, curr_p * 1.012
+    elif sk_signal == "bear" and news_score <= 0:
+        action = "SELL"
+        note = "Technical සහ News දත්ත වලට අනුව වෙළඳපල පහත වැටීමේ අවදානමක් පවතී."
+        sl, tp = curr_p * 1.004, curr_p * 0.988
+    else:
+        action = "WAIT/SCALP"
+        note = "වෙළඳපල දැනට අවිනිශ්චිතය (Ranging). කෙටි කාලීන අවස්ථා පමණක් සලකා බලන්න."
+        sl, tp = curr_p * 0.998, curr_p * 1.005
+
+    analysis_text = f"""
+    🚀 **INFINITE ALGO ANALYSIS**
+    වෙළඳ යුගලය: {pair}
+    වත්මන් තත්ත්වය: {trend} | {ew}
+    පුවත් බලපෑම: {"ධනාත්මක (Bullish)" if news_score > 0 else "සෘණාත්මක (Bearish)" if news_score < 0 else "මධ්‍යස්ථ (Neutral)"}
+    
+    {note} Elliott Wave සහ SMC දත්ත වලට අනුව Trade එක සැකසීමට නිර්දේශ කෙරේ.
+    
+    DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP={tp:.5f}
+    """
+    return analysis_text
+
+# --- 6. ENHANCED AI ENGINE ---
 def query_huggingface_fallback(prompt):
     if "HF_TOKEN" not in st.secrets: return None
     API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
@@ -177,7 +188,7 @@ def query_huggingface_fallback(prompt):
         return res[0]['generated_text'] if isinstance(res, list) else None
     except: return None
 
-def get_ai_analysis(prompt, asset_data):
+def get_ai_analysis(prompt, asset_data, sigs, news_items, pair):
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
         if isinstance(keys, str): keys = [keys]
@@ -191,12 +202,14 @@ def get_ai_analysis(prompt, asset_data):
                     return response.text, f"Gemini 3 Flash (Key #{i+1})"
             except Exception: continue
 
-    st.toast("Switching to Fallback Engine (HF)...", icon="🔄")
+    st.toast("Switching to HF Fallback...", icon="🔄")
     hf_result = query_huggingface_fallback(prompt)
     if hf_result: return hf_result, "HF Fallback (Mistral)"
 
-    sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
-    return f"ANALYSIS: AI Critical Error.\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
+    # --- ULTIMATE FALLBACK: INFINITE ALGORITHMIC ENGINE ---
+    st.toast("Running Infinite Algorithmic Engine...", icon="♾️")
+    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items)
+    return algo_result, "Infinite Algo Engine v2.0"
 
 def parse_ai_response(text):
     data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
@@ -210,7 +223,7 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# --- 6. MAIN APPLICATION ---
+# --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v7.0</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
@@ -226,14 +239,20 @@ if not st.session_state.logged_in:
 else:
     user_info = st.session_state.get('user', {})
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
     
     st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-    assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
+    
+    # --- EXPANDED ASSETS ---
+    assets = {
+        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X"],
+        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD", "DOT-USD"],
+        "Metals": ["XAUUSD=X", "XAGUSD=X", "HG=F"] # Gold, Silver, Copper
+    }
+    
     pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
@@ -254,11 +273,10 @@ else:
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
 
-        # --- SIGNALS DISPLAY (Updated to include Elliott) ---
         sigs = calculate_advanced_signals(df)
-        keys_list = list(sigs.keys()) # Now contains 9 signals
+        keys_list = list(sigs.keys())
         
-        cols = st.columns(3) # Adjusted for 9 boxes (3x3 grid)
+        cols = st.columns(3)
         for i in range(3):
             cols[i].markdown(f"<div class='sig-box {sigs[keys_list[i]][1]}'>{keys_list[i]}: {sigs[keys_list[i]][0]}</div>", unsafe_allow_html=True)
             cols[i].markdown(f"<div class='sig-box {sigs[keys_list[i+3]][1]}'>{keys_list[i+3]}: {sigs[keys_list[i+3]][0]}</div>", unsafe_allow_html=True)
@@ -278,25 +296,18 @@ else:
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Analysis", use_container_width=True):
-                with st.spinner("Analyzing News + Technicals + Elliott Wave..."):
+                with st.spinner("Analyzing Technicals + News + Algo Engine..."):
                     news_titles = [n.get('title', '') for n in news_items[:3]]
                     news_context = " | ".join(news_titles) if news_titles else "No major news."
                     
-                    # AI Prompt updated with Elliott Wave context
                     prompt = f"""
                     Analyze {pair} at Price: {curr_p} on {tf}.
-                    Technicals: 
-                    Trend: {sigs['TREND'][0]}
-                    SMC: {sigs['SMC'][0]}
-                    RSI: {sigs['RETAIL'][0]}
-                    Elliott Wave: {sigs['ELLIOTT'][0]}
-                    
+                    Trend: {sigs['TREND'][0]} | SMC: {sigs['SMC'][0]} | Elliott Wave: {sigs['ELLIOTT'][0]}
                     News Context: {news_context}
-                    
-                    1. Provide trade confirmation in Sinhala, specifically considering Elliott Wave position.
+                    1. Provide trade confirmation in Sinhala based on these factors.
                     2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
                     """
-                    result, provider = get_ai_analysis(prompt, {'price': curr_p})
+                    result, provider = get_ai_analysis(prompt, {'price': curr_p}, sigs, news_items, pair)
                     st.session_state.ai_parsed_data = parse_ai_response(result)
                     st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                     st.session_state.active_provider = provider
