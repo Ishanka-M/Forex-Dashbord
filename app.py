@@ -211,7 +211,7 @@ else:
     
     st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-    assets = {"Forex": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
+    assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
     pair = st.sidebar.selectbox("Select Asset", assets[market])
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
