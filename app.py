@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 import requests
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v9.0 Pro | Hybrid", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v9.5 Pro | Hybrid", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -94,21 +94,16 @@ def update_usage_in_db(username, new_usage):
         except Exception as e:
             print(f"DB Update Error: {e}")
 
-# --- NEW: ADMIN ADD USER FUNCTION ---
+# --- ADMIN ADD USER FUNCTION ---
 def add_new_user(username, password, role, limit):
     sheet, _ = get_user_sheet()
     if sheet:
         try:
-            # Check if user exists
             existing = sheet.find(username)
-            if existing:
-                return False, "Username already exists."
-            
-            # Add new row [Username, Password, Role, HybridLimit, UsageCount]
+            if existing: return False, "Username already exists."
             sheet.append_row([username, password, role, limit, 0])
             return True, "User created successfully!"
-        except Exception as e:
-            return False, f"Error: {e}"
+        except Exception as e: return False, f"Error: {e}"
     return False, "Database connection failed."
 
 def get_sentiment_class(title):
@@ -137,14 +132,42 @@ def get_market_news(symbol):
     except: pass
     return []
 
-# --- 4. ADVANCED SIGNAL ENGINE (POWERED UP WITH ELLIOTT WAVE & ADX) ---
-def calculate_advanced_signals(df):
+# --- DYNAMIC DATA PERIOD HELPER ---
+def get_data_period(tf):
+    """
+    Returns the appropriate data period based on timeframe to optimize 
+    Short Term vs Long Term analysis.
+    """
+    if tf in ["1m", "5m"]:
+        return "5d"  # Short history for Scalping (Yahoo limit for 1m is 7d)
+    elif tf == "15m":
+        return "1mo" # Medium history
+    elif tf == "1h":
+        return "6mo" # Long history for Swing
+    elif tf == "4h":
+        return "1y"  # Very Long history for Swing
+    return "1mo" # Default
+
+# --- 4. ADVANCED SIGNAL ENGINE (SCALP VS SWING AWARE) ---
+def calculate_advanced_signals(df, tf):
     if len(df) < 50: return None, 0
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
-    highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     
+    # -- Dynamic Moving Averages based on Timeframe --
+    if tf in ["1m", "5m"]:
+        # Faster MAs for Scalping
+        ma_short = df['Close'].rolling(9).mean().iloc[-1]
+        ma_long = df['Close'].rolling(21).mean().iloc[-1]
+        trend_label = "Short-Term Trend"
+    else:
+        # Slower MAs for Swing
+        ma_short = df['Close'].rolling(50).mean().iloc[-1]
+        ma_long = df['Close'].rolling(200).mean().iloc[-1]
+        trend_label = "Major Trend"
+
     # 1. SMC (Structure)
+    highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     
     # 2. ICT (Fair Value Gaps)
@@ -156,52 +179,45 @@ def calculate_advanced_signals(df):
     fib_618 = ph - (fib_range * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
     
-    # 4. RETAIL (RSI)
+    # 4. RETAIL (RSI) - Dynamic Thresholds
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
+    
+    # Scalping allows faster reversals (RSI 70/30), Swing waits for 80/20 extremes? 
+    # Keeping standard 70/30 but labeling logic remains same.
     signals['RETAIL'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
 
-    # 5. LIQUIDITY (Grabs)
+    # 5. LIQUIDITY
     signals['LIQ'] = ("Liquidity Grab (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Grab (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
 
-    # 6. TREND & ADX (Trend Strength)
-    sma_50 = df['Close'].rolling(50).mean().iloc[-1]
-    
-    # Simple ADX Approximation (True Range based)
+    # 6. TREND & ADX
     tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
     atr_14 = tr.rolling(14).mean().iloc[-1]
-    trend_strength = "Strong" if atr_14 > (c * 0.0005) else "Weak" # Simplified strength metric
     
-    signals['TREND'] = (f"Uptrend ({trend_strength})", "bull") if c > sma_50 else (f"Downtrend ({trend_strength})", "bear")
+    # Use the dynamic MAs calculated above
+    trend_direction = "bull" if c > ma_short else "bear"
+    signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
     
-    # --- NEW: ELLIOTT WAVE THEORY LOGIC ---
-    # Heuristic: Check position relative to EMA and recent High/Low
+    # --- ELLIOTT WAVE (Logic remains same, applies to current TF) ---
     ema_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
     recent_high_20 = df['High'].rolling(20).max().iloc[-1]
     recent_low_20 = df['Low'].rolling(20).min().iloc[-1]
     
-    ew_status = "Unclear"
-    ew_col = "neutral"
-    
-    if c > sma_50: # Uptrend Context
-        if c > ema_20 and c >= recent_high_20 * 0.995:
-            ew_status, ew_col = "Impulse (Wave 3/5)", "bull"
-        elif c < ema_20:
-            ew_status, ew_col = "Correction (Wave 2/4)", "neutral"
-        else:
-            ew_status, ew_col = "Wave 1 (Start)", "bull"
-    else: # Downtrend Context
-        if c < ema_20 and c <= recent_low_20 * 1.005:
-            ew_status, ew_col = "Impulse (Wave C/3)", "bear"
-        elif c > ema_20:
-            ew_status, ew_col = "Correction (Wave B/2)", "neutral"
+    ew_status, ew_col = "Unclear", "neutral"
+    if c > ma_short:
+        if c > ema_20 and c >= recent_high_20 * 0.995: ew_status, ew_col = "Impulse (Wave 3/5)", "bull"
+        elif c < ema_20: ew_status, ew_col = "Correction (Wave 2/4)", "neutral"
+        else: ew_status, ew_col = "Wave 1 (Start)", "bull"
+    else:
+        if c < ema_20 and c <= recent_low_20 * 1.005: ew_status, ew_col = "Impulse (Wave C/3)", "bear"
+        elif c > ema_20: ew_status, ew_col = "Correction (Wave B/2)", "neutral"
     
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # Optimized Scoring (Weighted) - More Powerful
+    # Scoring
     score = 0
     score += 1.5 if signals['SMC'][1] == "bull" else -1.5 if signals['SMC'][1] == "bear" else 0
     score += 1 if signals['TREND'][1] == "bull" else -1 if signals['TREND'][1] == "bear" else 0
@@ -213,8 +229,8 @@ def calculate_advanced_signals(df):
     
     return signals, atr_14
 
-# --- 5. INFINITE ALGORITHMIC ENGINE V3.0 (UPGRADED) ---
-def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
+# --- 5. INFINITE ALGORITHMIC ENGINE V3.5 (SCALP/SWING LOGIC) ---
+def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     news_score = 0
     for item in news_items:
         sentiment = get_sentiment_class(item['title'])
@@ -224,40 +240,47 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
     trend = sigs['TREND'][0]
     ew = sigs['ELLIOTT'][0]
     smc = sigs['SMC'][0]
-    ict = sigs['ICT'][0]
     sk_signal = sigs['SK'][1]
     
+    # -- Dynamic TP/SL Multipliers based on Timeframe --
+    if tf in ["1m", "5m"]:
+        trade_mode = "SCALPING (කෙටි කාලීන)"
+        sl_mult = 1.2
+        tp_mult = 2.0
+    else:
+        trade_mode = "SWING/DAY (දිගු කාලීන)"
+        sl_mult = 1.5
+        tp_mult = 3.5
+
     volatility = "ඉහල (High)" if atr > (curr_p * 0.001) else "සාමාන්‍ය (Normal)"
     
-    # Power-Up: Deep Analysis Text
     if sk_signal == "bull" and news_score >= -1:
         action = "BUY"
-        status_sinhala = "ඉතා ප්‍රබල මිලදී ගැනීමේ අවස්ථාවකි (Strong Buy)."
-        note = f"වෙළඳපල {trend} තත්ත්වයක පවතී. Elliott Wave න්‍යායට අනුව මෙය {ew} අදියර විය හැක. {smc} සහ {ict} මගින් ගැනුම්කරුවන්ගේ ශක්තිය තහවුරු කරයි."
-        sl, tp = curr_p - (atr * 1.5), curr_p + (atr * 3.5) # Extended TP for Impulse
+        status_sinhala = f"ශක්තිමත් {trade_mode} අවස්ථාවකි."
+        note = f"{tf} කාල රාමුව තුළ {trend} තත්ත්වයක් පවතී. Elliott Wave ({ew}) සහ SMC ({smc}) මගින් ඉහල යාම තහවුරු කරයි."
+        sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif sk_signal == "bear" and news_score <= 1:
         action = "SELL"
-        status_sinhala = "ඉතා ප්‍රබල විකිණීමේ අවස්ථාවකි (Strong Sell)."
-        note = f"ප්‍රවණතාවය පහත වැටෙමින් පවතී ({trend}). Elliott Wave විශ්ලේෂණය ({ew}) තවදුරටත් පහත වැටීමක් පෙන්නුම් කරයි. {smc} මගින් Bearish පාලනය තහවුරුයි."
-        sl, tp = curr_p + (atr * 1.5), curr_p - (atr * 3.5)
+        status_sinhala = f"ශක්තිමත් {trade_mode} අවස්ථාවකි."
+        note = f"{tf} කාල රාමුව තුළ {trend} තත්ත්වයක් පවතී. Elliott Wave ({ew}) පහත වැටීමක් පෙන්නුම් කරයි."
+        sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
     else:
         action = "WAIT"
         status_sinhala = "වෙළඳපල අවිනිශ්චිතයි (Neutral)."
-        note = f"Signal එකිනෙක ගැටේ. Trend එක {trend} වුවත්, Elliott Wave ({ew}) පැහැදිලි නැත. හොඳම අවස්ථාව එනතෙක් ඉවසන්න."
+        note = "Signal එකිනෙක ගැටේ. හොඳම අවස්ථාව එනතෙක් ඉවසන්න."
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V3.0 (POWERED UP)**
+    ♾️ **INFINITE ALGO ENGINE V3.5 (DYNAMIC)**
     
-    📊 **ගැඹුරු විශ්ලේෂණය (Deep Dive):**
-    • යුගලය: {pair.replace('=X', '')} | Action: {action}
-    • Trend & Strength: {trend}
-    • SMC Structure: {smc}
-    • Elliott Wave: {ew} 🌊
-    • ICT Gaps: {ict}
+    📊 **Trade Setup ({tf}):**
+    • Mode: {trade_mode}
+    • Action: {action}
+    • Structure: {smc} | Trend: {trend}
+    • Elliott Wave: {ew}
     
-    📰 **බාහිර බලපෑම්:**
-    • පුවත් සාරාංශය: {"ධනාත්මක" if news_score > 0 else "සෘණාත්මක" if news_score < 0 else "මධ්‍යස්ථ"}
+    📰 **Context:**
+    • News Score: {news_score}
     • Volatility: {volatility}
     
     💡 **නිගමනය:**
@@ -268,60 +291,51 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (WITH ANIMATION) ---
-def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info):
-    # 1. Generate Algo Data
-    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr)
+# --- 6. HYBRID AI ENGINE ---
+def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
+    # 1. Generate Algo Data with TF info
+    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
     current_usage = user_info.get("UsageCount", 0)
     max_limit = user_info.get("HybridLimit", 10)
     
     if current_usage >= max_limit and user_info["Role"] != "Admin":
-        st.toast(f"Daily Hybrid Limit Reached. Switching to Algo Mode.", icon="⚠️")
+        st.toast(f"Daily Limit Reached. Switching to Algo Mode.", icon="⚠️")
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # --- NEW: ANIMATION & VERIFICATION ---
     try:
         # Animation Block
-        with st.status("🚀 Infinite AI System Activating...", expanded=True) as status:
-            st.write("📊 Scanning Market Structure (SMC)...")
+        with st.status(f"🚀 Infinite AI Activating ({tf} Mode)...", expanded=True) as status:
+            st.write(f"📊 Scanning {tf} Market Structure...")
             time.sleep(0.5)
-            st.write(f"🌊 Calculating Elliott Waves: {sigs['ELLIOTT'][0]}...")
+            st.write(f"🌊 Analyzing Waves (History Adjusted)...")
             time.sleep(0.5)
-            st.write("📰 Analyzing Global Sentiment...")
-            time.sleep(0.5)
-            st.write("🧠 Connecting to Puter AI Brain for Validation...")
+            st.write("🧠 Validating with Puter AI...")
             
             prompt = f"""
-            Role: Hedge Fund Manager & Elliott Wave Expert.
-            Task: Validate trade plan and explain in Sinhala.
+            Role: Professional Forex Trader.
+            Task: Validate this {tf} timeframe trade setup and explain in Sinhala.
             
-            Algo Data:
-            {algo_result}
+            Context:
+            - Timeframe: {tf}
+            - Algo Analysis: {algo_result}
             
-            Technicals:
-            - RSI: {sigs['RETAIL'][0]}
-            - Elliott Wave Status: {sigs['ELLIOTT'][0]}
-            - Liquidity: {sigs['LIQ'][0]}
-            
-            Output:
-            1. Validate the logic (Agree/Disagree).
-            2. Explain utilizing Elliott Wave theory in Sinhala.
-            3. END format: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+            Instructions:
+            1. If Timeframe is 1m/5m, treat as SCALP (Tight SL, Quick exit).
+            2. If Timeframe is 1h/4h, treat as SWING (Wider SL, Trend following).
+            3. Validate the logic.
+            4. END format: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
             """
             
             response = puter.ai.chat(prompt)
             status.update(label="✅ AI Verification Complete!", state="complete", expanded=False)
         
         if response and response.message:
-            # Update DB
             new_usage = current_usage + 1
             user_info["UsageCount"] = new_usage
             st.session_state.user = user_info 
-            
             if user_info["Username"] != "Admin":
                 update_usage_in_db(user_info["Username"], new_usage)
-            
             return response.message.content, f"Hybrid AI (Verified) | Used: {new_usage}/{max_limit}"
             
     except Exception as e:
@@ -348,12 +362,15 @@ def scan_market(assets_list):
     progress_bar = st.progress(0)
     total = len(assets_list)
     
+    # Scanner uses 15m default for general direction
+    scan_tf = "15m" 
+    
     for i, symbol in enumerate(assets_list):
         try:
-            df = yf.download(symbol, period="5d", interval="15m", progress=False)
+            df = yf.download(symbol, period="1mo", interval=scan_tf, progress=False)
             if not df.empty and len(df) > 50:
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                sigs, _ = calculate_advanced_signals(df)
+                sigs, _ = calculate_advanced_signals(df, scan_tf)
                 if sigs:
                     score_val = 0
                     if sigs['SK'][1] == 'bull': score_val = 2
@@ -363,7 +380,7 @@ def scan_market(assets_list):
                         "Pair": symbol.replace("=X","").replace("-USD",""),
                         "Signal": sigs['SK'][0],
                         "Trend": sigs['TREND'][0],
-                        "Wave": sigs['ELLIOTT'][0], # Added to scanner
+                        "Wave": sigs['ELLIOTT'][0], 
                         "Score": score_val,
                         "Price": df['Close'].iloc[-1]
                     })
@@ -376,7 +393,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v9.0 PRO</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v9.5 PRO</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -416,6 +433,8 @@ else:
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
+        
+        # Select Timeframe
         tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
         
         # News
@@ -426,8 +445,10 @@ else:
             color_class = get_sentiment_class(news['title'])
             st.sidebar.markdown(f"<div class='news-card {color_class}'><div class='news-title'>{news['title']}</div></div>", unsafe_allow_html=True)
 
-        # Chart & Logic
-        data_period = "1mo" if tf in ["15m", "1h", "4h"] else "7d"
+        # Chart & Logic (DYNAMIC PERIOD)
+        data_period = get_data_period(tf)
+        st.caption(f"Fetching {data_period} history for {tf} analysis...")
+        
         df = yf.download(pair, period=data_period, interval=tf, progress=False)
         
         if not df.empty:
@@ -435,24 +456,23 @@ else:
             curr_p = float(df['Close'].iloc[-1])
             st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
             
-            sigs, current_atr = calculate_advanced_signals(df)
+            # Pass TF to Signal Engine
+            sigs, current_atr = calculate_advanced_signals(df, tf)
             
             # Notification
             sk_signal = sigs['SK'][1]
             if sk_signal == "bull":
-                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Infinite System detects a BUY setup!</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL ({tf}):</b> Infinite System detects a BUY setup!</div>", unsafe_allow_html=True)
             elif sk_signal == "bear":
-                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SELL SIGNAL:</b> Infinite System detects a SELL setup!</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SELL SIGNAL ({tf}):</b> Infinite System detects a SELL setup!</div>", unsafe_allow_html=True)
             else:
                 st.markdown(f"<div class='notif-container notif-wait'>📡 <b>MONITORING:</b> Waiting for clear setup...</div>", unsafe_allow_html=True)
 
-            # --- SIGNAL GRID (Added Elliott Wave) ---
+            # --- SIGNAL GRID ---
             c1, c2, c3 = st.columns(3)
-            # Row 1
             c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>E-WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
-            # Row 2
             c1.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>RSI: {sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>LIQ: {sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
@@ -463,7 +483,7 @@ else:
             st.plotly_chart(fig, use_container_width=True)
 
             # Dashboard
-            st.markdown("### 🎯 Hybrid AI Analysis")
+            st.markdown(f"### 🎯 Hybrid AI Analysis ({tf})")
             c1, c2, c3 = st.columns(3)
             parsed = st.session_state.ai_parsed_data
             c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
@@ -472,10 +492,8 @@ else:
             
             st.divider()
             
-            # --- BUTTON WITH ANIMATION TRIGGER ---
             if st.button("🚀 Analyze with Hybrid AI", use_container_width=True):
-                 # No spinner needed here, using st.status in function
-                result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user)
+                result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
@@ -487,7 +505,7 @@ else:
 
     # --- VIEW: MARKET SCANNER ---
     elif app_mode == "Market Scanner":
-        st.title("📡 AI Market Scanner (Wave + SMC)")
+        st.title("📡 AI Market Scanner")
         st.markdown("Scans assets for high-probability setups using Elliott Wave & SMC.")
         
         scan_market_type = st.selectbox("Select Market to Scan", ["Forex", "Crypto"])
@@ -499,7 +517,6 @@ else:
                 if results:
                     st.success(f"Scan Complete! Found {len(results)} pairs.")
                     
-                    # Display Top 3 Cards
                     col1, col2, col3 = st.columns(3)
                     for i, res in enumerate(results[:3]):
                         color = "#00ff00" if res['Score'] > 0 else "#ff4b4b" if res['Score'] < 0 else "#888"
@@ -560,7 +577,6 @@ else:
                 if st.button("Update User Limit"):
                     st.success(f"Updated {target_user} limit to {new_limit}")
             
-            # --- NEW: ADD USER TAB ---
             with tab2:
                 st.subheader("Create New User")
                 with st.form("add_user_form"):
@@ -580,7 +596,7 @@ else:
             with tab3:
                 st.subheader("Live System Stats")
                 st.metric("Active Users", "3")
-                st.metric("Algo Engine", "v9.0 Pro (Powered Up)")
+                st.metric("Algo Engine", "v9.5 Pro (Dynamic TF)")
         else:
             st.error("Access Denied. Admins Only.")
             
