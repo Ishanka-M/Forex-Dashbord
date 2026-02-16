@@ -295,7 +295,9 @@ else:
             st.sidebar.markdown(f"<div class='news-card {color_class}'><a href='{n_link}' target='_blank' style='text-decoration:none;'><div class='news-title'>{n_title}</div></a><div class='news-pub'>{n_pub}</div></div>", unsafe_allow_html=True)
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
-    df = yf.download(pair, period="5d", interval=tf, progress=False)
+    
+    # --- UPDATE: ANALYZING 1 MONTH OF HISTORY ---
+    df = yf.download(pair, period="1mo", interval=tf, progress=False)
     
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
