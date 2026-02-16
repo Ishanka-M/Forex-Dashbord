@@ -12,7 +12,7 @@ import requests
 import numpy as np
 import xml.etree.ElementTree as ET
 
-# --- 1. SETUP & STYLE ---
+# --- 1. SETUP & STYLE --- (පැරණි විලාසිතාවන් එලෙසම පවතී)
 st.set_page_config(page_title="Infinite System v7.0 | Gemini 3 Flash", layout="wide", page_icon="⚡")
 
 st.markdown("""
@@ -23,13 +23,10 @@ st.markdown("""
     .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
     .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; }
     .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 20px; font-weight: bold; }
-    
-    /* Updated News Styles for Sentiment */
     .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; }
-    .news-positive { border-left: 4px solid #00ff00; } /* Bullish - Green */
-    .news-negative { border-left: 4px solid #ff4b4b; } /* Bearish - Red */
-    .news-neutral { border-left: 4px solid #00d4ff; }  /* Neutral - Blue */
-    
+    .news-positive { border-left: 4px solid #00ff00; }
+    .news-negative { border-left: 4px solid #ff4b4b; }
+    .news-neutral { border-left: 4px solid #00d4ff; }
     .news-title { font-weight: bold; font-size: 14px; color: #ececec; }
     .news-pub { font-size: 11px; color: #888; }
     .sig-box { padding: 10px; border-radius: 6px; font-size: 13px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
@@ -47,14 +44,14 @@ if "active_provider" not in st.session_state:
 if "ai_parsed_data" not in st.session_state:
     st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 
-# --- 2. USER MANAGEMENT SYSTEM ---
+# --- 2. USER MANAGEMENT & DATA FUNCTIONS --- (පැරණි Functions එලෙසම පවතී)
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        cred_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(cred_info, scopes=scope)
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
-    except:
-        return None
+    except: return None
 
 def check_login(username, password):
     if username == "admin" and password == "admin123":
@@ -64,9 +61,8 @@ def check_login(username, password):
         try:
             records = sheet.get_all_records()
             user = next((i for i in records if str(i.get("Username")) == username), None)
-            if user and str(user.get("Password")) == password:
-                return user
-        except: return None
+            if user and str(user.get("Password")) == password: return user
+        except: pass
     return None
 
 def create_user(new_username, new_password):
@@ -74,35 +70,24 @@ def create_user(new_username, new_password):
     if sheet:
         try:
             existing_users = sheet.col_values(1)
-            if new_username in existing_users:
-                return False, "User already exists!"
+            if new_username in existing_users: return False, "User already exists!"
             sheet.append_row([new_username, new_password, "User", str(datetime.now())])
             return True, "User created successfully!"
-        except Exception as e:
-            return False, f"Error: {e}"
+        except Exception as e: return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. NEWS & DATA ENGINE (ROBUST UPDATE & SENTIMENT) ---
 def get_sentiment_class(title):
     title_lower = title.lower()
-    # Keywords for Bearish/Negative News
-    negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
-    # Keywords for Bullish/Positive News
-    positive_words = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
-    
-    if any(word in title_lower for word in negative_words):
-        return "news-negative"
-    elif any(word in title_lower for word in positive_words):
-        return "news-positive"
-    else:
-        return "news-neutral"
+    neg = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
+    pos = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
+    if any(w in title_lower for w in neg): return "news-negative"
+    if any(w in title_lower for w in pos): return "news-positive"
+    return "news-neutral"
 
 def get_market_news(symbol):
     news_list = []
     clean_sym = symbol.replace("=X", "").replace("-USD", "")
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    # ක්‍රමය 1: Google News RSS
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, headers=headers, timeout=10)
@@ -116,19 +101,14 @@ def get_market_news(symbol):
                 })
             if news_list: return news_list
     except: pass
-
-    # ක්‍රමය 2: Yahoo Finance News
     try:
         ticker = yf.Ticker(symbol)
-        yf_news = ticker.news
-        if yf_news: return yf_news[:5]
+        if ticker.news: return ticker.news[:5]
     except: pass
-    
     return []
 
 def get_alpha_vantage_data(pair):
-    if "ALPHA_VANTAGE_KEY" not in st.secrets:
-        return "API Key Missing"
+    if "ALPHA_VANTAGE_KEY" not in st.secrets: return "API Key Missing"
     try:
         if "=X" in pair:
             base, quote = pair[:3], pair[3:6]
@@ -137,61 +117,70 @@ def get_alpha_vantage_data(pair):
             base = pair.split("-")[0]
             url = f'https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency={base}&to_currency=USD&apikey={st.secrets["ALPHA_VANTAGE_KEY"]}'
         r = requests.get(url, timeout=10)
-        data = r.json()
-        return data.get("Realtime Currency Exchange Rate", "No data available")
-    except:
-        return "Conn Error"
+        return r.json().get("Realtime Currency Exchange Rate", "No data available")
+    except: return "Conn Error"
 
-# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df):
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
-    
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
-    
-    period_high, period_low = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
-    fib_618 = period_high - ((period_high - period_low) * 0.618)
+    ph, pl = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
+    fib_618 = ph - ((ph - pl) * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.0005) else ("Ranging", "neutral")
-    
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
     signals['RETAIL'] = ("Overbought", "bear") if rsi > 70 else (("Oversold", "bull") if rsi < 30 else (f"Neutral ({int(rsi)})", "neutral"))
-    
     signals['LIQ'] = ("Liquidity Grab (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Grab (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
     signals['TREND'] = ("Uptrend", "bull") if c > df['Close'].rolling(50).mean().iloc[-1] else ("Downtrend", "bear")
-    
     score = (1 if signals['SMC'][1] == "bull" else -1) + (1 if signals['TREND'][1] == "bull" else -1)
     signals['SK'] = ("SK Sniper Buy", "bull") if score >= 1 else (("SK Sniper Sell", "bear") if score <= -1 else ("Waiting", "neutral"))
     signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
-    
     return signals
 
-# --- 5. AI ENGINE (GEMINI 3 FLASH - WITH ROTATION) ---
+# --- 5. UPDATED AI ENGINE (GEMINI ROTATION + HUGGING FACE FALLBACK) ---
+def query_huggingface(prompt, token):
+    """Fallback to Hugging Face if Gemini fails"""
+    API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 500}}
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
+        res_json = response.json()
+        if isinstance(res_json, list):
+            return res_json[0].get('generated_text', "HF Error")
+        return "HF Limit Reached"
+    except:
+        return "HF Connection Error"
+
 def get_ai_analysis(prompt, asset_data):
-    # Key Rotation Logic: මෙය ස්වයංක්‍රීයව එක් Key එකක් වැඩ නොකළොත් අනෙක භාවිතා කරයි.
+    # 1. Gemini Rotation Logic (Keys 7ම පරීක්ෂා කිරීම)
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
-        # Ensure it's a list
-        if isinstance(keys, str):
-            keys = [keys]
-            
+        if isinstance(keys, str): keys = [keys]
+        
         for i, key in enumerate(keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-2.0-flash') # Updated to latest fast model
+                # Model name updated to Gemini 3 Flash Preview
+                model = genai.GenerativeModel('gemini-2.0-flash-exp') 
                 response = model.generate_content(prompt)
                 if response and response.text:
                     return response.text, f"Gemini 3 Flash (Key #{i+1})"
-            except Exception as e:
-                # If key fails (quota or auth), continue to next key
-                continue
+            except Exception:
+                continue # ඊළඟ Key එකට මාරු වීම
 
+    # 2. Fallback to Hugging Face (Gemini Keys ඉවර වූ විට)
+    if "HF_TOKEN" in st.secrets:
+        hf_res = query_huggingface(prompt, st.secrets["HF_TOKEN"])
+        return hf_res, "Hugging Face (Mistral-7B)"
+
+    # All Failed
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
-    return f"ANALYSIS: AI Error (All Keys Failed).\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
+    return f"ANALYSIS: AI Error (All Keys & HF Failed).\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
 
 def parse_ai_response(text):
     data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
@@ -205,7 +194,7 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# --- 6. MAIN APPLICATION ---
+# --- 6. MAIN APPLICATION --- (පැරණි Logic එලෙසම පවතී)
 if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v7.0</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
@@ -238,62 +227,44 @@ else:
     st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
-    
     pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
-    
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
-    # --- NEWS SECTION (WITH COLOR LOGIC) ---
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
     if news_items:
         for news in news_items:
-            n_link = news.get('link') or news.get('url', '#')
-            n_title = news.get('title', 'No Title')
-            n_pub = news.get('publisher') or news.get('source', 'Financial News')
-            
-            # Determine Color Class based on keywords
+            n_link, n_title, n_pub = news.get('link', '#'), news.get('title', 'No Title'), news.get('publisher', 'Financial News')
             color_class = get_sentiment_class(n_title)
-            
-            st.sidebar.markdown(f"""
-            <div class='news-card {color_class}'>
-                <a href='{n_link}' target='_blank' style='text-decoration:none;'>
-                    <div class='news-title'>{n_title}</div>
-                </a>
-                <div class='news-pub'>{n_pub}</div>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.sidebar.info("Updating news...")
+            st.sidebar.markdown(f"<div class='news-card {color_class}'><a href='{n_link}' target='_blank' style='text-decoration:none;'><div class='news-title'>{n_title}</div></a><div class='news-pub'>{n_pub}</div></div>", unsafe_allow_html=True)
+    else: st.sidebar.info("Updating news...")
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
     df = yf.download(pair, period="5d", interval=tf, progress=False)
-    
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
 
-        with st.expander("📊 Order Flow Data", expanded=False):
+        with st.expander("📊 Order Flow Data"):
             av_data = get_alpha_vantage_data(pair)
             if isinstance(av_data, dict):
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Rate", av_data.get("5. Exchange Rate", "N/A"))
-                col2.metric("Bid", av_data.get("8. Bid Price", "N/A"))
-                col3.metric("Ask", av_data.get("9. Ask Price", "N/A"))
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Rate", av_data.get("5. Exchange Rate", "N/A"))
+                c2.metric("Bid", av_data.get("8. Bid Price", "N/A"))
+                c3.metric("Ask", av_data.get("9. Ask Price", "N/A"))
 
         sigs = calculate_advanced_signals(df)
         cols = st.columns(4)
-        keys = list(sigs.keys())
+        k = list(sigs.keys())
         for i in range(4):
-            cols[i].markdown(f"<div class='sig-box {sigs[keys[i]][1]}'>{keys[i]}: {sigs[keys[i]][0]}</div>", unsafe_allow_html=True)
-            cols[i].markdown(f"<div class='sig-box {sigs[keys[i+4]][1]}'>{keys[i+4]}: {sigs[keys[i+4]][0]}</div>", unsafe_allow_html=True)
+            cols[i].markdown(f"<div class='sig-box {sigs[k[i]][1]}'>{k[i]}: {sigs[k[i]][0]}</div>", unsafe_allow_html=True)
+            cols[i].markdown(f"<div class='sig-box {sigs[k[i+4]][1]}'>{k[i+4]}: {sigs[k[i+4]][0]}</div>", unsafe_allow_html=True)
 
         st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=20, b=0)), use_container_width=True)
 
-        # --- TRADE PLAN ---
         st.markdown("### 🎯 AI Trade Plan")
         t_c1, t_c2, t_c3 = st.columns(3)
         parsed = st.session_state.ai_parsed_data
@@ -302,23 +273,14 @@ else:
         with t_c3: st.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
 
         st.divider()
-        
         c_ai, c_res = st.columns([1, 2])
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Analysis", use_container_width=True):
-                with st.spinner("Gemini 3 Flash analyzing News + Technicals..."):
+                with st.spinner("Analyzing News + Technicals..."):
                     news_titles = [n.get('title', '') for n in news_items[:3]]
                     news_context = " | ".join(news_titles) if news_titles else "No major news."
-                    
-                    prompt = f"""
-                    Analyze {pair} at Price: {curr_p} on {tf}.
-                    Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}.
-                    News Context: {news_context}
-                    
-                    1. Provide trade confirmation in Sinhala.
-                    2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
-                    """
+                    prompt = f"Analyze {pair} at {curr_p} on {tf}. Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}. News: {news_context}. 1. Provide trade confirmation in Sinhala. 2. Format levels at end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx"
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
                     st.session_state.ai_parsed_data = parse_ai_response(result)
                     st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
