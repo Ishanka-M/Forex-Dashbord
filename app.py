@@ -76,57 +76,35 @@ def create_user(new_username, new_password):
             return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. NEWS & DATA ENGINE (ENHANCED) ---
+# --- 3. NEWS & DATA ENGINE (FIXED) ---
 def get_market_news(symbol):
     news_list = []
-    # Clean symbol for better search results
     search_sym = symbol.replace("=X", "").replace("-USD", "")
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        # Method 1: yfinance news
+        # Method 1: yfinance
         ticker = yf.Ticker(symbol)
         news_list = ticker.news
-        if news_list:
-            return news_list[:5]
-    except:
-        pass
+        if news_list: return news_list[:5]
+    except: pass
 
     try:
-        # Method 2: Google News RSS (Very reliable for Forex)
-        url = f"https://news.google.com/rss/search?q={search_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
-        response = requests.get(url, headers=headers, timeout=7)
+        # Method 2: Google News (Very stable)
+        url = f"https://news.google.com/rss/search?q={search_sym}+forex&hl=en-US&gl=US&ceid=US:en"
+        response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             root = ET.fromstring(response.text)
             for item in root.findall('.//item')[:5]:
                 news_list.append({
                     "title": item.find('title').text,
                     "link": item.find('link').text,
-                    "publisher": item.find('source').text if item.find('source') is not None else "Google News"
+                    "publisher": "Google News"
                 })
             if news_list: return news_list
-    except:
-        pass
-
-    try:
-        # Method 3: Yahoo RSS Direct
-        url = f"https://finance.yahoo.com/rss/headline?s={symbol}"
-        response = requests.get(url, headers=headers, timeout=7)
-        if response.status_code == 200:
-            items = re.findall(r'<item>(.*?)</item>', response.text, re.DOTALL)
-            for item in items[:5]:
-                title = re.search(r'<title>(.*?)</title>', item)
-                link = re.search(r'<link>(.*?)</link>', item)
-                if title and link:
-                    news_list.append({
-                        "title": title.group(1).replace("<![CDATA[", "").replace("]]>", ""),
-                        "link": link.group(1),
-                        "publisher": "Yahoo Finance"
-                    })
-    except:
-        pass
-        
-    return news_list[:5]
+    except: pass
+    
+    return []
 
 def get_alpha_vantage_data(pair):
     if "ALPHA_VANTAGE_KEY" not in st.secrets:
@@ -172,16 +150,17 @@ def calculate_advanced_signals(df):
     
     return signals
 
-# --- 5. AI ENGINE ---
+# --- 5. AI ENGINE (RESTORED TO GEMINI 3 FLASH PREVIEW) ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-1.5-flash') 
+                # මෙතන තමයි ඔයාගේ කලින් තිබ්බ model name එක ආපහු දැම්මේ
+                model = genai.GenerativeModel('gemini-3-flash-preview') 
                 response = model.generate_content(prompt)
                 if response and response.text:
-                    return response.text, f"Gemini Flash (Key #{i+1})"
+                    return response.text, f"Gemini 3 Flash (Key #{i+1})"
             except: continue
 
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
@@ -239,20 +218,12 @@ else:
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
-    
     if news_items:
         for news in news_items:
             n_link = news.get('link', '#') 
             n_title = news.get('title', 'No Title')
             n_pub = news.get('publisher', 'Unknown')
-            st.sidebar.markdown(f"""
-            <div class='news-card'>
-                <a href='{n_link}' target='_blank' style='text-decoration:none;'>
-                    <div class='news-title'>{n_title}</div>
-                </a>
-                <div class='news-pub'>{n_pub}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='news-card'><a href='{n_link}' target='_blank' style='text-decoration:none;'><div class='news-title'>{n_title}</div></a><div class='news-pub'>{n_pub}</div></div>", unsafe_allow_html=True)
     else:
         st.sidebar.info("No recent news found.")
         
@@ -261,9 +232,7 @@ else:
     df = yf.download(pair, period="5d", interval=tf, progress=False)
     
     if not df.empty:
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair} Terminal - {curr_p:.5f}")
 
@@ -297,18 +266,10 @@ else:
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Analysis", use_container_width=True):
-                with st.spinner("Gemini Flash analyzing News + Technicals..."):
+                with st.spinner("Gemini 3 Flash analyzing Market..."):
                     news_titles = [n.get('title', '') for n in news_items[:3]]
-                    news_context = " | ".join(news_titles) if news_titles else "No major news."
-                    
-                    prompt = f"""
-                    Analyze {pair} at Price: {curr_p} on {tf}.
-                    Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}.
-                    News Context: {news_context}
-                    
-                    1. Provide trade confirmation in Sinhala.
-                    2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
-                    """
+                    news_context = " | ".join(news_titles) if news_titles else "No news."
+                    prompt = f"Analyze {pair} at {curr_p} on {tf}. Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}. News: {news_context}. Provide trade confirmation in Sinhala. Format levels at end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx"
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
                     st.session_state.ai_parsed_data = parse_ai_response(result)
                     st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
