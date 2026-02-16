@@ -103,25 +103,31 @@ def calculate_advanced_signals(df):
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     
+    # SMC & ICT Improvements
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
+    
     ph, pl = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
-    fib_618 = ph - ((ph - ph) * 0.618)
+    fib_range = ph - pl
+    fib_618 = ph - (fib_range * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.0005) else ("Ranging", "neutral")
     
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rsi_val = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+    rs = gain / loss
+    rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
     signals['RETAIL'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
     
     signals['LIQ'] = ("Liquidity Grab (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Grab (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
     signals['TREND'] = ("Uptrend", "bull") if c > df['Close'].rolling(50).mean().iloc[-1] else ("Downtrend", "bear")
     
-    score = (1 if signals['SMC'][1] == "bull" else -1) + (1 if signals['TREND'][1] == "bull" else -1)
-    signals['SK'] = ("SK Sniper Buy", "bull") if score >= 1 else (("SK Sniper Sell", "bear") if score <= -1 else ("Waiting", "neutral"))
+    # Optimized Scoring
+    score = (1 if signals['SMC'][1] == "bull" else -1) + (1 if signals['TREND'][1] == "bull" else -1) + (1 if signals['ICT'][1] == "bull" else -1)
+    signals['SK'] = ("SK Sniper Buy", "bull") if score >= 2 else (("SK Sniper Sell", "bear") if score <= -2 else ("Waiting", "neutral"))
     signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
 
+    # Elliot Wave Position Analysis
     last_50 = df['Close'].tail(50)
     max_50, min_50 = last_50.max(), last_50.min()
     current_pos = (c - min_50) / (max_50 - min_50) if (max_50 - min_50) != 0 else 0.5
@@ -136,10 +142,18 @@ def calculate_advanced_signals(df):
         else: ew_status, ew_col = "Wave B (Bear Rally)", "neutral"
     
     signals['ELLIOTT'] = (ew_status, ew_col)
-    return signals
+
+    # Calculate ATR for Dynamic SL/TP
+    tr1 = df['High'] - df['Low']
+    tr2 = abs(df['High'] - df['Close'].shift())
+    tr3 = abs(df['Low'] - df['Close'].shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df['ATR'] = tr.rolling(14).mean()
+    
+    return signals, df['ATR'].iloc[-1]
 
 # --- 5. INFINITE ALGORITHMIC ENGINE (WITH NEWS ANALYSIS) ---
-def infinite_algorithmic_engine(pair, curr_p, sigs, news_items):
+def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
     # Analyze News Sentiment
     news_score = 0
     for item in news_items:
@@ -151,19 +165,22 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items):
     ew = sigs['ELLIOTT'][0]
     sk_signal = sigs['SK'][1]
     
-    # Logic for decision
+    # Logic for decision with Dynamic ATR
+    # Long: SL = Entry - (ATR * 1.5), TP = Entry + (ATR * 3)
+    # Short: SL = Entry + (ATR * 1.5), TP = Entry - (ATR * 3)
+    
     if sk_signal == "bull" and news_score >= 0:
         action = "BUY"
         note = "Technical සහ News දත්ත වලට අනුව වෙළඳපල ඉහල යාමේ ප්‍රවණතාවක් පවතී."
-        sl, tp = curr_p * 0.996, curr_p * 1.012
+        sl, tp = curr_p - (atr * 1.5), curr_p + (atr * 3)
     elif sk_signal == "bear" and news_score <= 0:
         action = "SELL"
         note = "Technical සහ News දත්ත වලට අනුව වෙළඳපල පහත වැටීමේ අවදානමක් පවතී."
-        sl, tp = curr_p * 1.004, curr_p * 0.988
+        sl, tp = curr_p + (atr * 1.5), curr_p - (atr * 3)
     else:
         action = "WAIT/SCALP"
         note = "වෙළඳපල දැනට අවිනිශ්චිතය (Ranging). කෙටි කාලීන අවස්ථා පමණක් සලකා බලන්න."
-        sl, tp = curr_p * 0.998, curr_p * 1.005
+        sl, tp = curr_p - (atr * 1.0), curr_p + (atr * 1.5)
 
     analysis_text = f"""
     🚀 **INFINITE ALGO ANALYSIS**
@@ -188,7 +205,7 @@ def query_huggingface_fallback(prompt):
         return res[0]['generated_text'] if isinstance(res, list) else None
     except: return None
 
-def get_ai_analysis(prompt, asset_data, sigs, news_items, pair):
+def get_ai_analysis(prompt, asset_data, sigs, news_items, pair, atr):
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
         if isinstance(keys, str): keys = [keys]
@@ -208,7 +225,7 @@ def get_ai_analysis(prompt, asset_data, sigs, news_items, pair):
 
     # --- ULTIMATE FALLBACK: INFINITE ALGORITHMIC ENGINE ---
     st.toast("Running Infinite Algorithmic Engine...", icon="♾️")
-    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items)
+    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr)
     return algo_result, "Infinite Algo Engine v2.0"
 
 def parse_ai_response(text):
@@ -246,11 +263,10 @@ else:
     st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     
-    # --- EXPANDED ASSETS ---
     assets = {
         "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X"],
         "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD", "DOT-USD"],
-        "Metals": ["XAUUSD=X", "XAGUSD=X", "HG=F"] # Gold, Silver, Copper
+        "Metals": ["XAUUSD=X", "XAGUSD=X", "HG=F"] 
     }
     
     pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
@@ -273,7 +289,7 @@ else:
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
 
-        sigs = calculate_advanced_signals(df)
+        sigs, current_atr = calculate_advanced_signals(df)
         keys_list = list(sigs.keys())
         
         cols = st.columns(3)
@@ -303,11 +319,13 @@ else:
                     prompt = f"""
                     Analyze {pair} at Price: {curr_p} on {tf}.
                     Trend: {sigs['TREND'][0]} | SMC: {sigs['SMC'][0]} | Elliott Wave: {sigs['ELLIOTT'][0]}
+                    Current Volatility (ATR): {current_atr:.5f}
                     News Context: {news_context}
                     1. Provide trade confirmation in Sinhala based on these factors.
-                    2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+                    2. Use the ATR to calculate dynamic SL and TP levels.
+                    3. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
                     """
-                    result, provider = get_ai_analysis(prompt, {'price': curr_p}, sigs, news_items, pair)
+                    result, provider = get_ai_analysis(prompt, {'price': curr_p}, sigs, news_items, pair, current_atr)
                     st.session_state.ai_parsed_data = parse_ai_response(result)
                     st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                     st.session_state.active_provider = provider
