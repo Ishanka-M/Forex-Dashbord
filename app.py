@@ -12,7 +12,7 @@ import requests
 import numpy as np
 import xml.etree.ElementTree as ET
 
-# --- 1. SETUP & STYLE --- (පැරණි විලාසිතාවන් එලෙසම පවතී)
+# --- 1. SETUP & STYLE ---
 st.set_page_config(page_title="Infinite System v7.0 | Gemini 3 Flash", layout="wide", page_icon="⚡")
 
 st.markdown("""
@@ -23,10 +23,12 @@ st.markdown("""
     .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
     .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; }
     .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 20px; font-weight: bold; }
+    
     .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; }
     .news-positive { border-left: 4px solid #00ff00; }
     .news-negative { border-left: 4px solid #ff4b4b; }
     .news-neutral { border-left: 4px solid #00d4ff; }
+    
     .news-title { font-weight: bold; font-size: 14px; color: #ececec; }
     .news-pub { font-size: 11px; color: #888; }
     .sig-box { padding: 10px; border-radius: 6px; font-size: 13px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
@@ -44,25 +46,23 @@ if "active_provider" not in st.session_state:
 if "ai_parsed_data" not in st.session_state:
     st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 
-# --- 2. USER MANAGEMENT & DATA FUNCTIONS --- (පැරණි Functions එලෙසම පවතී)
+# --- Helper Functions (No changes here) ---
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        cred_info = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(cred_info, scopes=scope)
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         return gspread.authorize(creds).open("Forex_User_DB").sheet1
     except: return None
 
 def check_login(username, password):
-    if username == "admin" and password == "admin123":
-        return {"Username": "Admin", "Role": "Admin"}
+    if username == "admin" and password == "admin123": return {"Username": "Admin", "Role": "Admin"}
     sheet = get_user_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
             user = next((i for i in records if str(i.get("Username")) == username), None)
             if user and str(user.get("Password")) == password: return user
-        except: pass
+        except: return None
     return None
 
 def create_user(new_username, new_password):
@@ -78,11 +78,11 @@ def create_user(new_username, new_password):
 
 def get_sentiment_class(title):
     title_lower = title.lower()
-    neg = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
-    pos = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
-    if any(w in title_lower for w in neg): return "news-negative"
-    if any(w in title_lower for w in pos): return "news-positive"
-    return "news-neutral"
+    negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
+    positive_words = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
+    if any(word in title_lower for word in negative_words): return "news-negative"
+    elif any(word in title_lower for word in positive_words): return "news-positive"
+    else: return "news-neutral"
 
 def get_market_news(symbol):
     news_list = []
@@ -103,7 +103,8 @@ def get_market_news(symbol):
     except: pass
     try:
         ticker = yf.Ticker(symbol)
-        if ticker.news: return ticker.news[:5]
+        yf_news = ticker.news
+        if yf_news: return yf_news[:5]
     except: pass
     return []
 
@@ -141,46 +142,46 @@ def calculate_advanced_signals(df):
     signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
     return signals
 
-# --- 5. UPDATED AI ENGINE (GEMINI ROTATION + HUGGING FACE FALLBACK) ---
-def query_huggingface(prompt, token):
-    """Fallback to Hugging Face if Gemini fails"""
+# --- 5. ENHANCED AI ENGINE (GEMINI 3 PREVIEW + 7 KEYS + HF FALLBACK) ---
+def query_huggingface_fallback(prompt):
+    """If all Gemini keys fail, this uses HF to get analysis data."""
+    if "HF_TOKEN" not in st.secrets: return None
     API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3"
-    headers = {"Authorization": f"Bearer {token}"}
-    payload = {"inputs": prompt, "parameters": {"max_new_tokens": 500}}
+    headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
     try:
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=20)
-        res_json = response.json()
-        if isinstance(res_json, list):
-            return res_json[0].get('generated_text', "HF Error")
-        return "HF Limit Reached"
-    except:
-        return "HF Connection Error"
+        response = requests.post(API_URL, headers=headers, json={"inputs": prompt, "parameters": {"max_new_tokens": 500}}, timeout=15)
+        res = response.json()
+        return res[0]['generated_text'] if isinstance(res, list) else None
+    except: return None
 
 def get_ai_analysis(prompt, asset_data):
-    # 1. Gemini Rotation Logic (Keys 7ම පරීක්ෂා කිරීම)
+    # Retrieve up to 7 keys from secrets
     if "GEMINI_KEYS" in st.secrets:
         keys = st.secrets["GEMINI_KEYS"]
         if isinstance(keys, str): keys = [keys]
         
         for i, key in enumerate(keys):
+            # පද්ධතිය විසින් පරීක්ෂා කරන Key අංකය UI එකේ පෙන්වීම
+            st.toast(f"Checking API Key {i+1}/7...", icon="🔍")
             try:
                 genai.configure(api_key=key)
-                # Model name updated to Gemini 3 Flash Preview
+                # Updated to Gemini 2.0/3.0 Flash Preview model identifier
                 model = genai.GenerativeModel('gemini-2.0-flash-exp') 
                 response = model.generate_content(prompt)
                 if response and response.text:
                     return response.text, f"Gemini 3 Flash (Key #{i+1})"
             except Exception:
-                continue # ඊළඟ Key එකට මාරු වීම
+                continue # Fail වුවහොත් ඊළඟ Key එකට යන්න
 
-    # 2. Fallback to Hugging Face (Gemini Keys ඉවර වූ විට)
-    if "HF_TOKEN" in st.secrets:
-        hf_res = query_huggingface(prompt, st.secrets["HF_TOKEN"])
-        return hf_res, "Hugging Face (Mistral-7B)"
+    # If all 7 keys fail, move to Hugging Face
+    st.toast("Switching to Fallback Engine (HF)...", icon="🔄")
+    hf_result = query_huggingface_fallback(prompt)
+    if hf_result:
+        return hf_result, "HF Fallback (Mistral)"
 
-    # All Failed
+    # Final Failure
     sl, tp = asset_data['price'] * 0.995, asset_data['price'] * 1.01
-    return f"ANALYSIS: AI Error (All Keys & HF Failed).\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
+    return f"ANALYSIS: AI Critical Error (All Keys & HF Failed).\nDATA: ENTRY={asset_data['price']} | SL={sl:.4f} | TP={tp:.4f}", "Offline"
 
 def parse_ai_response(text):
     data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
@@ -194,7 +195,7 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# --- 6. MAIN APPLICATION --- (පැරණි Logic එලෙසම පවතී)
+# --- 6. MAIN APPLICATION (Structural elements preserved) ---
 if not st.session_state.logged_in:
     st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v7.0</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
@@ -243,25 +244,26 @@ else:
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
     df = yf.download(pair, period="5d", interval=tf, progress=False)
+    
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
         st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
 
-        with st.expander("📊 Order Flow Data"):
+        with st.expander("📊 Order Flow Data", expanded=False):
             av_data = get_alpha_vantage_data(pair)
             if isinstance(av_data, dict):
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Rate", av_data.get("5. Exchange Rate", "N/A"))
-                c2.metric("Bid", av_data.get("8. Bid Price", "N/A"))
-                c3.metric("Ask", av_data.get("9. Ask Price", "N/A"))
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Rate", av_data.get("5. Exchange Rate", "N/A"))
+                col2.metric("Bid", av_data.get("8. Bid Price", "N/A"))
+                col3.metric("Ask", av_data.get("9. Ask Price", "N/A"))
 
         sigs = calculate_advanced_signals(df)
         cols = st.columns(4)
-        k = list(sigs.keys())
+        keys_list = list(sigs.keys())
         for i in range(4):
-            cols[i].markdown(f"<div class='sig-box {sigs[k[i]][1]}'>{k[i]}: {sigs[k[i]][0]}</div>", unsafe_allow_html=True)
-            cols[i].markdown(f"<div class='sig-box {sigs[k[i+4]][1]}'>{k[i+4]}: {sigs[k[i+4]][0]}</div>", unsafe_allow_html=True)
+            cols[i].markdown(f"<div class='sig-box {sigs[keys_list[i]][1]}'>{keys_list[i]}: {sigs[keys_list[i]][0]}</div>", unsafe_allow_html=True)
+            cols[i].markdown(f"<div class='sig-box {sigs[keys_list[i+4]][1]}'>{keys_list[i+4]}: {sigs[keys_list[i+4]][0]}</div>", unsafe_allow_html=True)
 
         st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=20, b=0)), use_container_width=True)
 
@@ -273,14 +275,23 @@ else:
         with t_c3: st.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
 
         st.divider()
+        
         c_ai, c_res = st.columns([1, 2])
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Analysis", use_container_width=True):
-                with st.spinner("Analyzing News + Technicals..."):
+                with st.spinner("Gemini 3 Flash analyzing News + Technicals..."):
                     news_titles = [n.get('title', '') for n in news_items[:3]]
                     news_context = " | ".join(news_titles) if news_titles else "No major news."
-                    prompt = f"Analyze {pair} at {curr_p} on {tf}. Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}. News: {news_context}. 1. Provide trade confirmation in Sinhala. 2. Format levels at end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx"
+                    
+                    prompt = f"""
+                    Analyze {pair} at Price: {curr_p} on {tf}.
+                    Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}.
+                    News Context: {news_context}
+                    
+                    1. Provide trade confirmation in Sinhala.
+                    2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+                    """
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
                     st.session_state.ai_parsed_data = parse_ai_response(result)
                     st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
