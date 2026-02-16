@@ -76,32 +76,32 @@ def create_user(new_username, new_password):
             return False, f"Error: {e}"
     return False, "Database Connection Failed"
 
-# --- 3. NEWS & DATA ENGINE (FIXED) ---
+# --- 3. NEWS & DATA ENGINE (ROBUST UPDATE) ---
 def get_market_news(symbol):
     news_list = []
-    search_sym = symbol.replace("=X", "").replace("-USD", "")
+    clean_sym = symbol.replace("=X", "").replace("-USD", "")
     headers = {'User-Agent': 'Mozilla/5.0'}
     
+    # ක්‍රමය 1: Google News RSS (Highly Reliable)
     try:
-        # Method 1: yfinance
-        ticker = yf.Ticker(symbol)
-        news_list = ticker.news
-        if news_list: return news_list[:5]
-    except: pass
-
-    try:
-        # Method 2: Google News (Very stable)
-        url = f"https://news.google.com/rss/search?q={search_sym}+forex&hl=en-US&gl=US&ceid=US:en"
-        response = requests.get(url, headers=headers, timeout=5)
+        url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
+        response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             root = ET.fromstring(response.text)
             for item in root.findall('.//item')[:5]:
                 news_list.append({
                     "title": item.find('title').text,
                     "link": item.find('link').text,
-                    "publisher": "Google News"
+                    "publisher": item.find('source').text if item.find('source') is not None else "Financial News"
                 })
             if news_list: return news_list
+    except: pass
+
+    # ක්‍රමය 2: Yahoo Finance News (Backup)
+    try:
+        ticker = yf.Ticker(symbol)
+        yf_news = ticker.news
+        if yf_news: return yf_news[:5]
     except: pass
     
     return []
@@ -150,13 +150,12 @@ def calculate_advanced_signals(df):
     
     return signals
 
-# --- 5. AI ENGINE (RESTORED TO GEMINI 3 FLASH PREVIEW) ---
+# --- 5. AI ENGINE (GEMINI 3 FLASH PREVIEW) ---
 def get_ai_analysis(prompt, asset_data):
     if "GEMINI_KEYS" in st.secrets:
         for i, key in enumerate(st.secrets["GEMINI_KEYS"]):
             try:
                 genai.configure(api_key=key)
-                # මෙතන තමයි ඔයාගේ කලින් තිබ්බ model name එක ආපහු දැම්මේ
                 model = genai.GenerativeModel('gemini-3-flash-preview') 
                 response = model.generate_content(prompt)
                 if response and response.text:
@@ -211,21 +210,31 @@ else:
     st.sidebar.divider()
     market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
     assets = {"Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X"], "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD"], "Metals": ["XAUUSD=X"]}
-    pair = st.sidebar.selectbox("Select Asset", assets[market])
+    
+    # පිරිසිදුව පෙන්වීමට format_func භාවිතා කළා
+    pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
+    
     tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
     
-    # --- NEWS SECTION ---
+    # --- NEWS SECTION (STABLE UPDATE) ---
     st.sidebar.divider()
     st.sidebar.subheader("📰 Market News")
     news_items = get_market_news(pair)
     if news_items:
         for news in news_items:
-            n_link = news.get('link', '#') 
+            n_link = news.get('link') or news.get('url', '#')
             n_title = news.get('title', 'No Title')
-            n_pub = news.get('publisher', 'Unknown')
-            st.sidebar.markdown(f"<div class='news-card'><a href='{n_link}' target='_blank' style='text-decoration:none;'><div class='news-title'>{n_title}</div></a><div class='news-pub'>{n_pub}</div></div>", unsafe_allow_html=True)
+            n_pub = news.get('publisher') or news.get('source', 'Financial News')
+            st.sidebar.markdown(f"""
+            <div class='news-card'>
+                <a href='{n_link}' target='_blank' style='text-decoration:none;'>
+                    <div class='news-title'>{n_title}</div>
+                </a>
+                <div class='news-pub'>{n_pub}</div>
+            </div>
+            """, unsafe_allow_html=True)
     else:
-        st.sidebar.info("No recent news found.")
+        st.sidebar.info("Updating news...")
         
     live = st.sidebar.checkbox("🔴 Real-time Refresh", value=True)
 
@@ -234,7 +243,7 @@ else:
     if not df.empty:
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         curr_p = float(df['Close'].iloc[-1])
-        st.title(f"{pair} Terminal - {curr_p:.5f}")
+        st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
 
         with st.expander("📊 Order Flow Data", expanded=False):
             av_data = get_alpha_vantage_data(pair)
@@ -253,6 +262,7 @@ else:
 
         st.plotly_chart(go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])]).update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=20, b=0)), use_container_width=True)
 
+        # --- TRADE PLAN ---
         st.markdown("### 🎯 AI Trade Plan")
         t_c1, t_c2, t_c3 = st.columns(3)
         parsed = st.session_state.ai_parsed_data
@@ -266,10 +276,18 @@ else:
         with c_ai:
             st.subheader("🚀 AI Sniper Analysis")
             if st.button("Generate Gemini 3 Analysis", use_container_width=True):
-                with st.spinner("Gemini 3 Flash analyzing Market..."):
+                with st.spinner("Gemini 3 Flash analyzing News + Technicals..."):
                     news_titles = [n.get('title', '') for n in news_items[:3]]
-                    news_context = " | ".join(news_titles) if news_titles else "No news."
-                    prompt = f"Analyze {pair} at {curr_p} on {tf}. Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}. News: {news_context}. Provide trade confirmation in Sinhala. Format levels at end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx"
+                    news_context = " | ".join(news_titles) if news_titles else "No major news."
+                    
+                    prompt = f"""
+                    Analyze {pair} at Price: {curr_p} on {tf}.
+                    Technicals: Trend={sigs['TREND'][0]}, SMC={sigs['SMC'][0]}, RSI={sigs['RETAIL'][0]}.
+                    News Context: {news_context}
+                    
+                    1. Provide trade confirmation in Sinhala.
+                    2. Format levels at the end: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+                    """
                     result, provider = get_ai_analysis(prompt, {'price': curr_p})
                     st.session_state.ai_parsed_data = parse_ai_response(result)
                     st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
