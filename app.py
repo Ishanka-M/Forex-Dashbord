@@ -84,6 +84,23 @@ def check_login(username, password):
         except: return None
     return None
 
+def update_usage_in_db(username, new_usage):
+    """Updates the UsageCount in Google Sheets"""
+    sheet, _ = get_user_sheet()
+    if sheet:
+        try:
+            # Locate user row
+            cell = sheet.find(username)
+            if cell:
+                # Assuming UsageCount is in a specific column. 
+                # We find the 'UsageCount' header column index dynamically.
+                headers = sheet.row_values(1)
+                if "UsageCount" in headers:
+                    col_idx = headers.index("UsageCount") + 1
+                    sheet.update_cell(cell.row, col_idx, new_usage)
+        except Exception as e:
+            print(f"DB Update Error: {e}")
+
 def get_sentiment_class(title):
     title_lower = title.lower()
     negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
@@ -123,13 +140,13 @@ def calculate_advanced_signals(df):
     # 2. ICT (Fair Value Gaps)
     signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
     
-    # 3. FIB (Golden Zone) - Restored
+    # 3. FIB (Golden Zone)
     ph, pl = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
     fib_range = ph - pl
     fib_618 = ph - (fib_range * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.0005) else ("Ranging", "neutral")
     
-    # 4. RETAIL (RSI) - Restored
+    # 4. RETAIL (RSI)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -137,7 +154,7 @@ def calculate_advanced_signals(df):
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
     signals['RETAIL'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
 
-    # 5. LIQUIDITY (Grabs) - Restored
+    # 5. LIQUIDITY (Grabs)
     signals['LIQ'] = ("Liquidity Grab (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Grab (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
 
     # 6. TREND
@@ -168,7 +185,6 @@ def calculate_advanced_signals(df):
 
 # --- 5. INFINITE ALGORITHMIC ENGINE V2.0 (RESTORED SINHALA LOGIC) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
-    # Analyze News Sentiment
     news_score = 0
     for item in news_items:
         sentiment = get_sentiment_class(item['title'])
@@ -182,7 +198,6 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
     
     volatility = "ඉහල (High)" if atr > (curr_p * 0.001) else "සාමාන්්‍ය (Normal)"
     
-    # Logic for decision with Dynamic ATR
     if sk_signal == "bull" and news_score >= 0:
         action = "BUY"
         status_sinhala = "ශක්තිමත් මිලදී ගැනීමේ අවස්ථාවකි (Strong Buy)."
@@ -219,7 +234,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (PUTER + RESTORED CONTEXT) ---
+# --- 6. HYBRID AI ENGINE (PUTER + RESTORED CONTEXT + DB UPDATE) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info):
     # 1. Generate Detailed Algo Data
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr)
@@ -232,7 +247,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info):
         st.toast(f"Daily Hybrid Limit Reached ({max_limit}). Switching to Algo Mode.", icon="⚠️")
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # 3. Hybrid Process (Puter with Detailed Prompt)
+    # 3. Hybrid Process (Puter)
     try:
         st.toast("Validating with Puter AI...", icon="🧠")
         
@@ -251,18 +266,23 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info):
         Instructions:
         1. Review the Algo Data against the additional technicals.
         2. If RSI is overbought/oversold against the trend, suggest caution.
-        3. Provide the explanation in Sinhala (use the style of the Algo Data).
+        3. Provide the explanation in Sinhala.
         4. END with the exact format: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
         """
         
         response = puter.ai.chat(prompt)
         
         if response and response.message:
-            # Mock Update - In real app, write to GSheet
-            user_info["UsageCount"] += 1
-            st.session_state.user = user_info
+            # --- REAL DB UPDATE LOGIC ---
+            new_usage = current_usage + 1
+            user_info["UsageCount"] = new_usage
+            st.session_state.user = user_info # Update Local Session
             
-            return response.message.content, f"Hybrid AI (Puter + Algo) | Used: {user_info['UsageCount']}/{max_limit}"
+            # Update Google Sheet
+            if user_info["Username"] != "Admin":
+                update_usage_in_db(user_info["Username"], new_usage)
+            
+            return response.message.content, f"Hybrid AI (Puter + Algo) | Used: {new_usage}/{max_limit}"
             
     except Exception as e:
         st.error(f"AI Error: {e}")
@@ -333,6 +353,9 @@ else:
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
     st.sidebar.caption(f"Status: Online 🟢")
     st.sidebar.caption(f"Hybrid Limit: {user_info.get('UsageCount',0)} / {user_info.get('HybridLimit',10)}")
+    
+    # --- AUTO REFRESH OPTION ---
+    auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
     
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
@@ -505,3 +528,8 @@ else:
                 st.metric("Total AI Calls Today", "124")
         else:
             st.error("Access Denied. Admins Only.")
+            
+    # --- AUTO REFRESH LOGIC ---
+    if auto_refresh:
+        time.sleep(60)
+        st.rerun()
