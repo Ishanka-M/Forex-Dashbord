@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v16.0 (Pro Max)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v17.0 (Forecast Edition)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -23,6 +23,7 @@ st.markdown("""
     @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); } }
     @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(255, 75, 75, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); } }
+    @keyframes scan-line { 0% { top: 0%; } 50% { top: 100%; } 100% { top: 0%; } }
     
     .stApp { animation: fadeIn 0.8s ease-out forwards; }
 
@@ -99,6 +100,37 @@ st.markdown("""
     .admin-table { font-size: 14px; width: 100%; border-collapse: collapse; }
     .admin-table th, .admin-table td { border: 1px solid #444; padding: 8px; text-align: left; }
     .admin-table th { background-color: #333; color: #00d4ff; }
+
+    /* --- SCANNER ANIMATION --- */
+    .scanner-overlay {
+        position: relative;
+        height: 200px;
+        width: 100%;
+        background: rgba(0, 212, 255, 0.05);
+        border: 1px solid #00d4ff;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .scanner-line {
+        position: absolute;
+        width: 100%;
+        height: 2px;
+        background: #00ff00;
+        box-shadow: 0 0 15px #00ff00;
+        animation: scan-line 2s linear infinite;
+        z-index: 2;
+    }
+    .scanner-text {
+        color: #00d4ff;
+        font-family: 'Courier New', monospace;
+        font-weight: bold;
+        z-index: 1;
+        animation: pulse-green 1s infinite;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -106,6 +138,7 @@ st.markdown("""
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
 if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
+if "forecast_points" not in st.session_state: st.session_state.forecast_points = [] # For Chart Forecast
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
 
@@ -149,7 +182,7 @@ def check_login(username, password):
                         # 1. Reset UsageCount to 0
                         if "UsageCount" in headers:
                             sheet.update_cell(cell.row, headers.index("UsageCount") + 1, 0)
-                            user["UsageCount"] = 0
+                        user["UsageCount"] = 0
                         
                         # 2. Reset HybridLimit to 10 (Standard Daily Quota)
                         if "HybridLimit" in headers:
@@ -162,14 +195,12 @@ def check_login(username, password):
                         # 3. CRITICAL: Update LastLogin Date to Today
                         if "LastLogin" in headers:
                             sheet.update_cell(cell.row, headers.index("LastLogin") + 1, current_date)
-                            user["LastLogin"] = current_date
+                        user["LastLogin"] = current_date
                         
                     except Exception as e:
                         print(f"Daily Reset Error: {e}")
                 
                 # If dates match (last_login_date == current_date), we do NOTHING.
-                # This prevents resetting usage when logging out and logging back in on the same day.
-                
                 if "HybridLimit" not in user: user["HybridLimit"] = 10
                 if "UsageCount" not in user: user["UsageCount"] = 0
                 
@@ -227,7 +258,7 @@ def get_sentiment_class(title):
 
 def get_market_news(symbol):
     news_list = []
-    clean_sym = symbol.replace("=X", "").replace("-USD", "")
+    clean_sym = symbol.replace("=X", "").replace("-USD", "").replace("-USDT", "")
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+finance+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, timeout=5)
@@ -350,6 +381,7 @@ def calculate_advanced_signals(df, tf):
     std_20 = df['Close'].rolling(20).std()
     upper_bb = sma_20 + (std_20 * 2)
     lower_bb = sma_20 - (std_20 * 2)
+    
     bb_status = "neutral"
     bb_text = "Normal Vol"
     if c > upper_bb.iloc[-1]: 
@@ -472,7 +504,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V16.0**
+    ♾️ **INFINITE ALGO ENGINE V17.0**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • Trade Type: {trade_mode}
@@ -522,11 +554,13 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     2. Use SMC, Fibonacci, and Liquidity concepts to confirm the best entry.
     3. Output the explanation in SINHALA language (Technical terms in English).
     4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance.
+    5. **CRITICAL: Predict the closing price for the next 5 candles for a Forecast Chart.**
     
     **FINAL OUTPUT FORMAT (STRICT):**
     [Sinhala Verification & Explanation Here]
     
     DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+    FORECAST: [p1, p2, p3, p4, p5]
     """
 
     gemini_keys = []
@@ -537,6 +571,15 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     response_text = ""
     provider_name = ""
 
+    # --- SHOW ANIMATION ---
+    st.markdown("""
+        <div class="scanner-overlay">
+            <div class="scanner-line"></div>
+            <div class="scanner-text">AI ENGINE ANALYZING LIVE MARKET DATA...</div>
+        </div>
+    """, unsafe_allow_html=True)
+    time.sleep(2) # Show animation for 2 seconds
+
     with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
         if not gemini_keys: st.error("❌ No Gemini Keys found!")
         
@@ -544,7 +587,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash') 
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
@@ -574,15 +617,24 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
 
 def parse_ai_response(text):
     data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
+    forecast = []
     try:
         entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        
+        # Parse Forecast Array
+        forecast_match = re.search(r"FORECAST\s*[:=]\s*\[(.*?)\]", text, re.IGNORECASE)
+        
         if entry_match: data["ENTRY"] = entry_match.group(1)
         if sl_match: data["SL"] = sl_match.group(1)
         if tp_match: data["TP"] = tp_match.group(1)
+        if forecast_match:
+            vals = forecast_match.group(1).split(',')
+            forecast = [float(v.strip()) for v in vals if v.strip()]
+
     except: pass
-    return data
+    return data, forecast
 
 def scan_market(assets_list):
     swing_list = []
@@ -598,7 +650,7 @@ def scan_market(assets_list):
                 
                 # Filter: > 25% Accuracy
                 if abs(conf_sw) > 25: 
-                    clean_sym = symbol.replace("=X","").replace("-USD","")
+                    clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     swing_list.append({
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
@@ -616,7 +668,7 @@ def scan_market(assets_list):
                 
                 # Filter: > 25% Accuracy
                 if abs(conf_sc) > 25: 
-                    clean_sym = symbol.replace("=X","").replace("-USD","")
+                    clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     scalp_list.append({
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
@@ -628,7 +680,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v16.0 | UNLOCKED</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v17.0 | UNLOCKED</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -654,16 +706,17 @@ else:
     if user_info.get("Role") == "Admin": nav_options.append("Admin Panel")
     app_mode = st.sidebar.radio("Navigation", nav_options)
     
+    # --- UPDATED ASSET LIST WITH MORE PAIRS & USDT ---
     assets = {
-        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X"],
-        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
-        "Metals": ["XAUUSD=X", "XAGUSD=X"] 
+        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "AUDJPY=X", "EURAUD=X", "GBPAUD=X", "EURGBP=X"],
+        "Crypto": ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "ADA-USDT", "DOGE-USDT", "AVAX-USDT", "DOT-USDT", "LINK-USDT", "MATIC-USDT"],
+        "Metals": ["XAUUSD=X", "XAGUSD=X", "PL=F", "PA=F"] 
     }
 
     if app_mode == "Terminal":
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-        pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
+        pair = st.sidebar.selectbox("Select Asset", assets[market])
         tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=4)
 
         news_items = get_market_news(pair)
@@ -682,7 +735,8 @@ else:
         if not df.empty and len(df) > 50:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             curr_p = float(df['Close'].iloc[-1])
-            st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
+            display_name = pair.replace('=X', '').replace('-USDT', '').replace('-USD', '')
+            st.title(f"{display_name} Terminal - {curr_p:.5f}")
             
             sigs, current_atr, conf_score = calculate_advanced_signals(df, tf)
             
@@ -710,9 +764,31 @@ else:
             r3c2.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
             r3c3.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>{sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
             
-            # --- CHART ---
-            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
+            # --- CHART WITH FORECAST ---
+            fig = go.Figure()
+            
+            # Main Candlesticks
+            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"))
+            
+            # Forecast Logic
+            if st.session_state.forecast_points and "ai_result" in st.session_state:
+                # Basic time delta calculation for future points
+                last_time = df.index[-1]
+                delta_map = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "1wk": 10080}
+                dt_mins = delta_map.get(tf, 60)
+                
+                future_times = [last_time + timedelta(minutes=dt_mins*i) for i in range(1, len(st.session_state.forecast_points)+1)]
+                
+                # Add Forecast Line (Dotted)
+                fig.add_trace(go.Scatter(
+                    x=future_times, 
+                    y=st.session_state.forecast_points, 
+                    mode='lines+markers',
+                    name='AI Forecast',
+                    line=dict(color='yellow', width=2, dash='dot')
+                ))
+
+            fig.update_layout(template="plotly_dark", height=450, margin=dict(l=0, r=0, t=30, b=0), title=f"{display_name} Analysis Chart")
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown(f"### 🎯 Hybrid AI Signal Card")
@@ -725,8 +801,16 @@ else:
             
             st.markdown("---")
             if st.button("🚀 Analyze with Gemini + Puter + News", use_container_width=True):
+                # Clear previous forecast
+                st.session_state.forecast_points = [] 
+                
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
-                st.session_state.ai_parsed_data = parse_ai_response(result)
+                
+                # Parse Result and Forecast
+                parsed_data, forecast_data = parse_ai_response(result)
+                
+                st.session_state.ai_parsed_data = parsed_data
+                st.session_state.forecast_points = forecast_data
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
                 st.rerun()
@@ -739,6 +823,13 @@ else:
         st.title("📡 Global Market Scanner (Multi-Timeframe)")
         
         if st.button("Start Global Scan (All Pairs)", type="primary"):
+            st.markdown("""
+                <div class="scanner-overlay">
+                    <div class="scanner-line"></div>
+                    <div class="scanner-text">GLOBAL MARKET SCAN IN PROGRESS...</div>
+                </div>
+            """, unsafe_allow_html=True)
+            
             with st.spinner("Scanning markets for High Probability Setups (>25%)..."):
                 all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
                 results = scan_market(all_scan_assets)
