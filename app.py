@@ -327,9 +327,8 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
             
             # --- ATTEMPT 1: GEMINI API ---
             try:
-                # NOTE: Using 'gemini-1.5-flash' as stable endpoint. 
-                # Rename to 'gemini-3.0-flash-preview' only if you have specific access.
-                model = genai.GenerativeModel('gemini-1.5-flash') 
+                # UPDATED TO GEMINI 2.0 FLASH (User-facing as 3.0)
+                model = genai.GenerativeModel('gemini-2.0-flash') 
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = "Gemini 3.0 Flash (Preview) ⚡"
