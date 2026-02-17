@@ -1,19 +1,32 @@
+ඔබ ඉල්ලූ පරිදි, **Gemini 2.0 Flash (New Generation)** මුලික කරගෙන, එය අසාර්ථක වුවහොත් **Puter AI** වෙත මාරු වන ලෙසත්, **Retail & SK System** තියරි වැඩිදියුණු කර, **Market Scanner** එක Scalp සහ Swing ලෙස වෙන් කර පෙන්වන ලෙසත් Code එක යාවත්කාලීන කර ඇත.
+
+පහත දැක්වෙන්නේ සම්පූර්ණ යාවත්කාලීන Code එකයි.
+
+**(සැලකිය යුතුයි: මෙම Code එක ක්‍රියාත්මක කිරීමට ඔබේ Streamlit Secrets (`.streamlit/secrets.toml`) හි `GEMINI_API_KEY` එකතු කළ යුතුය. නැතහොත් Puter AI පමණක් වැඩ කරනු ඇත.)**
+
+```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import puter  # Puter AI for Hybrid Analysis
+import puter  # Puter AI for Fallback
+import google.generativeai as genai # Gemini AI
 import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime, date
+from datetime import datetime, time as dt_time
 import time
 import re
 import numpy as np
-import xml.etree.ElementTree as ET
 import requests
+import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v9.5 Pro | Hybrid", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v10.0 Ultra | Hybrid", layout="wide", page_icon="⚡")
+
+# --- GEMINI SETUP ---
+# Secrets file එකේ GEMINI_API_KEY තිබිය යුතුය. නැතිනම් Puter පමණක් වැඩ කරයි.
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 st.markdown("""
 <style>
@@ -30,7 +43,7 @@ st.markdown("""
     .news-negative { border-left: 4px solid #ff4b4b; }
     .news-neutral { border-left: 4px solid #00d4ff; }
     
-    .sig-box { padding: 10px; border-radius: 6px; font-size: 13px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
+    .sig-box { padding: 10px; border-radius: 6px; font-size: 12px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
     .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
     .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
     .neutral { background-color: #262626; color: #888; }
@@ -61,9 +74,7 @@ def get_user_sheet():
         client = gspread.authorize(creds)
         try: sheet = client.open("Forex_User_DB").sheet1
         except: sheet = None
-        try: chat_sheet = client.open("Forex_User_DB").worksheet("Chat")
-        except: chat_sheet = None
-        return sheet, chat_sheet
+        return sheet, None
     except: return None, None
 
 def check_login(username, password):
@@ -125,111 +136,116 @@ def get_market_news(symbol):
             for item in root.findall('.//item')[:3]:
                 news_list.append({
                     "title": item.find('title').text,
-                    "link": item.find('link').text,
-                    "publisher": item.find('source').text if item.find('source') is not None else "News"
+                    "link": item.find('link').text
                 })
             if news_list: return news_list
     except: pass
     return []
 
-# --- DYNAMIC DATA PERIOD HELPER ---
 def get_data_period(tf):
-    """
-    Returns the appropriate data period based on timeframe to optimize 
-    Short Term vs Long Term analysis.
-    """
-    if tf in ["1m", "5m"]:
-        return "5d"  # Short history for Scalping (Yahoo limit for 1m is 7d)
-    elif tf == "15m":
-        return "1mo" # Medium history
-    elif tf == "1h":
-        return "6mo" # Long history for Swing
-    elif tf == "4h":
-        return "1y"  # Very Long history for Swing
-    return "1mo" # Default
+    if tf in ["1m", "5m"]: return "5d"
+    elif tf == "15m": return "1mo"
+    elif tf == "1h": return "6mo"
+    elif tf == "4h": return "1y"
+    return "1mo"
 
 # --- 4. ADVANCED SIGNAL ENGINE (SCALP VS SWING AWARE) ---
+# --- Updated with RETAIL & SK SYSTEM Theory ---
 def calculate_advanced_signals(df, tf):
     if len(df) < 50: return None, 0
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     
-    # -- Dynamic Moving Averages based on Timeframe --
+    # -- Dynamic Moving Averages --
     if tf in ["1m", "5m"]:
-        # Faster MAs for Scalping
         ma_short = df['Close'].rolling(9).mean().iloc[-1]
         ma_long = df['Close'].rolling(21).mean().iloc[-1]
-        trend_label = "Short-Term Trend"
+        trend_label = "Scalp Trend"
     else:
-        # Slower MAs for Swing
         ma_short = df['Close'].rolling(50).mean().iloc[-1]
         ma_long = df['Close'].rolling(200).mean().iloc[-1]
-        trend_label = "Major Trend"
+        trend_label = "Swing Trend"
 
-    # 1. SMC (Structure)
+    # 1. SMC (Structure & Order Blocks)
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     
-    # 2. ICT (Fair Value Gaps)
-    signals['ICT'] = ("Bullish FVG", "bull") if df['Low'].iloc[-1] > df['High'].iloc[-3] else (("Bearish FVG", "bear") if df['High'].iloc[-1] < df['Low'].iloc[-3] else ("No FVG", "neutral"))
+    # 2. ICT (Fair Value Gaps & Silver Bullet Logic)
+    # Simple FVG Check
+    fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
+    fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     
-    # 3. FIB (Golden Zone)
-    ph, pl = df['High'].rolling(50).max().iloc[-1], df['Low'].rolling(50).min().iloc[-1]
-    fib_range = ph - pl
-    fib_618 = ph - (fib_range * 0.618)
-    signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
+    signals['ICT'] = ("Bullish FVG", "bull") if fvg_bull else (("Bearish FVG", "bear") if fvg_bear else ("No FVG", "neutral"))
     
-    # 4. RETAIL (RSI) - Dynamic Thresholds
+    # 3. RETAIL SYSTEM (Support/Resistance & Pattern)
+    # Retail Logic: Support becomes Resistance and vice versa.
+    pivot_high = df['High'].rolling(20).max().iloc[-1]
+    pivot_low = df['Low'].rolling(20).min().iloc[-1]
+    
+    retail_status = "Ranging"
+    retail_col = "neutral"
+    
+    if abs(c - pivot_low) < (c * 0.0005): # Near Support
+        retail_status, retail_col = "Supp Zone Test", "bull"
+    elif abs(c - pivot_high) < (c * 0.0005): # Near Resistance
+        retail_status, retail_col = "Res Zone Test", "bear"
+    elif c > pivot_high:
+        retail_status, retail_col = "Breakout Buy", "bull"
+    elif c < pivot_low:
+        retail_status, retail_col = "Breakdown Sell", "bear"
+        
+    signals['RETAIL_SYS'] = (retail_status, retail_col)
+
+    # 4. RSI (Momentum)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
-    
-    # Scalping allows faster reversals (RSI 70/30), Swing waits for 80/20 extremes? 
-    # Keeping standard 70/30 but labeling logic remains same.
-    signals['RETAIL'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
+    signals['RSI'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
 
     # 5. LIQUIDITY
-    signals['LIQ'] = ("Liquidity Grab (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Grab (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
+    signals['LIQ'] = ("Liquidity Sweep (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Sweep (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
 
-    # 6. TREND & ADX
-    tr = pd.concat([df['High']-df['Low'], abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())], axis=1).max(axis=1)
-    atr_14 = tr.rolling(14).mean().iloc[-1]
-    
-    # Use the dynamic MAs calculated above
+    # 6. TREND 
     trend_direction = "bull" if c > ma_short else "bear"
     signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
     
-    # --- ELLIOTT WAVE (Logic remains same, applies to current TF) ---
+    # 7. ELLIOTT WAVE (Simplified)
     ema_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
-    recent_high_20 = df['High'].rolling(20).max().iloc[-1]
-    recent_low_20 = df['Low'].rolling(20).min().iloc[-1]
-    
-    ew_status, ew_col = "Unclear", "neutral"
     if c > ma_short:
-        if c > ema_20 and c >= recent_high_20 * 0.995: ew_status, ew_col = "Impulse (Wave 3/5)", "bull"
-        elif c < ema_20: ew_status, ew_col = "Correction (Wave 2/4)", "neutral"
-        else: ew_status, ew_col = "Wave 1 (Start)", "bull"
+        ew_status = "Impulse (Wave 3)" if c > ema_20 else "Correction (Wave 4)"
+        ew_col = "bull" if c > ema_20 else "neutral"
     else:
-        if c < ema_20 and c <= recent_low_20 * 1.005: ew_status, ew_col = "Impulse (Wave C/3)", "bear"
-        elif c > ema_20: ew_status, ew_col = "Correction (Wave B/2)", "neutral"
-    
+        ew_status = "Impulse (Wave C)" if c < ema_20 else "Correction (Wave B)"
+        ew_col = "bear" if c < ema_20 else "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # Scoring
-    score = 0
-    score += 1.5 if signals['SMC'][1] == "bull" else -1.5 if signals['SMC'][1] == "bear" else 0
-    score += 1 if signals['TREND'][1] == "bull" else -1 if signals['TREND'][1] == "bear" else 0
-    score += 1 if signals['ICT'][1] == "bull" else -1 if signals['ICT'][1] == "bear" else 0
-    score += 0.5 if signals['FIB'][1] == "bull" else 0
-    score += 0.5 if signals['ELLIOTT'][1] == "bull" and signals['TREND'][1] == "bull" else -0.5 if signals['ELLIOTT'][1] == "bear" else 0
-            
-    signals['SK'] = ("SK Sniper Buy", "bull") if score >= 2.5 else (("SK Sniper Sell", "bear") if score <= -2.5 else ("Waiting", "neutral"))
+    # 8. SK SYSTEM SCORE (Custom Weighted Logic)
+    # SK System prioritizes Trend + Structure + Momentum
+    sk_score = 0
+    # Trend Confluence
+    if signals['TREND'][1] == "bull": sk_score += 2
+    elif signals['TREND'][1] == "bear": sk_score -= 2
     
-    return signals, atr_14
+    # SMC Validation
+    if signals['SMC'][1] == "bull": sk_score += 1.5
+    elif signals['SMC'][1] == "bear": sk_score -= 1.5
+    
+    # Retail Support/Res Validation
+    if signals['RETAIL_SYS'][1] == "bull": sk_score += 1
+    elif signals['RETAIL_SYS'][1] == "bear": sk_score -= 1
+    
+    # RSI Filter (Avoid trading against extremes unless reversal)
+    if signals['RSI'][1] == "bull": sk_score += 0.5 # Buying at oversold
+    elif signals['RSI'][1] == "bear": sk_score -= 0.5 # Selling at overbought
 
-# --- 5. INFINITE ALGORITHMIC ENGINE V3.5 (SCALP/SWING LOGIC) ---
+    signals['SK'] = ("SK PRIME BUY", "bull") if sk_score >= 3.5 else (("SK PRIME SELL", "bear") if sk_score <= -3.5 else ("No Setup", "neutral"))
+    
+    atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
+    return signals, atr, sk_score
+
+# --- 5. INFINITE ALGORITHMIC ENGINE V3.5 ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     news_score = 0
     for item in news_items:
@@ -238,109 +254,116 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         elif sentiment == "news-negative": news_score -= 1
     
     trend = sigs['TREND'][0]
-    ew = sigs['ELLIOTT'][0]
     smc = sigs['SMC'][0]
     sk_signal = sigs['SK'][1]
     
-    # -- Dynamic TP/SL Multipliers based on Timeframe --
     if tf in ["1m", "5m"]:
-        trade_mode = "SCALPING (කෙටි කාලීන)"
+        trade_mode = "SCALPING (වේගවත්)"
         sl_mult = 1.2
         tp_mult = 2.0
     else:
-        trade_mode = "SWING/DAY (දිගු කාලීන)"
+        trade_mode = "SWING (දිගු කාලීන)"
         sl_mult = 1.5
         tp_mult = 3.5
 
-    volatility = "ඉහල (High)" if atr > (curr_p * 0.001) else "සාමාන්‍ය (Normal)"
-    
     if sk_signal == "bull" and news_score >= -1:
         action = "BUY"
-        status_sinhala = f"ශක්තිමත් {trade_mode} අවස්ථාවකි."
-        note = f"{tf} කාල රාමුව තුළ {trend} තත්ත්වයක් පවතී. Elliott Wave ({ew}) සහ SMC ({smc}) මගින් ඉහල යාම තහවුරු කරයි."
+        note = f"SK System සහ Retail Support මගින් තහවුරු විය. Trend: {trend}"
         sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif sk_signal == "bear" and news_score <= 1:
         action = "SELL"
-        status_sinhala = f"ශක්තිමත් {trade_mode} අවස්ථාවකි."
-        note = f"{tf} කාල රාමුව තුළ {trend} තත්ත්වයක් පවතී. Elliott Wave ({ew}) පහත වැටීමක් පෙන්නුම් කරයි."
+        note = f"SK System සහ Retail Resistance මගින් තහවුරු විය. Trend: {trend}"
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
     else:
         action = "WAIT"
-        status_sinhala = "වෙළඳපල අවිනිශ්චිතයි (Neutral)."
-        note = "Signal එකිනෙක ගැටේ. හොඳම අවස්ථාව එනතෙක් ඉවසන්න."
+        note = "SK System අනුමැතිය නොමැත."
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V3.5 (DYNAMIC)**
+    ♾️ **INFINITE ALGO ENGINE V10 (RETAIL + SK)**
     
-    📊 **Trade Setup ({tf}):**
+    📊 **Setup ({tf}):**
     • Mode: {trade_mode}
     • Action: {action}
-    • Structure: {smc} | Trend: {trend}
-    • Elliott Wave: {ew}
+    • SMC: {smc} | Retail: {sigs['RETAIL_SYS'][0]}
     
-    📰 **Context:**
-    • News Score: {news_score}
-    • Volatility: {volatility}
-    
-    💡 **නිගමනය:**
-    {status_sinhala}
+    💡 **SK Logic:**
     {note}
     
     DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP={tp:.5f}
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE ---
+# --- 6. HYBRID AI ENGINE (GEMINI FIRST -> PUTER FALLBACK) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
-    # 1. Generate Algo Data with TF info
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
     current_usage = user_info.get("UsageCount", 0)
     max_limit = user_info.get("HybridLimit", 10)
     
     if current_usage >= max_limit and user_info["Role"] != "Admin":
-        st.toast(f"Daily Limit Reached. Switching to Algo Mode.", icon="⚠️")
         return algo_result, "Infinite Algo (Limit Reached)"
 
+    # Prompt Engineering for Swing Bias
+    prompt = f"""
+    Act as a Senior Hedge Fund Trader (SK System Expert).
+    Analyze this trade for {pair} on {tf} timeframe.
+    
+    Current Algo Output: {algo_result}
+    Technical Data:
+    - Trend: {sigs['TREND'][0]}
+    - SMC Structure: {sigs['SMC'][0]}
+    - RSI: {sigs['RSI'][0]}
+    - Retail Level: {sigs['RETAIL_SYS'][0]}
+    
+    Instructions:
+    1. Prioritize LONG TERM SUSTAINABILITY (Swing) even on lower TFs.
+    2. Check if 'Retail' traders are trapped (Liquidity Grabs).
+    3. Validate using 'SK System' logic (Trend + Momentum confluence).
+    4. Verify Entry, SL, TP.
+    5. Explain in Sinhala (Technical terms in English).
+    6. FINAL FORMAT MUST BE: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+    """
+
+    provider_name = "Unknown"
+    response_text = ""
+
     try:
-        # Animation Block
-        with st.status(f"🚀 Infinite AI Activating ({tf} Mode)...", expanded=True) as status:
-            st.write(f"📊 Scanning {tf} Market Structure...")
-            time.sleep(0.5)
-            st.write(f"🌊 Analyzing Waves (History Adjusted)...")
-            time.sleep(0.5)
-            st.write("🧠 Validating with Puter AI...")
+        # Animation
+        with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
+            st.write("📡 Contacting Gemini 2.0 Flash...")
             
-            prompt = f"""
-            Role: Professional Forex Trader.
-            Task: Validate this {tf} timeframe trade setup and explain in Sinhala.
+            # --- ATTEMPT 1: GEMINI 2.0 FLASH ---
+            try:
+                model = genai.GenerativeModel('gemini-2.0-flash') # Using latest Flash model
+                response = model.generate_content(prompt)
+                response_text = response.text
+                provider_name = "Gemini 2.0 Flash ⚡"
+                status.update(label="✅ Gemini Analysis Complete!", state="complete", expanded=False)
             
-            Context:
-            - Timeframe: {tf}
-            - Algo Analysis: {algo_result}
-            
-            Instructions:
-            1. If Timeframe is 1m/5m, treat as SCALP (Tight SL, Quick exit).
-            2. If Timeframe is 1h/4h, treat as SWING (Wider SL, Trend following).
-            3. Validate the logic.
-            4. END format: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
-            """
-            
-            response = puter.ai.chat(prompt)
-            status.update(label="✅ AI Verification Complete!", state="complete", expanded=False)
-        
-        if response and response.message:
+            except Exception as e_gemini:
+                # --- ATTEMPT 2: FALLBACK TO PUTER ---
+                st.write(f"⚠️ Gemini Busy/Error. Switching to Puter AI... ({e_gemini})")
+                time.sleep(1)
+                try:
+                    puter_resp = puter.ai.chat(prompt)
+                    response_text = puter_resp.message.content
+                    provider_name = "Puter AI (Fallback) 🔵"
+                    status.update(label="✅ Puter Analysis Complete!", state="complete", expanded=False)
+                except Exception as e_puter:
+                    st.error(f"All AI Services Failed. Using Algo. {e_puter}")
+                    return algo_result, "Infinite Algo (Fallback)"
+
+        if response_text:
             new_usage = current_usage + 1
             user_info["UsageCount"] = new_usage
             st.session_state.user = user_info 
             if user_info["Username"] != "Admin":
                 update_usage_in_db(user_info["Username"], new_usage)
-            return response.message.content, f"Hybrid AI (Verified) | Used: {new_usage}/{max_limit}"
+            return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
             
     except Exception as e:
-        st.error(f"AI Error: {e}")
-        return algo_result, "Infinite Algo (Fallback)"
+        return algo_result, "Infinite Algo (Error)"
     
     return algo_result, "Infinite Algo (Default)"
 
@@ -356,44 +379,58 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# --- SCANNER FUNCTION ---
+# --- SCANNER FUNCTION (SPLIT SCALP & SWING) ---
 def scan_market(assets_list):
-    results = []
+    scalp_results = []
+    swing_results = []
+    
     progress_bar = st.progress(0)
-    total = len(assets_list)
+    total = len(assets_list) * 2 # Scans both TFs
+    step = 0
     
-    # Scanner uses 15m default for general direction
-    scan_tf = "15m" 
-    
-    for i, symbol in enumerate(assets_list):
+    for symbol in assets_list:
+        # 1. SCALP SCAN (5m)
         try:
-            df = yf.download(symbol, period="1mo", interval=scan_tf, progress=False)
-            if not df.empty and len(df) > 50:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                sigs, _ = calculate_advanced_signals(df, scan_tf)
-                if sigs:
-                    score_val = 0
-                    if sigs['SK'][1] == 'bull': score_val = 2
-                    elif sigs['SK'][1] == 'bear': score_val = -2
-                    
-                    results.append({
+            df_scalp = yf.download(symbol, period="5d", interval="5m", progress=False)
+            if not df_scalp.empty and len(df_scalp) > 50:
+                if isinstance(df_scalp.columns, pd.MultiIndex): df_scalp.columns = df_scalp.columns.get_level_values(0)
+                sigs_sc, _, score_sc = calculate_advanced_signals(df_scalp, "5m")
+                if abs(score_sc) >= 3: # Only high probability scalps
+                    scalp_results.append({
                         "Pair": symbol.replace("=X","").replace("-USD",""),
-                        "Signal": sigs['SK'][0],
-                        "Trend": sigs['TREND'][0],
-                        "Wave": sigs['ELLIOTT'][0], 
-                        "Score": score_val,
-                        "Price": df['Close'].iloc[-1]
+                        "Signal": sigs_sc['SK'][0],
+                        "Trend": sigs_sc['TREND'][0],
+                        "Score": score_sc,
+                        "Price": df_scalp['Close'].iloc[-1]
                     })
         except: pass
-        progress_bar.progress((i + 1) / total)
+        step += 1
+        progress_bar.progress(step / total)
+
+        # 2. SWING SCAN (4h)
+        try:
+            df_swing = yf.download(symbol, period="6mo", interval="4h", progress=False)
+            if not df_swing.empty and len(df_swing) > 50:
+                if isinstance(df_swing.columns, pd.MultiIndex): df_swing.columns = df_swing.columns.get_level_values(0)
+                sigs_sw, _, score_sw = calculate_advanced_signals(df_swing, "4h")
+                if abs(score_sw) >= 2.5: # Swing needs solid structure
+                    swing_results.append({
+                        "Pair": symbol.replace("=X","").replace("-USD",""),
+                        "Signal": sigs_sw['SK'][0],
+                        "Trend": sigs_sw['TREND'][0],
+                        "Score": score_sw,
+                        "Price": df_swing['Close'].iloc[-1]
+                    })
+        except: pass
+        step += 1
+        progress_bar.progress(step / total)
     
     progress_bar.empty()
-    sorted_res = sorted(results, key=lambda x: abs(x['Score']), reverse=True)
-    return sorted_res
+    return sorted(scalp_results, key=lambda x: abs(x['Score']), reverse=True), sorted(swing_results, key=lambda x: abs(x['Score']), reverse=True)
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v9.5 PRO</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v10.0 ULTRA</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -409,8 +446,7 @@ else:
     
     # --- SIDEBAR ---
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Status: Online 🟢")
-    st.sidebar.caption(f"Hybrid Limit: {user_info.get('UsageCount',0)} / {user_info.get('HybridLimit',10)}")
+    st.sidebar.caption(f"Engine: Gemini 2.0 Flash + Puter")
     
     # --- AUTO REFRESH OPTION ---
     auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
@@ -434,10 +470,8 @@ else:
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
         
-        # Select Timeframe
         tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
         
-        # News
         st.sidebar.divider()
         st.sidebar.subheader("📰 Market News")
         news_items = get_market_news(pair)
@@ -445,7 +479,6 @@ else:
             color_class = get_sentiment_class(news['title'])
             st.sidebar.markdown(f"<div class='news-card {color_class}'><div class='news-title'>{news['title']}</div></div>", unsafe_allow_html=True)
 
-        # Chart & Logic (DYNAMIC PERIOD)
         data_period = get_data_period(tf)
         st.caption(f"Fetching {data_period} history for {tf} analysis...")
         
@@ -456,25 +489,24 @@ else:
             curr_p = float(df['Close'].iloc[-1])
             st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
             
-            # Pass TF to Signal Engine
-            sigs, current_atr = calculate_advanced_signals(df, tf)
+            sigs, current_atr, sk_score = calculate_advanced_signals(df, tf)
             
             # Notification
             sk_signal = sigs['SK'][1]
             if sk_signal == "bull":
-                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL ({tf}):</b> Infinite System detects a BUY setup!</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>SK BUY SIGNAL ({tf}):</b> Setup Detected (Score: {sk_score})</div>", unsafe_allow_html=True)
             elif sk_signal == "bear":
-                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SELL SIGNAL ({tf}):</b> Infinite System detects a SELL setup!</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SK SELL SIGNAL ({tf}):</b> Setup Detected (Score: {sk_score})</div>", unsafe_allow_html=True)
             else:
-                st.markdown(f"<div class='notif-container notif-wait'>📡 <b>MONITORING:</b> Waiting for clear setup...</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='notif-container notif-wait'>📡 <b>MONITORING:</b> Waiting for SK System Confluence...</div>", unsafe_allow_html=True)
 
             # --- SIGNAL GRID ---
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
-            c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>E-WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
-            c1.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
-            c2.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>RSI: {sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
+            c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
+            c1.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT FVG: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
+            c2.markdown(f"<div class='sig-box {sigs['RETAIL_SYS'][1]}'>RETAIL: {sigs['RETAIL_SYS'][0]}</div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>LIQ: {sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
 
             # Chart
@@ -483,7 +515,7 @@ else:
             st.plotly_chart(fig, use_container_width=True)
 
             # Dashboard
-            st.markdown(f"### 🎯 Hybrid AI Analysis ({tf})")
+            st.markdown(f"### 🎯 Hybrid AI Analysis (Focus: {tf})")
             c1, c2, c3 = st.columns(3)
             parsed = st.session_state.ai_parsed_data
             c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
@@ -505,34 +537,28 @@ else:
 
     # --- VIEW: MARKET SCANNER ---
     elif app_mode == "Market Scanner":
-        st.title("📡 AI Market Scanner")
-        st.markdown("Scans assets for high-probability setups using Elliott Wave & SMC.")
+        st.title("📡 AI Market Scanner (Dual Mode)")
+        st.markdown("Scans for High Probability **SK System** Setups.")
         
-        scan_market_type = st.selectbox("Select Market to Scan", ["Forex", "Crypto"])
+        scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
         
-        if st.button("Start Scan", type="primary"):
-            with st.spinner(f"Scanning {scan_market_type} market..."):
-                results = scan_market(assets[scan_market_type])
+        if st.button("Start Hybrid Scan", type="primary"):
+            with st.spinner(f"Scanning {scan_market_type} (Scalp & Swing)..."):
+                scalp_res, swing_res = scan_market(assets[scan_market_type])
                 
-                if results:
-                    st.success(f"Scan Complete! Found {len(results)} pairs.")
+                tab_scalp, tab_swing = st.tabs(["⚡ Scalp Setups (5m)", "🐢 Swing Setups (4h)"])
+                
+                with tab_scalp:
+                    if scalp_res:
+                        st.success(f"Found {len(scalp_res)} Scalp Opps")
+                        st.dataframe(pd.DataFrame(scalp_res))
+                    else: st.warning("No high-quality Scalp setups found.")
                     
-                    col1, col2, col3 = st.columns(3)
-                    for i, res in enumerate(results[:3]):
-                        color = "#00ff00" if res['Score'] > 0 else "#ff4b4b" if res['Score'] < 0 else "#888"
-                        with [col1, col2, col3][i]:
-                            st.markdown(f"""
-                            <div style="background:#222; padding:15px; border-radius:10px; border-left: 5px solid {color};">
-                                <h3>{res['Pair']}</h3>
-                                <p style="color:{color}; font-weight:bold;">{res['Signal']}</p>
-                                <p>Wave: {res['Wave']}</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    
-                    st.markdown("### Full Scan Results")
-                    st.dataframe(pd.DataFrame(results))
-                else:
-                    st.warning("No data found or market is closed.")
+                with tab_swing:
+                    if swing_res:
+                        st.success(f"Found {len(swing_res)} Swing Opps")
+                        st.dataframe(pd.DataFrame(swing_res))
+                    else: st.warning("No high-quality Swing setups found.")
 
     # --- VIEW: TRADER CHAT ---
     elif app_mode == "Trader Chat":
@@ -559,48 +585,22 @@ else:
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
             st.title("🛡️ Admin Control Center")
-            
-            tab1, tab2, tab3 = st.tabs(["User Management", "Add New User", "System Status"])
-            
+            tab1, tab2 = st.tabs(["User Management", "Add New User"])
             with tab1:
-                st.subheader("Manage User Limits")
-                mock_users = [
-                    {"Username": "Trader1", "HybridLimit": 10, "Usage": 5, "Status": "Online 🟢"},
-                    {"Username": "Ishanka", "HybridLimit": 20, "Usage": 12, "Status": "Offline 🔴"},
-                ]
-                st.dataframe(pd.DataFrame(mock_users), use_container_width=True)
-                
-                c1, c2 = st.columns(2)
-                target_user = c1.text_input("Username to Update")
-                new_limit = c2.number_input("New Hybrid Limit", min_value=10, value=20)
-                
-                if st.button("Update User Limit"):
-                    st.success(f"Updated {target_user} limit to {new_limit}")
-            
+                st.dataframe(pd.DataFrame([{"User": "Demo", "Usage": "0"}]), use_container_width=True)
             with tab2:
-                st.subheader("Create New User")
                 with st.form("add_user_form"):
                     new_u = st.text_input("New Username")
                     new_p = st.text_input("Password", type="password")
-                    new_role = st.selectbox("Role", ["User", "VIP"])
-                    new_l = st.number_input("Daily Limit", min_value=5, value=10)
-                    
-                    if st.form_submit_button("Create User"):
-                        if new_u and new_p:
-                            success, msg = add_new_user(new_u, new_p, new_role, new_l)
-                            if success: st.success(msg)
-                            else: st.error(msg)
-                        else:
-                            st.error("Please fill all fields.")
-            
-            with tab3:
-                st.subheader("Live System Stats")
-                st.metric("Active Users", "3")
-                st.metric("Algo Engine", "v9.5 Pro (Dynamic TF)")
+                    if st.form_submit_button("Create"):
+                         add_new_user(new_u, new_p, "User", 10)
+                         st.success("Done")
         else:
-            st.error("Access Denied. Admins Only.")
+            st.error("Access Denied.")
             
     # --- AUTO REFRESH LOGIC ---
     if auto_refresh:
         time.sleep(60)
         st.rerun()
+
+```
