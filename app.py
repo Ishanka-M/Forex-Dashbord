@@ -14,7 +14,7 @@ import requests
 import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
-# --- 1. SETUP & STYLE ---
+# --- 1. SETUP & STYLE (UPDATED ANIMATIONS) ---
 st.set_page_config(page_title="Infinite System v16.0 (Pro Max)", layout="wide", page_icon="⚡")
 
 st.markdown("""
@@ -24,6 +24,20 @@ st.markdown("""
     @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); } }
     @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(255, 75, 75, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); } }
     @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes shimmer {
+        0% { background-position: -1000px 0; }
+        100% { background-position: 1000px 0; }
+    }
+    @keyframes float {
+        0% { transform: translateY(0px); }
+        50% { transform: translateY(-5px); }
+        100% { transform: translateY(0px); }
+    }
+    @keyframes glow {
+        0% { box-shadow: 0 0 5px #00d4ff; }
+        50% { box-shadow: 0 0 20px #00d4ff; }
+        100% { box-shadow: 0 0 5px #00d4ff; }
+    }
     .loading-icon { display: inline-block; animation: rotate 2s linear infinite; font-size: 24px; }
     
     .stApp { animation: fadeIn 0.8s ease-out forwards; }
@@ -36,6 +50,7 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 20px;
         text-align: center;
+        animation: glow 2s infinite;
     }
     
     /* --- TEXT COLORS --- */
@@ -49,16 +64,17 @@ st.markdown("""
         padding: 20px; border-radius: 15px; margin-top: 15px; 
         color: white; backdrop-filter: blur(10px);
         box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
-        transition: transform 0.3s;
+        transition: transform 0.3s, box-shadow 0.3s;
+        animation: float 4s ease-in-out infinite;
     }
-    .entry-box:hover { transform: scale(1.01); }
+    .entry-box:hover { transform: scale(1.02); box-shadow: 0 0 30px rgba(0, 212, 255, 0.5); }
     
     .trade-metric { 
         background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
         border: 1px solid #444; 
         border-radius: 12px; padding: 15px; text-align: center; transition: all 0.3s ease;
     }
-    .trade-metric:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(0,0,0,0.5); border-color: #00d4ff; }
+    .trade-metric:hover { transform: translateY(-5px) scale(1.02); box-shadow: 0 10px 20px rgba(0,0,0,0.5); border-color: #00d4ff; }
     .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
     .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 22px; font-weight: bold; }
     
@@ -67,6 +83,7 @@ st.markdown("""
         background: #1e1e1e;
         padding: 12px; margin-bottom: 10px; 
         border-radius: 8px; transition: all 0.3s ease; border-right: 1px solid #333;
+        animation: fadeIn 0.5s;
     }
     .news-card:hover { transform: translateX(5px); background: #252525; box-shadow: -5px 0 10px rgba(0,0,0,0.3); }
     .news-positive { border-left: 5px solid #00ff00; }
@@ -78,6 +95,12 @@ st.markdown("""
         padding: 12px;
         border-radius: 8px; font-size: 13px; text-align: center; 
         font-weight: bold; border: 1px solid #444; margin-bottom: 8px; box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+        transition: all 0.3s;
+        animation: fadeIn 0.6s;
+    }
+    .sig-box:hover {
+        transform: scale(1.02);
+        box-shadow: 0 0 15px currentColor;
     }
     .bull { background: linear-gradient(90deg, #004d40, #00695c); color: #00ff00; border-color: #00ff00; }
     .bear { background: linear-gradient(90deg, #4a1414, #7f0000); color: #ff4b4b; border-color: #ff4b4b; }
@@ -88,13 +111,14 @@ st.markdown("""
         padding: 20px;
         border-radius: 12px; margin-bottom: 25px; 
         border-left: 8px solid; background: #121212; font-size: 18px;
+        animation: fadeIn 0.8s;
     }
     .notif-buy { border-color: #00ff00; color: #00ff00; animation: pulse-green 2s infinite; }
     .notif-sell { border-color: #ff4b4b; color: #ff4b4b; animation: pulse-red 2s infinite; }
     .notif-wait { border-color: #555; color: #aaa; }
     
     /* --- CHAT --- */
-    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; animation: slideIn 0.3s; }
     .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
     
     /* --- ADMIN TABLE --- */
@@ -110,10 +134,20 @@ st.markdown("""
         border-radius: 10px;
         border: 1px solid #00d4ff;
         margin: 10px 0;
+        animation: glow 1.5s infinite;
     }
     .forecast-loading span {
         font-size: 20px;
         color: #00d4ff;
+    }
+    
+    /* --- NEW SCAN CARD ANIMATION --- */
+    .scan-card {
+        animation: slideInUp 0.5s ease-out;
+    }
+    @keyframes slideInUp {
+        from { opacity: 0; transform: translateY(30px); }
+        to { opacity: 1; transform: translateY(0); }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -647,29 +681,42 @@ def scan_market(assets_list):
         
     return {"swing": swing_list, "scalp": scalp_list}
 
-# --- NEW: Forecast Chart Function ---
+# --- NEW: IMPROVED FORECAST CHART FUNCTION ---
 def create_forecast_chart(historical_df, current_price, sl, tp, forecast_text):
     """
     Create a forecast chart with historical candles and projected path.
+    Improved with better date handling and smoother forecast line.
     """
     # Use last 30 candles for historical context
     hist = historical_df.tail(30).copy()
     
-    # Create future dates (simple index extension)
+    # Create future dates with realistic intervals
     last_date = hist.index[-1]
     if isinstance(last_date, pd.Timestamp):
-        # For intraday, we need to guess interval
-        freq = pd.infer_freq(hist.index)
-        if freq is None:
-            # Default to 1 hour if can't infer
-            future_dates = pd.date_range(start=last_date + timedelta(hours=1), periods=10, freq='H')
+        # Calculate typical interval from historical data
+        if len(hist) > 1:
+            deltas = hist.index.to_series().diff().dropna()
+            # Use median interval to avoid outliers
+            median_delta = deltas.median()
+            if pd.isna(median_delta) or median_delta.total_seconds() == 0:
+                # Fallback: guess based on timeframe
+                if len(hist) > 1:
+                    # approximate from first and last
+                    total_seconds = (hist.index[-1] - hist.index[0]).total_seconds()
+                    avg_seconds = total_seconds / (len(hist)-1)
+                    median_delta = timedelta(seconds=avg_seconds)
+                else:
+                    median_delta = timedelta(hours=1)  # default
         else:
-            future_dates = pd.date_range(start=last_date, periods=11, freq=freq)[1:]
+            median_delta = timedelta(hours=1)
+        
+        # Generate 15 future dates (smoother line)
+        future_dates = [last_date + (i+1)*median_delta for i in range(15)]
     else:
-        future_dates = list(range(len(hist), len(hist)+10))
+        # If not datetime, use integer indices
+        future_dates = list(range(len(hist), len(hist)+15))
     
-    # Generate forecast path: linear from current price to TP (if BUY) or SL (if SELL)
-    # Determine direction from SL/TP relative to current price
+    # Determine target price (TP) and direction
     try:
         tp_val = float(tp)
         sl_val = float(sl)
@@ -678,15 +725,19 @@ def create_forecast_chart(historical_df, current_price, sl, tp, forecast_text):
         tp_val = curr * 1.01
         sl_val = curr * 0.99
     
+    # For forecast path, go from current price to TP (linear)
     if tp_val > curr:
-        direction = "bull"
         target = tp_val
+        direction = "bullish"
     else:
-        direction = "bear"
-        target = tp_val  # TP is lower for sell
+        target = tp_val
+        direction = "bearish"
     
-    # Create forecast line
-    forecast_prices = np.linspace(curr, target, 10)
+    # Create forecast prices (smooth transition)
+    forecast_prices = np.linspace(curr, target, len(future_dates))
+    
+    # Add some slight curvature for realism (optional)
+    # Could use a quadratic or just keep linear
     
     # Create figure
     fig = go.Figure()
@@ -702,28 +753,54 @@ def create_forecast_chart(historical_df, current_price, sl, tp, forecast_text):
         showlegend=True
     ))
     
-    # Forecast line
+    # Forecast line (dashed, with markers)
     fig.add_trace(go.Scatter(
         x=future_dates,
         y=forecast_prices,
         mode='lines+markers',
-        name='Forecast',
+        name=f'Forecast ({direction})',
         line=dict(color='#00d4ff', width=3, dash='dot'),
-        marker=dict(size=6, color='#00d4ff')
+        marker=dict(size=5, color='#00d4ff', symbol='circle')
     ))
     
     # Add SL and TP lines
-    fig.add_hline(y=sl_val, line_dash="dash", line_color="#ff4b4b", annotation_text="SL", annotation_position="bottom right")
-    fig.add_hline(y=tp_val, line_dash="dash", line_color="#00ff00", annotation_text="TP", annotation_position="top right")
+    fig.add_hline(y=sl_val, line_dash="dash", line_color="#ff4b4b", 
+                  annotation_text="SL", annotation_position="bottom right")
+    fig.add_hline(y=tp_val, line_dash="dash", line_color="#00ff00", 
+                  annotation_text="TP", annotation_position="top right")
+    
+    # Add forecast text as annotation
+    if forecast_text and forecast_text != 'N/A':
+        fig.add_annotation(
+            x=future_dates[-1] if future_dates else hist.index[-1],
+            y=forecast_prices[-1],
+            text=forecast_text,
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=2,
+            arrowcolor="#00d4ff",
+            font=dict(size=12, color="white"),
+            bgcolor="#1e1e1e",
+            bordercolor="#00d4ff",
+            borderwidth=1,
+            borderpad=4,
+            ax=20,
+            ay=-30
+        )
     
     fig.update_layout(
-        title="AI Forecast & Projection",
+        title=f"AI Forecast & Projection ({direction.capitalize()})",
         template="plotly_dark",
         height=400,
         margin=dict(l=0, r=0, t=40, b=0),
         xaxis_title="Time",
         yaxis_title="Price",
-        hovermode="x unified"
+        hovermode="x unified",
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            type='date' if isinstance(last_date, pd.Timestamp) else 'linear'
+        )
     )
     
     return fig
@@ -892,7 +969,7 @@ else:
                 else:
                     st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
             
-        # Display Results
+        # Display Results with animation class
         res = st.session_state.scan_results
         
         st.markdown("---")
@@ -901,10 +978,10 @@ else:
         with c1:
             st.subheader("🐢 SWING TRADES (4H)")
             if res['swing']:
-                for sig in res['swing']:
+                for i, sig in enumerate(res['swing']):
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
+                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color}; animation-delay: {i*0.1}s;'>
                         <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
                         <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
                     </div>
@@ -915,10 +992,10 @@ else:
         with c2:
             st.subheader("🐇 SCALP TRADES (15M)")
             if res['scalp']:
-                for sig in res['scalp']:
+                for i, sig in enumerate(res['scalp']):
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
+                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color}; animation-delay: {i*0.1}s;'>
                         <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
                         <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
                     </div>
