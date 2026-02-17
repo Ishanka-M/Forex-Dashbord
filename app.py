@@ -22,14 +22,13 @@ st.markdown("""
     @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); } }
     @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(255, 75, 75, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); } }
-    @keyframes gold-glow { 0% { border-color: #ffd700; box-shadow: 0 0 5px #ffd700; } 50% { border-color: #ffaa00; box-shadow: 0 0 20px #ffaa00; } 100% { border-color: #ffd700; box-shadow: 0 0 5px #ffd700; } }
-
+    
     .stApp { animation: fadeIn 0.8s ease-out forwards; }
 
     /* --- ALERT PANELS --- */
     .high-prob-alert {
         background: linear-gradient(135deg, #1a1a1a, #2d2d2d);
-        border: 2px solid #00d4ff; /* Changed to Blue for standard alerts */
+        border: 2px solid #00d4ff;
         border-radius: 15px;
         padding: 20px;
         margin-bottom: 20px;
@@ -110,7 +109,7 @@ if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
 if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
-if "high_prob_signal" not in st.session_state: st.session_state.high_prob_signal = None 
+if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
 
 # --- Helper Functions (DB & Auth) ---
 def get_user_sheet():
@@ -215,7 +214,7 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (MODIFIED: REMOVED 75% LIMIT) ---
+# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df, tf):
     if df is None or len(df) < 50: return None, 0, 0
     signals = {}
@@ -322,7 +321,7 @@ def calculate_advanced_signals(df, tf):
         else: ew_status, ew_col = "Wave B (Rally)", "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # --- 10. CONFIDENCE SCORING (UNLOCKED) ---
+    # --- 10. CONFIDENCE SCORING ---
     confidence = 0
     
     # Weightings
@@ -344,7 +343,6 @@ def calculate_advanced_signals(df, tf):
     if patt_signal == "bull": confidence += 15
     elif patt_signal == "bear": confidence -= 15
 
-    # UNLOCKED LOGIC: Show Direction for ANY Score > 0
     final_signal = "neutral"
     if confidence > 0: final_signal = "bull"
     elif confidence < 0: final_signal = "bear"
@@ -443,7 +441,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash-exp') 
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
@@ -483,7 +481,10 @@ def parse_ai_response(text):
     return data
 
 def scan_market(assets_list):
-    # UNLOCKED SCANNER: Returns ANY trade with a direction
+    swing_list = []
+    scalp_list = []
+    
+    # --- SWING SCAN (4H) ---
     for symbol in assets_list:
         try:
             df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
@@ -491,16 +492,35 @@ def scan_market(assets_list):
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
-                # CHANGED: Capture any signal (removed >75 check)
-                if abs(conf_sw) > 0: 
+                # Filter: > 25% Accuracy
+                if abs(conf_sw) > 25: 
                     clean_sym = symbol.replace("=X","").replace("-USD","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
-                    return {
-                        "pair": clean_sym, "tf": "4h (Swing)", "dir": direction, 
+                    swing_list.append({
+                        "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
                         "conf": abs(conf_sw), "price": df_sw['Close'].iloc[-1]
-                    }
+                    })
         except: pass
-    return None
+        
+    # --- SCALP SCAN (15M) ---
+    for symbol in assets_list:
+        try:
+            df_sc = yf.download(symbol, period="1mo", interval="15m", progress=False)
+            if not df_sc.empty and len(df_sc) > 50:
+                if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
+                sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "15m")
+                
+                # Filter: > 25% Accuracy
+                if abs(conf_sc) > 25: 
+                    clean_sym = symbol.replace("=X","").replace("-USD","")
+                    direction = "BUY" if conf_sc > 0 else "SELL"
+                    scalp_list.append({
+                        "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
+                        "conf": abs(conf_sc), "price": df_sc['Close'].iloc[-1]
+                    })
+        except: pass
+        
+    return {"swing": swing_list, "scalp": scalp_list}
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
@@ -536,30 +556,8 @@ else:
         "Metals": ["XAUUSD=X", "XAGUSD=X"] 
     }
 
-    if auto_refresh:
-        all_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
-        import random
-        scan_subset = random.sample(all_assets, 5) 
-        found_signal = scan_market(scan_subset)
-        if found_signal:
-            st.session_state.high_prob_signal = found_signal
-
     if app_mode == "Terminal":
         st.sidebar.divider()
-        
-        if st.session_state.high_prob_signal:
-            sig = st.session_state.high_prob_signal
-            st.markdown(f"""
-            <div class='high-prob-alert'>
-                <div class='high-prob-title'>⚡ SIGNAL DETECTED</div>
-                <div class='high-prob-pair'>{sig['pair']} - {sig['dir']} ({sig['tf']})</div>
-                <div class='high-prob-desc'>Accuracy: {sig['conf']}% | Price: {sig['price']:.4f}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            if auto_refresh:
-                st.info("📡 Scanning all markets...")
-
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
         tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=4)
@@ -577,7 +575,6 @@ else:
             sigs, current_atr, conf_score = calculate_advanced_signals(df, tf)
             
             signal_dir = sigs['SK'][1]
-            # MODIFIED: Display Signal Strength based on raw score
             if signal_dir == "bull": 
                 st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
             elif signal_dir == "bear": 
@@ -620,27 +617,52 @@ else:
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     elif app_mode == "Market Scanner":
-        st.title("📡 Global Market Scanner")
+        st.title("📡 Global Market Scanner (Multi-Timeframe)")
         
-        if st.button("Start Global Scan (All Signals)", type="primary"):
-            with st.spinner("Scanning markets (No Limits)..."):
-                all_scan_assets = assets["Forex"] + assets["Crypto"]
-                found_signal = scan_market(all_scan_assets)
+        if st.button("Start Global Scan (All Pairs)", type="primary"):
+            with st.spinner("Scanning markets for High Probability Setups (>25%)..."):
+                all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
+                results = scan_market(all_scan_assets)
+                st.session_state.scan_results = results
                 
-                if found_signal:
-                    st.success(f"Signal Found! {found_signal['pair']}")
-                    st.session_state.high_prob_signal = found_signal
+                if not results['swing'] and not results['scalp']:
+                    st.warning("No signals found above 25% accuracy.")
                 else:
-                    st.warning("No data returned from markets.")
-            st.rerun()
+                    st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
             
-        if st.session_state.high_prob_signal:
-             sig = st.session_state.high_prob_signal
-             st.markdown(f"### 🔥 Trade Opportunity")
-             st.info(f"Pair: {sig['pair']} | Timeframe: {sig['tf']} | Direction: {sig['dir']} | Accuracy: {sig['conf']}%")
-             
-             if st.button("Analyze This Trade Now"):
-                 st.write("Go to Terminal and select this pair for full AI analysis.")
+        # Display Results
+        res = st.session_state.scan_results
+        
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            st.subheader("🐢 SWING TRADES (4H)")
+            if res['swing']:
+                for sig in res['swing']:
+                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                    st.markdown(f"""
+                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
+                        <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
+                        <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No Swing setups found.")
+
+        with c2:
+            st.subheader("🐇 SCALP TRADES (15M)")
+            if res['scalp']:
+                for sig in res['scalp']:
+                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                    st.markdown(f"""
+                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
+                        <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
+                        <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No Scalp setups found.")
 
     elif app_mode == "Trader Chat":
         st.title("💬 Global Trader Room")
@@ -681,7 +703,7 @@ else:
                 
                 user_list = [r['Username'] for r in all_records if str(r.get('Username')) != 'Admin']
                 target_user = st.selectbox("Select User to Update", user_list)
-                
+
                 if target_user:
                     curr_user_data = next((u for u in all_records if u['Username'] == target_user), {})
                     st.info(f"User: **{target_user}** | Current Limit: **{curr_user_data.get('HybridLimit', 'N/A')}** | Used: **{curr_user_data.get('UsageCount', 'N/A')}**")
