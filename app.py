@@ -14,7 +14,7 @@ import requests
 import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v15.0 (Ultimate Hybrid)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v15.0 (Unlocked)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -29,14 +29,13 @@ st.markdown("""
     /* --- ALERT PANELS --- */
     .high-prob-alert {
         background: linear-gradient(135deg, #1a1a1a, #2d2d2d);
-        border: 2px solid #ffd700;
+        border: 2px solid #00d4ff; /* Changed to Blue for standard alerts */
         border-radius: 15px;
         padding: 20px;
         margin-bottom: 20px;
-        animation: gold-glow 2s infinite;
         text-align: center;
     }
-    .high-prob-title { color: #ffd700; font-size: 24px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
+    .high-prob-title { color: #00d4ff; font-size: 24px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
     .high-prob-pair { color: #ffffff; font-size: 32px; font-weight: 900; }
     .high-prob-desc { color: #cccccc; font-size: 16px; margin-top: 5px; }
 
@@ -96,8 +95,7 @@ st.markdown("""
     .notif-wait { border-color: #555; color: #aaa; }
     
     /* --- CHAT --- */
-    .chat-msg { padding: 10px;
-        border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
     .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
     
     /* --- ADMIN TABLE --- */
@@ -170,13 +168,9 @@ def add_new_user_to_db(username, password, limit):
     sheet, _ = get_user_sheet()
     if sheet:
         try:
-            # Check if user already exists
             cell = sheet.find(username)
             if cell:
                 return False, "User already exists!"
-            
-            # Append new row [Username, Password, Role, HybridLimit, UsageCount]
-            # Assumes the Sheet Headers are in this order
             sheet.append_row([username, password, "User", limit, 0])
             return True, f"User {username} created successfully!"
         except Exception as e:
@@ -221,7 +215,7 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (UPDATED WITH OLD CODE LOGIC) ---
+# --- 4. ADVANCED SIGNAL ENGINE (MODIFIED: REMOVED 75% LIMIT) ---
 def calculate_advanced_signals(df, tf):
     if df is None or len(df) < 50: return None, 0, 0
     signals = {}
@@ -229,35 +223,30 @@ def calculate_advanced_signals(df, tf):
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
     
-    # --- 1. TREND (Enhanced) ---
+    # --- 1. TREND ---
     ma_50 = df['Close'].rolling(50).mean().iloc[-1]
     ma_200 = df['Close'].rolling(200).mean().iloc[-1] if len(df) > 200 else ma_50
-    
     trend_dir = "neutral"
     if c > ma_50 and c > ma_200: trend_dir = "bull"
     elif c < ma_50 and c < ma_200: trend_dir = "bear"
-    
     signals['TREND'] = (f"Trend {trend_dir.upper()}", trend_dir)
 
-    # --- 2. MACD (Momentum) ---
+    # --- 2. MACD ---
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal_line = macd.ewm(span=9, adjust=False).mean()
-    
     macd_val = macd.iloc[-1]
     sig_val = signal_line.iloc[-1]
-    
-    # Strong Momentum Check
     macd_signal = "neutral"
     if macd_val > sig_val and macd_val > 0: macd_signal = "bull"
     elif macd_val < sig_val and macd_val < 0: macd_signal = "bear"
     
-    # --- 3. SMC & ICT (Structure) ---
+    # --- 3. SMC & ICT ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     smc_signal = "neutral"
-    if c > highs.iloc[-2]: smc_signal = "bull" # Break of Structure UP
-    elif c < lows.iloc[-2]: smc_signal = "bear" # Break of Structure DOWN
+    if c > highs.iloc[-2]: smc_signal = "bull"
+    elif c < lows.iloc[-2]: smc_signal = "bear"
     signals['SMC'] = (f"{smc_signal.upper()} Structure", smc_signal)
     
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
@@ -265,18 +254,18 @@ def calculate_advanced_signals(df, tf):
     ict_signal = "bull" if fvg_bull else ("bear" if fvg_bear else "neutral")
     signals['ICT'] = (f"{ict_signal.upper()} FVG", ict_signal)
 
-    # --- 4. LIQUIDITY GRABS (RESTORED) ---
+    # --- 4. LIQUIDITY ---
     liq_signal = "neutral"
     liq_text = "Holding"
     if l < df['Low'].iloc[-10:-1].min(): 
-        liq_signal = "bull" # Swept lows, likely to go up
+        liq_signal = "bull" 
         liq_text = "Liq Grab (Low)"
     elif h > df['High'].iloc[-10:-1].max():
-        liq_signal = "bear" # Swept highs, likely to go down
+        liq_signal = "bear" 
         liq_text = "Liq Grab (High)"
     signals['LIQ'] = (liq_text, liq_signal)
     
-    # --- 5. CANDLE PATTERNS (RESTORED) ---
+    # --- 5. PATTERNS ---
     patt_signal = "neutral"
     patt_text = "No Pattern"
     if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2] and df['Open'].iloc[-1] < df['Close'].iloc[-2]):
@@ -287,19 +276,18 @@ def calculate_advanced_signals(df, tf):
         patt_text = "Bear Engulfing"
     signals['PATT'] = (patt_text, patt_signal)
     
-    # --- 6. BOLLINGER BANDS (Volatility) ---
+    # --- 6. BOLLINGER BANDS ---
     sma_20 = df['Close'].rolling(20).mean()
     std_20 = df['Close'].rolling(20).std()
     upper_bb = sma_20 + (std_20 * 2)
     lower_bb = sma_20 - (std_20 * 2)
-    
     bb_status = "neutral"
     bb_text = "Normal Vol"
     if c > upper_bb.iloc[-1]: 
-        bb_status = "bear" # Potential Reversal
+        bb_status = "bear"
         bb_text = "Overextended"
     elif c < lower_bb.iloc[-1]:
-        bb_status = "bull" # Potential Reversal
+        bb_status = "bull"
         bb_text = "Oversold"
     signals['VOLATILITY'] = (bb_text, bb_status)
 
@@ -318,14 +306,12 @@ def calculate_advanced_signals(df, tf):
     fib_618 = ph_fib - (fib_range * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
     
-    # --- 9. ELLIOTT WAVE (RESTORED DETAIL) ---
+    # --- 9. ELLIOTT WAVE ---
     last_50 = df['Close'].tail(50)
     max_50, min_50 = last_50.max(), last_50.min()
     current_pos = (c - min_50) / (max_50 - min_50) if (max_50 - min_50) != 0 else 0.5
-    
     ew_status = "Wave Analysis"
     ew_col = "neutral"
-    
     if trend_dir == "bull":
         if current_pos > 0.8: ew_status, ew_col = "Wave 5 (Top)", "bear"
         elif 0.4 < current_pos <= 0.8: ew_status, ew_col = "Wave 3 (Impulse)", "bull"
@@ -334,25 +320,21 @@ def calculate_advanced_signals(df, tf):
         if current_pos < 0.2: ew_status, ew_col = "Wave C (Drop)", "bull"
         elif 0.2 <= current_pos < 0.6: ew_status, ew_col = "Wave A (Corr)", "bear"
         else: ew_status, ew_col = "Wave B (Rally)", "neutral"
-        
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # --- 10. CONFIDENCE SCORING (UPDATED) ---
+    # --- 10. CONFIDENCE SCORING (UNLOCKED) ---
     confidence = 0
     
-    # Trend (25%)
+    # Weightings
     if trend_dir == "bull": confidence += 25
     elif trend_dir == "bear": confidence -= 25
     
-    # Momentum (15%)
     if macd_signal == "bull": confidence += 15
     elif macd_signal == "bear": confidence -= 15
     
-    # Structure (20%)
     if smc_signal == "bull": confidence += 20
     elif smc_signal == "bear": confidence -= 20
     
-    # Confluence Factors (40%)
     if ict_signal == "bull": confidence += 10
     elif ict_signal == "bear": confidence -= 10
     
@@ -362,29 +344,23 @@ def calculate_advanced_signals(df, tf):
     if patt_signal == "bull": confidence += 15
     elif patt_signal == "bear": confidence -= 15
 
+    # UNLOCKED LOGIC: Show Direction for ANY Score > 0
     final_signal = "neutral"
-    # To get > 75%, we need Strong Trend + Structure + at least one Confluence (Liq/Patt)
-    if confidence >= 75: final_signal = "bull"
-    elif confidence <= -75: final_signal = "bear"
+    if confidence > 0: final_signal = "bull"
+    elif confidence < 0: final_signal = "bear"
 
     signals['SK'] = (f"CONFIDENCE: {abs(confidence)}%", final_signal)
     
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence
 
-# --- 5. INFINITE ALGORITHMIC ENGINE (DETAILED REPORT) ---
+# --- 5. INFINITE ALGORITHMIC ENGINE ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     if sigs is None: return "Insufficient Data for Analysis"
     
-    news_score = 0
-    for item in news_items:
-        sentiment = get_sentiment_class(item['title'])
-        if sentiment == "news-positive": news_score += 1
-        elif sentiment == "news-negative": news_score -= 1
-    
-    trend = sigs['TREND'][0]
     confidence = sigs['SK'][0]
     signal_dir = sigs['SK'][1]
+    trend = sigs['TREND'][0]
     
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
@@ -396,21 +372,22 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     action = "WAIT"
     status_sinhala = "ප්‍රවේශම් වන්න. වෙළඳපල අවිනිශ්චිතයි."
     sl, tp = 0, 0
+    
     if signal_dir == "bull":
         action = "BUY"
-        status_sinhala = "ඉතා ඉහළ සාර්ථකත්වයක් (High Probability Buy). ගැනුම්කරුවන් පාලනය අතට ගෙන ඇත."
+        status_sinhala = "වෙළඳපල ගැනුම්කරුවන් අත. (Market is Bullish)"
         sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif signal_dir == "bear":
         action = "SELL"
-        status_sinhala = "ඉතා ඉහළ සාර්ථකත්වයක් (High Probability Sell). විකුණුම්කරුවන් පාලනය අතට ගෙන ඇත."
+        status_sinhala = "වෙළඳපල විකුණුම්කරුවන් අත. (Market is Bearish)"
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V15.0 - HYBRID**
+    ♾️ **INFINITE ALGO ENGINE V15.0 - UNLOCKED**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • Trade Type: {trade_mode}
-    • Signal Accuracy: {confidence} (Target > 75%)
+    • Signal Confidence: {confidence}
     • Action: {action}
     • Trend: {trend}
     • Liquidity: {sigs['LIQ'][0]}
@@ -442,10 +419,9 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     {algo_result}
     
     **Instructions:**
-    1. Verify if this is a High Probability Trade (>75%).
-    2. Prioritize SWING trades (Big moves) over SCALPS.
-    3. Explain the setup in Sinhala (Technical terms in English).
-    4. Provide ENTRY, SL, TP based on ATR ({atr:.5f}).
+    1. Analyze the trade setup based on current technicals.
+    2. Explain the setup in Sinhala (Technical terms in English).
+    3. Provide ENTRY, SL, TP based on ATR ({atr:.5f}).
     
     **FINAL OUTPUT FORMAT (STRICT):**
     [Detailed Sinhala Explanation]
@@ -467,7 +443,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash-exp') 
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
@@ -507,9 +483,7 @@ def parse_ai_response(text):
     return data
 
 def scan_market(assets_list):
-    high_priority_signal = None
-    
-    # 1. SWING SCAN (Priority: High)
+    # UNLOCKED SCANNER: Returns ANY trade with a direction
     for symbol in assets_list:
         try:
             df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
@@ -517,40 +491,20 @@ def scan_market(assets_list):
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
-                if abs(conf_sw) >= 75:
+                # CHANGED: Capture any signal (removed >75 check)
+                if abs(conf_sw) > 0: 
                     clean_sym = symbol.replace("=X","").replace("-USD","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
-                    high_priority_signal = {
+                    return {
                         "pair": clean_sym, "tf": "4h (Swing)", "dir": direction, 
-                        "conf": conf_sw, "price": df_sw['Close'].iloc[-1]
+                        "conf": abs(conf_sw), "price": df_sw['Close'].iloc[-1]
                     }
-                    return high_priority_signal
         except: pass
-
-    # 2. SCALP SCAN
-    if not high_priority_signal:
-        for symbol in assets_list:
-            try:
-                df_sc = yf.download(symbol, period="5d", interval="5m", progress=False)
-                if not df_sc.empty and len(df_sc) > 50:
-                    if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
-                    sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "5m")
-                    
-                    if abs(conf_sc) >= 80:
-                        clean_sym = symbol.replace("=X","").replace("-USD","")
-                        direction = "BUY" if conf_sc > 0 else "SELL"
-                        high_priority_signal = {
-                            "pair": clean_sym, "tf": "5m (Scalp)", "dir": direction, 
-                            "conf": conf_sc, "price": df_sc['Close'].iloc[-1]
-                        }
-                        return high_priority_signal
-            except: pass
-            
-    return high_priority_signal
+    return None
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v15.0 | HYBRID</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v15.0 | UNLOCKED</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -564,9 +518,9 @@ if not st.session_state.logged_in:
 else:
     user_info = st.session_state.get('user', {})
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Gemini 2.0 + Puter (Accuracy >75%)")
+    st.sidebar.caption(f"Engine: Unlocked (All Signals)")
     
-    auto_refresh = st.sidebar.checkbox("🔄 Auto-Monitor & Notify (60s)", value=False)
+    auto_refresh = st.sidebar.checkbox("🔄 Auto-Monitor (60s)", value=False)
     
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
@@ -597,15 +551,14 @@ else:
             sig = st.session_state.high_prob_signal
             st.markdown(f"""
             <div class='high-prob-alert'>
-                <div class='high-prob-title'>🚀 HIGH PROBABILITY SIGNAL DETECTED</div>
+                <div class='high-prob-title'>⚡ SIGNAL DETECTED</div>
                 <div class='high-prob-pair'>{sig['pair']} - {sig['dir']} ({sig['tf']})</div>
-                <div class='high-prob-desc'>Confidence Score: {sig['conf']}% | Price: {sig['price']:.4f}</div>
-                <div style='margin-top:10px; color:#ffd700; font-weight:bold;'>System recommends prioritizing this trade!</div>
+                <div class='high-prob-desc'>Accuracy: {sig['conf']}% | Price: {sig['price']:.4f}</div>
             </div>
             """, unsafe_allow_html=True)
         else:
             if auto_refresh:
-                st.info("📡 System is scanning for >75% Probability Trades... (Swing Priority)")
+                st.info("📡 Scanning all markets...")
 
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
@@ -624,11 +577,15 @@ else:
             sigs, current_atr, conf_score = calculate_advanced_signals(df, tf)
             
             signal_dir = sigs['SK'][1]
-            if signal_dir == "bull": st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>STRONG BUY:</b> Confidence {conf_score}%</div>", unsafe_allow_html=True)
-            elif signal_dir == "bear": st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>STRONG SELL:</b> Confidence {conf_score}%</div>", unsafe_allow_html=True)
-            else: st.markdown(f"<div class='notif-container notif-wait'>📡 Waiting for Confluence (>75%)... Current: {conf_score}%</div>", unsafe_allow_html=True)
+            # MODIFIED: Display Signal Strength based on raw score
+            if signal_dir == "bull": 
+                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
+            elif signal_dir == "bear": 
+                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SELL SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
+            else: 
+                st.markdown(f"<div class='notif-container notif-wait'>📡 Neutral Market (Accuracy {abs(conf_score)}%)</div>", unsafe_allow_html=True)
 
-            # --- SIGNAL GRID (UPDATED) ---
+            # --- SIGNAL GRID ---
             r1c1, r1c2, r1c3 = st.columns(3)
             r1c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             r1c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
@@ -644,7 +601,7 @@ else:
             fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown(f"### 🎯 Hybrid AI Analysis (Accuracy > 75%)")
+            st.markdown(f"### 🎯 Hybrid AI Analysis")
             parsed = st.session_state.ai_parsed_data
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
@@ -652,9 +609,6 @@ else:
             c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
             
             if st.button("🚀 Analyze with Gemini + Puter", use_container_width=True):
-                if abs(conf_score) < 60:
-                    st.warning("⚠️ Low Probability Setup. Proceed with caution.")
-                
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
@@ -666,10 +620,10 @@ else:
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     elif app_mode == "Market Scanner":
-        st.title("📡 High Probability Scanner")
+        st.title("📡 Global Market Scanner")
         
-        if st.button("Start Global Scan (Priority: Swing)", type="primary"):
-            with st.spinner("Scanning for Big Trades (>75% Accuracy)..."):
+        if st.button("Start Global Scan (All Signals)", type="primary"):
+            with st.spinner("Scanning markets (No Limits)..."):
                 all_scan_assets = assets["Forex"] + assets["Crypto"]
                 found_signal = scan_market(all_scan_assets)
                 
@@ -677,13 +631,13 @@ else:
                     st.success(f"Signal Found! {found_signal['pair']}")
                     st.session_state.high_prob_signal = found_signal
                 else:
-                    st.warning("No High Probability (>75%) setups found. Market is ranging.")
+                    st.warning("No data returned from markets.")
             st.rerun()
             
         if st.session_state.high_prob_signal:
              sig = st.session_state.high_prob_signal
-             st.markdown(f"### 🔥 Recommended Trade")
-             st.info(f"Pair: {sig['pair']} | Timeframe: {sig['tf']} | Direction: {sig['dir']} | Confidence: {sig['conf']}%")
+             st.markdown(f"### 🔥 Trade Opportunity")
+             st.info(f"Pair: {sig['pair']} | Timeframe: {sig['tf']} | Direction: {sig['dir']} | Accuracy: {sig['conf']}%")
              
              if st.button("Analyze This Trade Now"):
                  st.write("Go to Terminal and select this pair for full AI analysis.")
@@ -707,7 +661,6 @@ else:
                 df_users = pd.DataFrame(all_records)
                 st.dataframe(df_users, use_container_width=True)
                 
-                # --- NEW: Create User Section ---
                 st.markdown("---")
                 with st.expander("➕ Create New User", expanded=False):
                     with st.form("create_user_form"):
@@ -734,7 +687,6 @@ else:
                     st.info(f"User: **{target_user}** | Current Limit: **{curr_user_data.get('HybridLimit', 'N/A')}** | Used: **{curr_user_data.get('UsageCount', 'N/A')}**")
                     
                     c1, c2 = st.columns(2)
-                    
                     with c1:
                         st.subheader("Update Limit")
                         new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 10)))
@@ -743,7 +695,6 @@ else:
                             st.success(f"Limit updated to {new_limit_val}")
                             time.sleep(1)
                             st.rerun()
-                            
                     with c2:
                         st.subheader("Reset Usage")
                         new_usage_val = st.number_input("Set Usage Count", min_value=0, value=0)
@@ -752,7 +703,6 @@ else:
                             st.success(f"Usage count set to {new_usage_val}")
                             time.sleep(1)
                             st.rerun()
-                            
             else: st.error("Database Connection Failed")
         else: st.error("Access Denied.")
 
