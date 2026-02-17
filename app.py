@@ -160,6 +160,25 @@ if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
 if "forecast_chart" not in st.session_state: st.session_state.forecast_chart = None
 
+# ==================== NEW HELPER FUNCTIONS ====================
+def get_yf_symbol(symbol):
+    """Convert display symbol to yfinance symbol (e.g., BTC-USDT -> BTC-USD)"""
+    if symbol.endswith("-USDT"):
+        return symbol.replace("-USDT", "-USD")
+    return symbol
+
+def get_live_price(symbol):
+    """Fetch current live price using yfinance Ticker"""
+    try:
+        ticker = yf.Ticker(get_yf_symbol(symbol))
+        # Try fast_info first (faster)
+        if hasattr(ticker, 'fast_info') and ticker.fast_info:
+            return ticker.fast_info['lastPrice']
+        # Fallback to regularMarketPrice from info
+        return ticker.info.get('regularMarketPrice', None)
+    except:
+        return None
+
 # --- Helper Functions (DB & Auth & Time) ---
 def get_user_sheet():
     try:
@@ -278,6 +297,7 @@ def get_sentiment_class(title):
 
 def get_market_news(symbol):
     news_list = []
+    # Use original symbol for news (display purposes)
     clean_sym = symbol.replace("=X", "").replace("-USD", "").replace("-USDT", "")
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+finance+market&hl=en-US&gl=US&ceid=US:en"
@@ -290,7 +310,7 @@ def get_market_news(symbol):
     
     if not news_list:
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(get_yf_symbol(symbol))
             yf_news = ticker.news
             if yf_news:
                 for item in yf_news[:4]:
@@ -639,6 +659,7 @@ def parse_ai_response(text):
     except: pass
     return data
 
+# ==================== UPDATED SCAN FUNCTION ====================
 def scan_market(assets_list):
     swing_list = []
     scalp_list = []
@@ -646,36 +667,59 @@ def scan_market(assets_list):
     # --- SWING SCAN (4H) ---
     for symbol in assets_list:
         try:
-            df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
+            df_sw = yf.download(get_yf_symbol(symbol), period="6mo", interval="4h", progress=False)
             if not df_sw.empty and len(df_sw) > 50:
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
-                sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h")
+                sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
                 # Filter: > 25% Accuracy
                 if abs(conf_sw) > 25: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
+                    curr_price = df_sw['Close'].iloc[-1]
+                    # Calculate entry, SL, TP based on direction and ATR
+                    if direction == "BUY":
+                        entry = curr_price
+                        sl = entry - (atr_sw * 1.5)   # swing SL multiplier
+                        tp = entry + (atr_sw * 3.5)   # swing TP multiplier
+                    else:
+                        entry = curr_price
+                        sl = entry + (atr_sw * 1.5)
+                        tp = entry - (atr_sw * 3.5)
                     swing_list.append({
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
-                        "conf": abs(conf_sw), "price": df_sw['Close'].iloc[-1]
+                        "conf": abs(conf_sw), "price": curr_price,
+                        "entry": entry, "sl": sl, "tp": tp,
+                        "live_price": get_live_price(symbol) or curr_price
                     })
         except: pass
         
     # --- SCALP SCAN (15M) ---
     for symbol in assets_list:
         try:
-            df_sc = yf.download(symbol, period="1mo", interval="15m", progress=False)
+            df_sc = yf.download(get_yf_symbol(symbol), period="1mo", interval="15m", progress=False)
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
-                sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "15m")
+                sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m")
                 
                 # Filter: > 25% Accuracy
                 if abs(conf_sc) > 25: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
+                    curr_price = df_sc['Close'].iloc[-1]
+                    if direction == "BUY":
+                        entry = curr_price
+                        sl = entry - (atr_sc * 1.2)   # scalp SL multiplier
+                        tp = entry + (atr_sc * 2.0)   # scalp TP multiplier
+                    else:
+                        entry = curr_price
+                        sl = entry + (atr_sc * 1.2)
+                        tp = entry - (atr_sc * 2.0)
                     scalp_list.append({
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
-                        "conf": abs(conf_sc), "price": df_sc['Close'].iloc[-1]
+                        "conf": abs(conf_sc), "price": curr_price,
+                        "entry": entry, "sl": sl, "tp": tp,
+                        "live_price": get_live_price(symbol) or curr_price
                     })
         except: pass
         
@@ -849,7 +893,7 @@ else:
         for news in news_items:
             st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}</div>", unsafe_allow_html=True)
 
-        df = yf.download(pair, period=get_data_period(tf), interval=tf, progress=False)
+        df = yf.download(get_yf_symbol(pair), period=get_data_period(tf), interval=tf, progress=False)
         
         if not df.empty and len(df) > 50:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -906,20 +950,22 @@ else:
                 with forecast_placeholder.container():
                     st.markdown("<div class='forecast-loading'><span class='loading-icon'>⚡</span> Analyzing with AI... Generating Forecast...</div>", unsafe_allow_html=True)
                 
-                result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
+                # Use live price for analysis
+                live_price = get_live_price(pair) or curr_p
+                result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
                 
                 # Create forecast chart using parsed Entry, SL, TP
                 try:
-                    entry = float(st.session_state.ai_parsed_data['ENTRY']) if st.session_state.ai_parsed_data['ENTRY'] != 'N/A' else curr_p
-                    sl = float(st.session_state.ai_parsed_data['SL']) if st.session_state.ai_parsed_data['SL'] != 'N/A' else curr_p * 0.99
-                    tp = float(st.session_state.ai_parsed_data['TP']) if st.session_state.ai_parsed_data['TP'] != 'N/A' else curr_p * 1.01
+                    entry = float(st.session_state.ai_parsed_data['ENTRY']) if st.session_state.ai_parsed_data['ENTRY'] != 'N/A' else live_price
+                    sl = float(st.session_state.ai_parsed_data['SL']) if st.session_state.ai_parsed_data['SL'] != 'N/A' else live_price * 0.99
+                    tp = float(st.session_state.ai_parsed_data['TP']) if st.session_state.ai_parsed_data['TP'] != 'N/A' else live_price * 1.01
                 except:
-                    entry = curr_p
-                    sl = curr_p * 0.99
-                    tp = curr_p * 1.01
+                    entry = live_price
+                    sl = live_price * 0.99
+                    tp = live_price * 1.01
                 
                 # Pass entry price instead of current price
                 forecast_fig = create_forecast_chart(df, entry, sl, tp, st.session_state.ai_parsed_data.get('FORECAST', ''))
@@ -955,7 +1001,7 @@ else:
                 else:
                     st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
             
-        # Display Results with animation class
+        # Display Results with animation class and entry/sl/tp
         res = st.session_state.scan_results
         
         st.markdown("---")
@@ -967,9 +1013,11 @@ else:
                 for i, sig in enumerate(res['swing']):
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     st.markdown(f"""
-                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color}; animation-delay: {i*0.1}s;'>
+                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
                         <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
-                        <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
+                        <p style='margin:5px 0; color:#aaa;'>Price: {sig['price']:.4f} | Live: {sig['live_price']:.4f}</p>
+                        <p style='margin:5px 0; color:#00d4ff;'>Entry: {sig['entry']:.4f} | SL: <span style='color:#ff4b4b;'>{sig['sl']:.4f}</span> | TP: <span style='color:#00ff00;'>{sig['tp']:.4f}</span></p>
+                        <p style='margin:5px 0 0 0; color:#aaa;'>Accuracy: <b>{sig['conf']}%</b></p>
                     </div>
                     """, unsafe_allow_html=True)
             else:
@@ -981,9 +1029,11 @@ else:
                 for i, sig in enumerate(res['scalp']):
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     st.markdown(f"""
-                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color}; animation-delay: {i*0.1}s;'>
+                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
                         <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
-                        <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
+                        <p style='margin:5px 0; color:#aaa;'>Price: {sig['price']:.4f} | Live: {sig['live_price']:.4f}</p>
+                        <p style='margin:5px 0; color:#00d4ff;'>Entry: {sig['entry']:.4f} | SL: <span style='color:#ff4b4b;'>{sig['sl']:.4f}</span> | TP: <span style='color:#00ff00;'>{sig['tp']:.4f}</span></p>
+                        <p style='margin:5px 0 0 0; color:#aaa;'>Accuracy: <b>{sig['conf']}%</b></p>
                     </div>
                     """, unsafe_allow_html=True)
             else:
