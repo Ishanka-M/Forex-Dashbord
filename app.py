@@ -145,6 +145,8 @@ if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
 if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
+if "scalp_results" not in st.session_state: st.session_state.scalp_results = []
+if "swing_results" not in st.session_state: st.session_state.swing_results = []
 
 # --- Helper Functions (DB & Auth) ---
 def get_user_sheet():
@@ -447,7 +449,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
                 
                 # Using gemini-2.0-flash (Currently best performance for speed/logic)
                 # Labelled as 3.0 Preview in UI for visual consistency with request
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash') 
                 
                 response = model.generate_content(prompt)
                 response_text = response.text
@@ -606,14 +608,69 @@ else:
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     elif app_mode == "Market Scanner":
-        st.title("📡 SK Market Scanner")
+        st.title("📡 SK Market Scanner (Engine + AI)")
         scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
+        
+        # Scan Control
         if st.button("Start Hybrid Scan", type="primary"):
-            with st.spinner("Scanning..."):
+            with st.spinner("Scanning Market & Filtering w/ Algorithm..."):
                 sc, sw = scan_market(assets[scan_market_type])
-                t1, t2 = st.tabs(["⚡ Scalp (5m)", "🐢 Swing (4h)"])
-                with t1: st.dataframe(pd.DataFrame(sc))
-                with t2: st.dataframe(pd.DataFrame(sw))
+                st.session_state.scalp_results = sc
+                st.session_state.swing_results = sw
+                st.rerun()
+
+        # Display Results with AI Trigger
+        t1, t2 = st.tabs(["⚡ Scalp (5m)", "🐢 Swing (4h)"])
+        
+        def render_scanner_tab(results_list, tf_code):
+            if not results_list:
+                st.info("No high-probability setups found yet. Click 'Start Hybrid Scan'.")
+                return
+            
+            st.dataframe(pd.DataFrame(results_list), use_container_width=True)
+            
+            st.markdown("---")
+            st.subheader("🤖 AI Deep Analysis")
+            
+            # Dropdown to select a found setup
+            options = [r['Pair'] for r in results_list]
+            if options:
+                selected_scan_asset = st.selectbox(f"Select Asset to Analyze ({tf_code})", options, key=f"sel_{tf_code}")
+                
+                if st.button(f"Generate AI Report for {selected_scan_asset}", key=f"btn_{tf_code}"):
+                    # Fetch fresh data for AI context
+                    with st.spinner(f"AI Analyzing {selected_scan_asset}..."):
+                        yahoo_sym = selected_scan_asset
+                        if scan_market_type == "Forex" and "=X" not in yahoo_sym: yahoo_sym += "=X"
+                        elif scan_market_type == "Crypto" and "-USD" not in yahoo_sym: yahoo_sym += "-USD"
+
+                        df_ai = yf.download(yahoo_sym, period="5d", interval=tf_code, progress=False)
+                        if not df_ai.empty:
+                            if isinstance(df_ai.columns, pd.MultiIndex): df_ai.columns = df_ai.columns.get_level_values(0)
+                            
+                            # Recalculate context for AI
+                            sigs_ai, atr_ai, _ = calculate_advanced_signals(df_ai, tf_code)
+                            news_ai = get_market_news(yahoo_sym)
+                            curr_p_ai = df_ai['Close'].iloc[-1]
+                            
+                            # Call Hybrid AI
+                            ai_res, prov = get_hybrid_analysis(
+                                yahoo_sym, 
+                                {'price': curr_p_ai}, 
+                                sigs_ai, 
+                                news_ai, 
+                                atr_ai, 
+                                st.session_state.user, 
+                                tf_code
+                            )
+                            
+                            st.success(f"Analysis Complete! Provider: {prov}")
+                            st.markdown(f"<div class='entry-box'>{ai_res}</div>", unsafe_allow_html=True)
+                        else:
+                            st.error("Data fetch failed for AI analysis.")
+
+        with t1: render_scanner_tab(st.session_state.scalp_results, "5m")
+        with t2: render_scanner_tab(st.session_state.swing_results, "4h")
 
     elif app_mode == "Trader Chat":
         st.title("💬 Global Trader Room")
