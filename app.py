@@ -35,9 +35,7 @@ st.markdown("""
         text-align: center;
     }
     .high-prob-title { color: #00d4ff; font-size: 24px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
-    .high-prob-pair { color: #ffffff; font-size: 32px; font-weight: 900; }
-    .high-prob-desc { color: #cccccc; font-size: 16px; margin-top: 5px; }
-
+    
     /* --- TEXT COLORS --- */
     .price-up { color: #00ff00; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(0, 255, 0, 0.5); }
     .price-down { color: #ff4b4b; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(255, 75, 75, 0.5); }
@@ -131,8 +129,9 @@ def check_login(username, password):
             records = sheet.get_all_records()
             user = next((i for i in records if str(i.get("Username")) == username), None)
             if user and str(user.get("Password")) == password:
-                if "HybridLimit" not in user: user["HybridLimit"] = 10
-                if "UsageCount" not in user: user["UsageCount"] = 0
+                # Ensure defaults exist
+                if "HybridLimit" not in user or user["HybridLimit"] == "": user["HybridLimit"] = 10
+                if "UsageCount" not in user or user["UsageCount"] == "": user["UsageCount"] = 0
                 return user
         except: return None
     return None
@@ -147,7 +146,9 @@ def update_usage_in_db(username, new_usage):
                 if "UsageCount" in headers:
                     col_idx = headers.index("UsageCount") + 1
                     sheet.update_cell(cell.row, col_idx, new_usage)
+                    return True
         except Exception as e: print(f"DB Update Error: {e}")
+    return False
 
 def update_user_limit_in_db(username, new_limit):
     sheet, _ = get_user_sheet()
@@ -170,6 +171,7 @@ def add_new_user_to_db(username, password, limit):
             cell = sheet.find(username)
             if cell:
                 return False, "User already exists!"
+            # Add user with 0 usage
             sheet.append_row([username, password, "User", limit, 0])
             return True, f"User {username} created successfully!"
         except Exception as e:
@@ -205,14 +207,12 @@ def get_market_news(symbol):
         except: pass
     return news_list
 
-# --- NEW: News Scoring Function ---
 def calculate_news_score(news_items):
     score = 0
     for news in news_items:
         s_class = get_sentiment_class(news['title'])
         if s_class == "news-positive": score += 10
         elif s_class == "news-negative": score -= 10
-    # Cap score between -20 and 20
     return max(min(score, 20), -20)
 
 def get_data_period(tf):
@@ -224,7 +224,7 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (UPDATED) ---
+# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df, tf, news_items=[]):
     if df is None or len(df) < 50: return None, 0, 0
     signals = {}
@@ -232,11 +232,9 @@ def calculate_advanced_signals(df, tf, news_items=[]):
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
     
-    # --- 1. TREND (MA & Trendlines) ---
+    # --- 1. TREND (MA & Slope) ---
     ma_50 = df['Close'].rolling(50).mean().iloc[-1]
     ma_200 = df['Close'].rolling(200).mean().iloc[-1] if len(df) > 200 else ma_50
-    
-    # Calculate Slope (Trendline Logic)
     y_vals = df['Close'].tail(20).values
     x_vals = np.arange(len(y_vals))
     slope, intercept = np.polyfit(x_vals, y_vals, 1)
@@ -257,11 +255,9 @@ def calculate_advanced_signals(df, tf, news_items=[]):
     if macd_val > sig_val and macd_val > 0: macd_signal = "bull"
     elif macd_val < sig_val and macd_val < 0: macd_signal = "bear"
     
-    # --- 3. SMC & ICT (Order Blocks & FVG) ---
+    # --- 3. SMC & ICT ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     smc_signal = "neutral"
-    
-    # Identify Order Block (Simplified: Down candle before up move breaks structure)
     last_candles = df.tail(5)
     is_bullish_ob = (last_candles['Close'].iloc[-3] < last_candles['Open'].iloc[-3]) and \
                     (last_candles['Close'].iloc[-1] > last_candles['High'].iloc[-3])
@@ -272,17 +268,14 @@ def calculate_advanced_signals(df, tf, news_items=[]):
     elif c < lows.iloc[-2] or is_bearish_ob: smc_signal = "bear"
     signals['SMC'] = (f"{smc_signal.upper()} Structure/OB", smc_signal)
     
-    # ICT FVG
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     ict_signal = "bull" if fvg_bull else ("bear" if fvg_bear else "neutral")
     signals['ICT'] = (f"{ict_signal.upper()} FVG", ict_signal)
 
-    # --- 4. LIQUIDITY & RETAIL (S/R) ---
+    # --- 4. LIQUIDITY & RETAIL ---
     liq_signal = "neutral"
     liq_text = "Holding"
-    
-    # Retail Support/Resistance
     recent_low = df['Low'].tail(30).min()
     recent_high = df['High'].tail(30).max()
     is_at_support = abs(c - recent_low) < (c * 0.002)
@@ -354,14 +347,11 @@ def calculate_advanced_signals(df, tf, news_items=[]):
         else: ew_status, ew_col = "Wave B (Rally)", "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # --- 10. CONFIDENCE SCORING (WEIGHTED) ---
+    # --- 10. CONFIDENCE SCORING ---
     confidence = 0
-    
-    # News Impact
     news_score = calculate_news_score(news_items)
     confidence += news_score
 
-    # Weightings
     if trend_dir == "bull": confidence += 20
     elif trend_dir == "bear": confidence -= 20
     
@@ -380,7 +370,6 @@ def calculate_advanced_signals(df, tf, news_items=[]):
     if patt_signal == "bull": confidence += 15
     elif patt_signal == "bear": confidence -= 15
 
-    # SK System Confirmation (RSI Divergence check)
     sk_conf = 0
     if rsi_val < 30 and trend_dir == "bull": sk_conf = 10
     elif rsi_val > 70 and trend_dir == "bear": sk_conf = -10
@@ -440,18 +429,22 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE ---
+# --- 6. HYBRID AI ENGINE & CREDIT MANAGER ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if sigs is None: return "Error: Insufficient Signal Data", "System Error"
     
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
-    current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
+    # --- CREDIT CHECK LOGIC ---
+    current_usage = int(user_info.get("UsageCount", 0))
+    max_limit = int(user_info.get("HybridLimit", 10))
     
+    # If limit reached and not Admin
     if current_usage >= max_limit and user_info["Role"] != "Admin":
+        st.error(f"⚠️ Credit Limit Reached! ({current_usage}/{max_limit}) - Contact Admin.")
         return algo_result, "Infinite Algo (Limit Reached)"
 
+    # --- AI PROMPT ---
     prompt = f"""
     Act as a Senior Hedge Fund Trader. Analyze {pair} on {tf} timeframe.
     The Algorithm calculates a confidence of {sigs['SK'][0]}.
@@ -481,6 +474,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
         if not gemini_keys: st.error("❌ No Gemini Keys found!")
         
+        # Try Gemini
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
@@ -492,6 +486,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
                 break 
             except Exception as e: continue
 
+        # Fallback to Puter
         if not response_text:
             try:
                 puter_resp = puter.ai.chat(prompt)
@@ -501,12 +496,17 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
             except Exception as e_puter:
                 return algo_result, "Infinite Algo (Fallback)"
 
+    # --- UPDATE CREDITS ON SUCCESS ---
     if response_text:
         new_usage = current_usage + 1
         user_info["UsageCount"] = new_usage
-        st.session_state.user = user_info 
+        st.session_state.user = user_info # Update local session
+        
         if user_info["Username"] != "Admin":
-            update_usage_in_db(user_info["Username"], new_usage)
+            update_success = update_usage_in_db(user_info["Username"], new_usage)
+            if update_success:
+                st.toast(f"Credit Used! New Balance: {new_usage}/{max_limit}", icon="💳")
+            
         return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
     
     return algo_result, "Infinite Algo (Default)"
@@ -526,44 +526,27 @@ def parse_ai_response(text):
 def scan_market(assets_list):
     swing_list = []
     scalp_list = []
-    
-    # --- SWING SCAN (4H) ---
     for symbol in assets_list:
         try:
+            # Swing
             df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
             if not df_sw.empty and len(df_sw) > 50:
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
-                # Pass empty list for news in scan to speed up
                 sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h", [])
-                
-                # Filter: > 25% Accuracy
                 if abs(conf_sw) > 25: 
                     clean_sym = symbol.replace("=X","").replace("-USD","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
-                    swing_list.append({
-                        "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
-                        "conf": abs(conf_sw), "price": df_sw['Close'].iloc[-1]
-                    })
-        except: pass
-        
-    # --- SCALP SCAN (15M) ---
-    for symbol in assets_list:
-        try:
+                    swing_list.append({"pair": clean_sym, "tf": "4H (Swing)", "dir": direction, "conf": abs(conf_sw), "price": df_sw['Close'].iloc[-1]})
+            # Scalp
             df_sc = yf.download(symbol, period="1mo", interval="15m", progress=False)
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
                 sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "15m", [])
-                
-                # Filter: > 25% Accuracy
                 if abs(conf_sc) > 25: 
                     clean_sym = symbol.replace("=X","").replace("-USD","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
-                    scalp_list.append({
-                        "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
-                        "conf": abs(conf_sc), "price": df_sc['Close'].iloc[-1]
-                    })
+                    scalp_list.append({"pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, "conf": abs(conf_sc), "price": df_sc['Close'].iloc[-1]})
         except: pass
-        
     return {"swing": swing_list, "scalp": scalp_list}
 
 # --- 7. MAIN APPLICATION ---
@@ -581,9 +564,21 @@ if not st.session_state.logged_in:
                 else: st.error("Invalid Credentials")
 else:
     user_info = st.session_state.get('user', {})
-    st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Unlocked (All Signals)")
     
+    # --- SIDEBAR INFO & CREDIT DISPLAY ---
+    st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
+    st.sidebar.caption(f"Role: {user_info.get('Role', 'User')}")
+    
+    # Credit Progress Bar in Sidebar
+    if user_info.get('Role') != 'Admin':
+        u_count = int(user_info.get('UsageCount', 0))
+        u_limit = int(user_info.get('HybridLimit', 10))
+        st.sidebar.markdown(f"**💳 Credits: {u_count} / {u_limit}**")
+        prog = min(u_count / u_limit, 1.0) if u_limit > 0 else 0
+        st.sidebar.progress(prog)
+        if u_count >= u_limit:
+            st.sidebar.warning("⚠️ Limit Reached!")
+
     auto_refresh = st.sidebar.checkbox("🔄 Auto-Monitor (60s)", value=False)
     
     if st.sidebar.button("Logout"):
@@ -617,13 +612,11 @@ else:
             curr_p = float(df['Close'].iloc[-1])
             st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
             
-            # Pass news_items for sentiment weighting
             sigs, current_atr, conf_score = calculate_advanced_signals(df, tf, news_items)
-            
             signal_dir = sigs['SK'][1]
             
-            # --- NOTIFICATION FEATURE ---
-            if abs(conf_score) > 30: # Only notify if high confidence
+            # --- NOTIFICATIONS ---
+            if abs(conf_score) > 30:
                 msg_type = "Buy" if signal_dir == "bull" else "Sell"
                 st.toast(f"Trade Captured: {msg_type} {pair} ({abs(conf_score)}%)", icon="🔔")
             
@@ -645,7 +638,6 @@ else:
             r2c2.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>{sigs['PATT'][0]}</div>", unsafe_allow_html=True)
             r2c3.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
             
-            # --- CHART ---
             fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
             fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
@@ -669,52 +661,27 @@ else:
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     elif app_mode == "Market Scanner":
-        st.title("📡 Global Market Scanner (Multi-Timeframe)")
-        
-        if st.button("Start Global Scan (All Pairs)", type="primary"):
-            with st.spinner("Scanning markets for High Probability Setups (>25%)..."):
+        st.title("📡 Global Market Scanner")
+        if st.button("Start Global Scan", type="primary"):
+            with st.spinner("Scanning markets..."):
                 all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
                 results = scan_market(all_scan_assets)
                 st.session_state.scan_results = results
-                
-                if not results['swing'] and not results['scalp']:
-                    st.warning("No signals found above 25% accuracy.")
-                else:
-                    st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
-            
-        # Display Results
+                if not results['swing'] and not results['scalp']: st.warning("No signals found.")
+                else: st.success(f"Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
+        
         res = st.session_state.scan_results
-        
-        st.markdown("---")
         c1, c2 = st.columns(2)
-        
         with c1:
-            st.subheader("🐢 SWING TRADES (4H)")
-            if res['swing']:
-                for sig in res['swing']:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
-                        <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
-                        <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("No Swing setups found.")
-
+            st.subheader("🐢 SWING (4H)")
+            for sig in res['swing']:
+                color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                st.markdown(f"<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'><h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3><p style='margin:0; color:#aaa;'>Acc: {sig['conf']}%</p></div>", unsafe_allow_html=True)
         with c2:
-            st.subheader("🐇 SCALP TRADES (15M)")
-            if res['scalp']:
-                for sig in res['scalp']:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
-                        <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
-                        <p style='margin:5px 0 0 0; color:#aaa;'>Price: {sig['price']:.4f} | Accuracy: <b>{sig['conf']}%</b></p>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.info("No Scalp setups found.")
+            st.subheader("🐇 SCALP (15M)")
+            for sig in res['scalp']:
+                color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                st.markdown(f"<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'><h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3><p style='margin:0; color:#aaa;'>Acc: {sig['conf']}%</p></div>", unsafe_allow_html=True)
 
     elif app_mode == "Trader Chat":
         st.title("💬 Global Trader Room")
@@ -732,51 +699,71 @@ else:
             sheet, _ = get_user_sheet()
             if sheet:
                 all_records = sheet.get_all_records()
-                df_users = pd.DataFrame(all_records)
-                st.dataframe(df_users, use_container_width=True)
                 
-                st.markdown("---")
-                with st.expander("➕ Create New User", expanded=False):
-                    with st.form("create_user_form"):
-                        new_u_name = st.text_input("Username")
-                        new_u_pass = st.text_input("Password")
-                        new_u_limit = st.number_input("Initial Hybrid Limit", value=10, min_value=1)
-                        if st.form_submit_button("Create User"):
-                            if new_u_name and new_u_pass:
-                                success, msg = add_new_user_to_db(new_u_name, new_u_pass, new_u_limit)
-                                if success: 
-                                    st.success(msg)
-                                    time.sleep(1)
-                                    st.rerun()
-                                else: st.error(msg)
-                            else: st.warning("Please fill all fields")
-
-                st.markdown("### ✏️ Manage User Credits")
+                # --- CREDIT DASHBOARD ---
+                st.markdown("### 💳 User Credit Dashboard")
+                dashboard_data = []
+                for r in all_records:
+                    if str(r.get('Username')) != 'Admin':
+                        usage = int(r.get('UsageCount', 0))
+                        limit = int(r.get('HybridLimit', 10))
+                        dashboard_data.append({
+                            "Username": r['Username'],
+                            "Role": r['Role'],
+                            "Usage": usage,
+                            "Limit": limit,
+                            "Remaining": limit - usage,
+                            "Status": "✅ Active" if usage < limit else "🔴 Limit Reached"
+                        })
                 
-                user_list = [r['Username'] for r in all_records if str(r.get('Username')) != 'Admin']
-                target_user = st.selectbox("Select User to Update", user_list)
+                df_dash = pd.DataFrame(dashboard_data)
+                st.dataframe(df_dash, use_container_width=True)
 
-                if target_user:
-                    curr_user_data = next((u for u in all_records if u['Username'] == target_user), {})
-                    st.info(f"User: **{target_user}** | Current Limit: **{curr_user_data.get('HybridLimit', 'N/A')}** | Used: **{curr_user_data.get('UsageCount', 'N/A')}**")
+                c1, c2 = st.columns(2)
+                
+                # --- CREATE USER ---
+                with c1:
+                    with st.expander("➕ Create New User", expanded=True):
+                        with st.form("create_user_form"):
+                            new_u_name = st.text_input("Username")
+                            new_u_pass = st.text_input("Password")
+                            new_u_limit = st.number_input("Initial Credit Limit", value=10, min_value=1)
+                            if st.form_submit_button("Create User"):
+                                if new_u_name and new_u_pass:
+                                    success, msg = add_new_user_to_db(new_u_name, new_u_pass, new_u_limit)
+                                    if success: 
+                                        st.success(msg)
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else: st.error(msg)
+                                else: st.warning("Fill all fields")
+
+                # --- CREDIT MANAGEMENT ---
+                with c2:
+                    st.markdown("### ✏️ Manage Credits")
+                    user_list = [d['Username'] for d in dashboard_data]
+                    target_user = st.selectbox("Select User", user_list)
                     
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.subheader("Update Limit")
-                        new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 10)))
-                        if st.button("💾 Save Limit"):
-                            update_user_limit_in_db(target_user, new_limit_val)
-                            st.success(f"Limit updated to {new_limit_val}")
-                            time.sleep(1)
-                            st.rerun()
-                    with c2:
-                        st.subheader("Reset Usage")
-                        new_usage_val = st.number_input("Set Usage Count", min_value=0, value=0)
-                        if st.button("🔄 Update Usage"):
-                            update_usage_in_db(target_user, new_usage_val)
-                            st.success(f"Usage count set to {new_usage_val}")
-                            time.sleep(1)
-                            st.rerun()
+                    if target_user:
+                        user_dat = next((u for u in dashboard_data if u['Username'] == target_user), None)
+                        st.info(f"Selected: **{target_user}** | Used: **{user_dat['Usage']}** | Limit: **{user_dat['Limit']}**")
+                        
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            new_limit = st.number_input("Set New Limit", min_value=0, value=user_dat['Limit'])
+                            if st.button("💾 Update Limit"):
+                                update_user_limit_in_db(target_user, new_limit)
+                                st.success(f"Limit updated to {new_limit}")
+                                time.sleep(1)
+                                st.rerun()
+                                
+                        with col_b:
+                            reset_val = st.number_input("Set Usage Count", min_value=0, value=0)
+                            if st.button("🔄 Reset Usage"):
+                                update_usage_in_db(target_user, reset_val)
+                                st.success("Usage reset successfully!")
+                                time.sleep(1)
+                                st.rerun()
             else: st.error("Database Connection Failed")
         else: st.error("Access Denied.")
 
