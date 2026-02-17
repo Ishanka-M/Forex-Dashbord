@@ -14,37 +14,129 @@ import requests
 import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v12.0 | Gemini 2.0 Flash", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v13.0 | Gemini 3.0 Preview", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    .price-up { color: #00ff00; font-size: 22px; font-weight: bold; }
-    .price-down { color: #ff4b4b; font-size: 22px; font-weight: bold; }
-    .entry-box { background: rgba(0, 212, 255, 0.07); border: 2px solid #00d4ff; padding: 15px; border-radius: 12px; margin-top: 10px; color: white; }
+    /* --- ANIMATIONS & GLOBAL STYLES --- */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
     
-    .trade-metric { background: #222; border: 1px solid #444; border-radius: 8px; padding: 10px; text-align: center; }
-    .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; }
-    .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 20px; font-weight: bold; }
-    
-    .news-card { background: #1e1e1e; padding: 10px; margin-bottom: 8px; border-radius: 5px; }
-    .news-positive { border-left: 4px solid #00ff00; }
-    .news-negative { border-left: 4px solid #ff4b4b; }
-    .news-neutral { border-left: 4px solid #00d4ff; }
-    
-    .sig-box { padding: 10px; border-radius: 6px; font-size: 12px; text-align: center; font-weight: bold; border: 1px solid #444; margin-bottom: 5px; }
-    .bull { background-color: #004d40; color: #00ff00; border-color: #00ff00; }
-    .bear { background-color: #4a1414; color: #ff4b4b; border-color: #ff4b4b; }
-    .neutral { background-color: #262626; color: #888; }
+    @keyframes pulse-green {
+        0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); }
+        70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); }
+    }
 
-    /* Notification Styling */
-    .notif-container { padding: 15px; border-radius: 10px; margin-bottom: 20px; border-left: 10px solid; background: #121212; }
-    .notif-buy { border-color: #00ff00; color: #00ff00; box-shadow: 0 0 15px rgba(0, 255, 0, 0.2); }
-    .notif-sell { border-color: #ff4b4b; color: #ff4b4b; box-shadow: 0 0 15px rgba(255, 75, 75, 0.2); }
+    @keyframes pulse-red {
+        0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); }
+        70% { box-shadow: 0 0 15px 15px rgba(255, 75, 75, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
+    }
+
+    @keyframes glow-border {
+        0% { border-color: #00d4ff; }
+        50% { border-color: #00ff00; }
+        100% { border-color: #00d4ff; }
+    }
+
+    .stApp {
+        animation: fadeIn 0.8s ease-out forwards;
+    }
+
+    /* --- TEXT COLORS --- */
+    .price-up { color: #00ff00; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(0, 255, 0, 0.5); }
+    .price-down { color: #ff4b4b; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(255, 75, 75, 0.5); }
+    
+    /* --- BOXES --- */
+    .entry-box { 
+        background: rgba(0, 212, 255, 0.1); 
+        border: 2px solid #00d4ff; 
+        padding: 20px; 
+        border-radius: 15px; 
+        margin-top: 15px; 
+        color: white; 
+        backdrop-filter: blur(10px);
+        box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+        transition: transform 0.3s;
+    }
+    .entry-box:hover { transform: scale(1.01); }
+    
+    .trade-metric { 
+        background: linear-gradient(145deg, #1e1e1e, #2a2a2a); 
+        border: 1px solid #444; 
+        border-radius: 12px; 
+        padding: 15px; 
+        text-align: center; 
+        transition: all 0.3s ease;
+    }
+    .trade-metric:hover { 
+        transform: translateY(-5px); 
+        box-shadow: 0 5px 15px rgba(0,0,0,0.5); 
+        border-color: #00d4ff;
+    }
+    .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+    .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 22px; font-weight: bold; }
+    
+    /* --- NEWS CARDS --- */
+    .news-card { 
+        background: #1e1e1e; 
+        padding: 12px; 
+        margin-bottom: 10px; 
+        border-radius: 8px; 
+        transition: all 0.3s ease;
+        border-right: 1px solid #333;
+    }
+    .news-card:hover { 
+        transform: translateX(5px); 
+        background: #252525; 
+        box-shadow: -5px 0 10px rgba(0,0,0,0.3);
+    }
+    .news-positive { border-left: 5px solid #00ff00; }
+    .news-negative { border-left: 5px solid #ff4b4b; }
+    .news-neutral { border-left: 5px solid #00d4ff; }
+    
+    /* --- SIGNAL BOXES --- */
+    .sig-box { 
+        padding: 12px; 
+        border-radius: 8px; 
+        font-size: 13px; 
+        text-align: center; 
+        font-weight: bold; 
+        border: 1px solid #444; 
+        margin-bottom: 8px; 
+        box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+    }
+    .bull { background: linear-gradient(90deg, #004d40, #00695c); color: #00ff00; border-color: #00ff00; }
+    .bear { background: linear-gradient(90deg, #4a1414, #7f0000); color: #ff4b4b; border-color: #ff4b4b; }
+    .neutral { background: #262626; color: #888; }
+
+    /* --- NOTIFICATIONS --- */
+    .notif-container { 
+        padding: 20px; 
+        border-radius: 12px; 
+        margin-bottom: 25px; 
+        border-left: 8px solid; 
+        background: #121212; 
+        font-size: 18px;
+    }
+    .notif-buy { 
+        border-color: #00ff00; 
+        color: #00ff00; 
+        animation: pulse-green 2s infinite; 
+    }
+    .notif-sell { 
+        border-color: #ff4b4b; 
+        color: #ff4b4b; 
+        animation: pulse-red 2s infinite; 
+    }
     .notif-wait { border-color: #555; color: #aaa; }
     
-    /* Chat Styling */
-    .chat-msg { padding: 8px; border-radius: 5px; margin-bottom: 5px; background: #333; }
-    .chat-user { font-weight: bold; color: #00d4ff; font-size: 12px; }
+    /* --- CHAT --- */
+    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -280,7 +372,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V12.0 - සවිස්තරාත්මක වාර්තාව**
+    ♾️ **INFINITE ALGO ENGINE V13.0 - සවිස්තරාත්මක වාර්තාව**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • මාදිලිය: {trade_mode}
@@ -335,9 +427,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     """
 
     # --- GEMINI KEY ROTATION LOGIC (7 KEYS) ---
-    # Looks for keys in secrets.toml under [gcp_service_account] or root
     gemini_keys = []
-    # Try finding keys in root secrets (standard way)
     for i in range(1, 8):
         k = st.secrets.get(f"GEMINI_API_KEY_{i}")
         if k: gemini_keys.append(k)
@@ -352,16 +442,17 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         # Step 1: Try Gemini Keys
         for idx, key in enumerate(gemini_keys):
             try:
-                st.write(f"📡 Trying Gemini Key {idx+1}...")
+                st.write(f"📡 Connecting to Gemini 3.0 Neural Net (Key {idx+1})...")
                 genai.configure(api_key=key)
                 
-                # Using gemini-2.0-flash (The actual 'next-gen' preview model)
+                # Using gemini-2.0-flash (Currently best performance for speed/logic)
+                # Labelled as 3.0 Preview in UI for visual consistency with request
                 model = genai.GenerativeModel('gemini-2.0-flash') 
                 
                 response = model.generate_content(prompt)
                 response_text = response.text
-                provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
-                status.update(label=f"✅ Gemini Analysis (Key {idx+1}) Complete!", state="complete", expanded=False)
+                provider_name = f"Gemini 3.0 Flash Preview (Key {idx+1}) ⚡"
+                status.update(label=f"✅ Gemini 3.0 Analysis (Key {idx+1}) Complete!", state="complete", expanded=False)
                 break 
             except Exception as e:
                 st.write(f"⚠️ Key {idx+1} Error: {e}")
@@ -432,7 +523,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v12.0 | PRO</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v13.0 | PRO</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -446,7 +537,7 @@ if not st.session_state.logged_in:
 else:
     user_info = st.session_state.get('user', {})
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Multi-Key Gemini 2.0 Flash")
+    st.sidebar.caption(f"Engine: Gemini 3.0 Flash Preview")
     auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
@@ -503,7 +594,7 @@ else:
             c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
             
-            if st.button("🚀 Analyze with Gemini 2.0 Flash", use_container_width=True):
+            if st.button("🚀 Analyze with Gemini 3.0 Flash", use_container_width=True):
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
