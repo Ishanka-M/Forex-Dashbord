@@ -96,7 +96,8 @@ st.markdown("""
     .notif-wait { border-color: #555; color: #aaa; }
     
     /* --- CHAT --- */
-    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-msg { padding: 10px;
+        border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
     .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
     
     /* --- ADMIN TABLE --- */
@@ -689,16 +690,39 @@ else:
                 df_users = pd.DataFrame(all_records)
                 st.dataframe(df_users, use_container_width=True)
                 
-                st.markdown("### ✏️ Update User Credits")
-                c_u, c_l, c_b = st.columns([2, 1, 1])
-                with c_u: target_user = st.selectbox("Select User", [r['Username'] for r in all_records])
-                with c_l: new_limit_val = st.number_input("New Limit", min_value=0, value=10)
-                with c_b: 
-                    st.write("")
-                    st.write("")
-                    if st.button("Update Limit"):
-                        update_user_limit_in_db(target_user, new_limit_val)
-                        st.success("Updated")
+                st.markdown("### ✏️ Manage User Credits")
+                
+                # User Selection logic updated to be more robust (similar to expected Admin functions)
+                user_list = [r['Username'] for r in all_records if str(r.get('Username')) != 'Admin']
+                target_user = st.selectbox("Select User to Update", user_list)
+                
+                if target_user:
+                    # Find current stats for display
+                    curr_user_data = next((u for u in all_records if u['Username'] == target_user), {})
+                    st.info(f"User: **{target_user}** | Current Limit: **{curr_user_data.get('HybridLimit', 'N/A')}** | Used: **{curr_user_data.get('UsageCount', 'N/A')}**")
+                    
+                    c1, c2 = st.columns(2)
+                    
+                    # Update Limit
+                    with c1:
+                        st.subheader("Update Limit")
+                        new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 10)))
+                        if st.button("💾 Save Limit"):
+                            update_user_limit_in_db(target_user, new_limit_val)
+                            st.success(f"Limit updated to {new_limit_val}")
+                            time.sleep(1)
+                            st.rerun()
+                            
+                    # Reset Usage (Functionality implied by 'options' for admin management)
+                    with c2:
+                        st.subheader("Reset Usage")
+                        new_usage_val = st.number_input("Set Usage Count", min_value=0, value=0)
+                        if st.button("🔄 Update Usage"):
+                            update_usage_in_db(target_user, new_usage_val)
+                            st.success(f"Usage count set to {new_usage_val}")
+                            time.sleep(1)
+                            st.rerun()
+                            
             else: st.error("Database Connection Failed")
         else: st.error("Access Denied.")
 
