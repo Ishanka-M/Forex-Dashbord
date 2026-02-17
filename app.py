@@ -92,8 +92,7 @@ st.markdown("""
     .notif-wait { border-color: #555; color: #aaa; }
     
     /* --- CHAT --- */
-    .chat-msg { padding: 10px;
-        border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
     .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
     
     /* --- ADMIN TABLE --- */
@@ -170,7 +169,7 @@ def check_login(username, password):
                 
                 # If dates match (last_login_date == current_date), we do NOTHING.
                 # This prevents resetting usage when logging out and logging back in on the same day.
-
+                
                 if "HybridLimit" not in user: user["HybridLimit"] = 10
                 if "UsageCount" not in user: user["UsageCount"] = 0
                 
@@ -211,7 +210,7 @@ def add_new_user_to_db(username, password, limit):
             cell = sheet.find(username)
             if cell:
                 return False, "User already exists!"
-            # Add LastLogin column value as well
+            # Add LastLogin column value as well (Initialized to today)
             sheet.append_row([username, password, "User", limit, 0, get_current_date_str()])
             return True, f"User {username} created successfully!"
         except Exception as e:
@@ -306,6 +305,7 @@ def calculate_advanced_signals(df, tf):
     signal_line = macd.ewm(span=9, adjust=False).mean()
     macd_val = macd.iloc[-1]
     sig_val = signal_line.iloc[-1]
+    
     macd_signal = "neutral"
     if macd_val > sig_val and macd_val > 0: macd_signal = "bull"
     elif macd_val < sig_val and macd_val < 0: macd_signal = "bear"
@@ -522,6 +522,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     2. Use SMC, Fibonacci, and Liquidity concepts to confirm the best entry.
     3. Output the explanation in SINHALA language (Technical terms in English).
     4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance.
+    
     **FINAL OUTPUT FORMAT (STRICT):**
     [Sinhala Verification & Explanation Here]
     
@@ -543,7 +544,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash-exp') 
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
