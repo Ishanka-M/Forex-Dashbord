@@ -681,11 +681,11 @@ def scan_market(assets_list):
         
     return {"swing": swing_list, "scalp": scalp_list}
 
-# --- NEW: IMPROVED FORECAST CHART FUNCTION ---
-def create_forecast_chart(historical_df, current_price, sl, tp, forecast_text):
+# --- UPDATED FORECAST CHART FUNCTION (Entry, SL, TP දැන් පැහැදිලිව පෙන්වයි) ---
+def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
     """
     Create a forecast chart with historical candles and projected path.
-    Improved with better date handling and smoother forecast line.
+    Shows entry, SL, TP levels and a forecast line from entry to TP.
     """
     # Use last 30 candles for historical context
     hist = historical_df.tail(30).copy()
@@ -696,48 +696,30 @@ def create_forecast_chart(historical_df, current_price, sl, tp, forecast_text):
         # Calculate typical interval from historical data
         if len(hist) > 1:
             deltas = hist.index.to_series().diff().dropna()
-            # Use median interval to avoid outliers
             median_delta = deltas.median()
             if pd.isna(median_delta) or median_delta.total_seconds() == 0:
-                # Fallback: guess based on timeframe
-                if len(hist) > 1:
-                    # approximate from first and last
-                    total_seconds = (hist.index[-1] - hist.index[0]).total_seconds()
-                    avg_seconds = total_seconds / (len(hist)-1)
-                    median_delta = timedelta(seconds=avg_seconds)
-                else:
-                    median_delta = timedelta(hours=1)  # default
+                # Fallback: approximate from first and last
+                total_seconds = (hist.index[-1] - hist.index[0]).total_seconds()
+                avg_seconds = total_seconds / (len(hist)-1) if len(hist) > 1 else 3600
+                median_delta = timedelta(seconds=avg_seconds)
         else:
             median_delta = timedelta(hours=1)
         
-        # Generate 15 future dates (smoother line)
+        # Generate 15 future dates
         future_dates = [last_date + (i+1)*median_delta for i in range(15)]
     else:
-        # If not datetime, use integer indices
         future_dates = list(range(len(hist), len(hist)+15))
     
-    # Determine target price (TP) and direction
-    try:
-        tp_val = float(tp)
-        sl_val = float(sl)
-        curr = float(current_price)
-    except:
-        tp_val = curr * 1.01
-        sl_val = curr * 0.99
-    
-    # For forecast path, go from current price to TP (linear)
-    if tp_val > curr:
-        target = tp_val
+    # Determine direction and target
+    if tp > entry_price:
+        target = tp
         direction = "bullish"
     else:
-        target = tp_val
+        target = tp
         direction = "bearish"
     
-    # Create forecast prices (smooth transition)
-    forecast_prices = np.linspace(curr, target, len(future_dates))
-    
-    # Add some slight curvature for realism (optional)
-    # Could use a quadratic or just keep linear
+    # Create forecast prices (smooth transition from entry to target)
+    forecast_prices = np.linspace(entry_price, target, len(future_dates))
     
     # Create figure
     fig = go.Figure()
@@ -763,14 +745,17 @@ def create_forecast_chart(historical_df, current_price, sl, tp, forecast_text):
         marker=dict(size=5, color='#00d4ff', symbol='circle')
     ))
     
-    # Add SL and TP lines
-    fig.add_hline(y=sl_val, line_dash="dash", line_color="#ff4b4b", 
+    # Add horizontal lines for Entry, SL, TP
+    fig.add_hline(y=entry_price, line_dash="dashdot", line_color="#ffff00",
+                  annotation_text="Entry", annotation_position="bottom right")
+    fig.add_hline(y=sl, line_dash="dash", line_color="#ff4b4b",
                   annotation_text="SL", annotation_position="bottom right")
-    fig.add_hline(y=tp_val, line_dash="dash", line_color="#00ff00", 
+    fig.add_hline(y=tp, line_dash="dash", line_color="#00ff00",
                   annotation_text="TP", annotation_position="top right")
     
     # Add forecast text as annotation
     if forecast_text and forecast_text != 'N/A':
+        # Place annotation near the end of forecast line
         fig.add_annotation(
             x=future_dates[-1] if future_dates else hist.index[-1],
             y=forecast_prices[-1],
@@ -926,7 +911,7 @@ else:
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
                 
-                # Create forecast chart
+                # Create forecast chart using parsed Entry, SL, TP
                 try:
                     entry = float(st.session_state.ai_parsed_data['ENTRY']) if st.session_state.ai_parsed_data['ENTRY'] != 'N/A' else curr_p
                     sl = float(st.session_state.ai_parsed_data['SL']) if st.session_state.ai_parsed_data['SL'] != 'N/A' else curr_p * 0.99
@@ -936,7 +921,8 @@ else:
                     sl = curr_p * 0.99
                     tp = curr_p * 1.01
                 
-                forecast_fig = create_forecast_chart(df, curr_p, sl, tp, st.session_state.ai_parsed_data.get('FORECAST', ''))
+                # Pass entry price instead of current price
+                forecast_fig = create_forecast_chart(df, entry, sl, tp, st.session_state.ai_parsed_data.get('FORECAST', ''))
                 st.session_state.forecast_chart = forecast_fig
                 
                 # Clear placeholder and show chart
