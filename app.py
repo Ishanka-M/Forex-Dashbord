@@ -14,7 +14,7 @@ import requests
 import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v11.0 | Hybrid Pro", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v12.0 | Gemini 2.0 Flash", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -128,7 +128,7 @@ def get_market_news(symbol):
                 })
     except: pass
     
-    # Method 2: Yahoo Finance Fallback (From Old Code)
+    # Method 2: Yahoo Finance Fallback
     if not news_list:
         try:
             ticker = yf.Ticker(symbol)
@@ -140,7 +140,6 @@ def get_market_news(symbol):
                         "link": item.get('link')
                     })
         except: pass
-
     return news_list
 
 def get_data_period(tf):
@@ -150,7 +149,7 @@ def get_data_period(tf):
     elif tf == "4h": return "1y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (MERGED v10.5 + v7.0) ---
+# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df, tf):
     if len(df) < 50: return None, 0, 0
     signals = {}
@@ -167,6 +166,7 @@ def calculate_advanced_signals(df, tf):
     trend_direction = "bull" if c > ma_short else "bear"
     signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
 
+    # --- SMC & ICT ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     
@@ -174,31 +174,26 @@ def calculate_advanced_signals(df, tf):
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     signals['ICT'] = ("Bullish FVG", "bull") if fvg_bull else (("Bearish FVG", "bear") if fvg_bear else ("No FVG", "neutral"))
     
-    # --- ADDED: FIBONACCI (From Old Code) ---
+    # --- FIBONACCI & PATTERNS (Restored) ---
     ph_fib = df['High'].rolling(50).max().iloc[-1]
     pl_fib = df['Low'].rolling(50).min().iloc[-1]
     fib_range = ph_fib - pl_fib
     fib_618 = ph_fib - (fib_range * 0.618)
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
 
-    # --- ADDED: PATTERNS (From Old Code) ---
     signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
 
-    # --- RETAIL LOGIC ---
+    # --- RETAIL ---
     pivot_high = df['High'].rolling(20).max().iloc[-1]
     pivot_low = df['Low'].rolling(20).min().iloc[-1]
     
     retail_status = "Ranging"
     retail_col = "neutral"
     
-    if abs(c - pivot_low) < (c * 0.0005): 
-        retail_status, retail_col = "Support Test", "bull"
-    elif abs(c - pivot_high) < (c * 0.0005): 
-        retail_status, retail_col = "Resistance Test", "bear"
-    elif c > pivot_high:
-        retail_status, retail_col = "Breakout", "bull"
-    elif c < pivot_low:
-        retail_status, retail_col = "Breakdown", "bear"
+    if abs(c - pivot_low) < (c * 0.0005): retail_status, retail_col = "Support Test", "bull"
+    elif abs(c - pivot_high) < (c * 0.0005): retail_status, retail_col = "Resistance Test", "bear"
+    elif c > pivot_high: retail_status, retail_col = "Breakout", "bull"
+    elif c < pivot_low: retail_status, retail_col = "Breakdown", "bear"
         
     signals['RETAIL_SYS'] = (retail_status, retail_col)
 
@@ -226,17 +221,10 @@ def calculate_advanced_signals(df, tf):
     sk_score = 0
     if signals['TREND'][1] == "bull": sk_score += 2
     elif signals['TREND'][1] == "bear": sk_score -= 2
-    
     if signals['SMC'][1] == "bull": sk_score += 1.5
     elif signals['SMC'][1] == "bear": sk_score -= 1.5
-    
     if signals['RETAIL_SYS'][1] == "bull": sk_score += 1
     elif signals['RETAIL_SYS'][1] == "bear": sk_score -= 1
-    
-    if signals['RSI'][1] == "bull": sk_score += 0.5 
-    elif signals['RSI'][1] == "bear": sk_score -= 0.5 
-
-    # Adding points for restored features
     if signals['FIB'][1] == "bull": sk_score += 0.5
     if signals['PATT'][1] == "bull": sk_score += 0.5
 
@@ -245,7 +233,7 @@ def calculate_advanced_signals(df, tf):
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, sk_score
 
-# --- 5. INFINITE ALGORITHMIC ENGINE V11.0 ---
+# --- 5. INFINITE ALGORITHMIC ENGINE (DETAILED REPORT) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     news_score = 0
     for item in news_items:
@@ -256,45 +244,60 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     trend = sigs['TREND'][0]
     smc = sigs['SMC'][0]
     sk_signal = sigs['SK'][1]
+    ew_wave = sigs['ELLIOTT'][0]
     
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
-        sl_mult = 1.2
-        tp_mult = 2.0
+        sl_mult = 1.2; tp_mult = 2.0
     else:
         trade_mode = "SWING (දිගු කාලීන)"
-        sl_mult = 1.5
-        tp_mult = 3.5
+        sl_mult = 1.5; tp_mult = 3.5
 
+    # --- Detailed Sinhala Logic Construction ---
     if sk_signal == "bull" and news_score >= -1:
         action = "BUY"
-        note = f"SK System තහවුරු විය. Retail Support සහ Fibonacci මට්ටම් අසල. Trend: {trend}"
+        status_sinhala = "ශක්තිමත් මිලදී ගැනීමේ අවස්ථාවකි (Strong Buy)."
+        note = f"""
+        වෙළඳපල {trend} තත්ත්වයක පවතී. {smc} සහ {ew_wave} මගින් ඉහල යාම තහවුරු කරයි.
+        Retail Support සහ Fibonacci මට්ටම් වල සහය ඇත. ගැනුම්කරුවන් (Buyers) පාලනය අතට ගෙන ඇත.
+        """
         sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif sk_signal == "bear" and news_score <= 1:
         action = "SELL"
-        note = f"SK System තහවුරු විය. Retail Resistance සහ පැටර්න් අනුමැතිය. Trend: {trend}"
+        status_sinhala = "ශක්තිමත් විකිණීමේ අවස්ථාවකි (Strong Sell)."
+        note = f"""
+        වෙළඳපල {trend} ප්‍රවණතාවයක පවතින අතර, {smc} මගින් විකුණුම්කරුවන්ගේ පාලනය තහවුරු වේ.
+        Retail Resistance සහ පැටර්න් ({sigs['PATT'][0]}) මගින් පහත වැටීම බලාපොරොත්තු විය හැක.
+        """
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
     else:
         action = "WAIT"
-        note = "SK System අනුමැතිය නොමැත (Low Confluence). FIB/Pattern සහාය මදි."
+        status_sinhala = "ප්‍රවේශම් වන්න (Neutral/Wait)."
+        note = f"""
+        වෙළඳපල දැනට අවිනිශ්චිත (Ranging) තත්ත්වයක පවතී. තාක්ෂණික දත්ත සහ පුවත් අතර ගැටුමක් හෝ
+        ප්‍රමාණවත් සහයක් (Confluence) නොමැත. හොඳම අවස්ථාව එනතෙක් රැඳී සිටින්න.
+        """
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V11.0 (RETAIL + SK + FIB)**
+    ♾️ **INFINITE ALGO ENGINE V12.0 - සවිස්තරාත්මක වාර්තාව**
     
-    📊 **Setup ({tf}):**
-    • Mode: {trade_mode}
-    • Action: {action}
-    • SMC: {smc} | Retail: {sigs['RETAIL_SYS'][0]}
+    📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
+    • මාදිලිය: {trade_mode}
+    • තීරණය: {action}
+    • ප්‍රවණතාව (Trend): {trend}
+    • ව්‍යුහය (SMC): {smc}
+    • තරංග විශ්ලේෂණය: {ew_wave}
     
-    💡 **SK Logic:**
+    💡 **නිගමනය:**
+    {status_sinhala}
     {note}
     
     DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP={tp:.5f}
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (MULTI-KEY GEMINI 3.0 -> PUTER FALLBACK) ---
+# --- 6. HYBRID AI ENGINE (MULTI-KEY GEMINI 2.0 FLASH -> PUTER FALLBACK) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
@@ -304,46 +307,67 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # Included FIB and PATT in the prompt
+    # --- ENHANCED PROMPT FOR DETAILED RESPONSE ---
     prompt = f"""
-    Act as a Senior Hedge Fund Trader (SK System Expert). Analyze {pair} on {tf}.
-    Algo Output: {algo_result}
-    Technical Data: 
-    - Trend: {sigs['TREND'][0]}
-    - SMC: {sigs['SMC'][0]}
-    - RSI: {sigs['RSI'][0]}
-    - Retail: {sigs['RETAIL_SYS'][0]}
-    - Fibonacci: {sigs['FIB'][0]}
-    - Patterns: {sigs['PATT'][0]}
+    Act as a Senior Hedge Fund Trader (SK System Expert). Analyze {pair} on {tf} timeframe.
     
-    Final Format: Explain in Sinhala (Technical terms in English).
-    FINAL FORMAT MUST BE: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+    **Infinite Algorithm Output:**
+    {algo_result}
+    
+    **Technical Deep Dive:**
+    - Trend: {sigs['TREND'][0]}
+    - Market Structure (SMC): {sigs['SMC'][0]}
+    - RSI: {sigs['RSI'][0]}
+    - Retail Levels: {sigs['RETAIL_SYS'][0]}
+    - Fibonacci: {sigs['FIB'][0]}
+    - Candlestick Patterns: {sigs['PATT'][0]}
+    - Volatility (ATR): {atr:.5f}
+    
+    **Instructions:**
+    1. Explain the trade setup in detail in Sinhala (Use English for technical terms like BOS, FVG, Order Block).
+    2. Explain WHY the Entry, Stop Loss, and Take Profit levels are chosen based on the ATR and Market Structure.
+    3. Provide a confidence score (0-100%).
+    
+    **FINAL OUTPUT FORMAT (STRICT):**
+    [Detailed Sinhala Explanation]
+    
+    DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
     """
 
     # --- GEMINI KEY ROTATION LOGIC (7 KEYS) ---
-    gemini_keys = [st.secrets.get(f"GEMINI_API_KEY_{i}") for i in range(1, 8)]
-    gemini_keys = [k for k in gemini_keys if k] # Filter out missing keys
-
+    # Looks for keys in secrets.toml under [gcp_service_account] or root
+    gemini_keys = []
+    # Try finding keys in root secrets (standard way)
+    for i in range(1, 8):
+        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
+        if k: gemini_keys.append(k)
+        
     response_text = ""
     provider_name = ""
 
     with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
+        if not gemini_keys:
+            st.error("❌ No Gemini Keys found in secrets.toml!")
+        
         # Step 1: Try Gemini Keys
         for idx, key in enumerate(gemini_keys):
             try:
                 st.write(f"📡 Trying Gemini Key {idx+1}...")
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-2.0-flash') # User terms: Gemini 3.0
+                
+                # Using gemini-2.0-flash (The actual 'next-gen' preview model)
+                model = genai.GenerativeModel('gemini-2.0-flash') 
+                
                 response = model.generate_content(prompt)
                 response_text = response.text
-                provider_name = f"Gemini 3.0 Flash (Key {idx+1}) ⚡"
+                provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
                 status.update(label=f"✅ Gemini Analysis (Key {idx+1}) Complete!", state="complete", expanded=False)
-                break # Success! Break the loop
+                break 
             except Exception as e:
-                st.write(f"⚠️ Key {idx+1} failed/limited. Trying next...")
+                st.write(f"⚠️ Key {idx+1} Error: {e}")
                 continue
 
-        # Step 2: Fallback to Puter if all Gemini keys fail
+        # Step 2: Fallback to Puter
         if not response_text:
             st.write("⚠️ All Gemini Keys Failed. Switching to Puter AI...")
             try:
@@ -408,7 +432,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v11.0 | PRO</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v12.0 | PRO</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -422,7 +446,7 @@ if not st.session_state.logged_in:
 else:
     user_info = st.session_state.get('user', {})
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Multi-Key Gemini 3.0 (Preview)")
+    st.sidebar.caption(f"Engine: Multi-Key Gemini 2.0 Flash")
     auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
@@ -457,13 +481,12 @@ else:
             elif sk_signal == "bear": st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SK SELL SIGNAL:</b> Score {sk_score}</div>", unsafe_allow_html=True)
             else: st.markdown(f"<div class='notif-container notif-wait'>📡 Monitoring Market...</div>", unsafe_allow_html=True)
 
-            # --- SIGNAL GRID (Updated to Include Missing Options) ---
+            # --- SIGNAL GRID (Full) ---
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
             
-            # Added Second Row for FIB and PATT
             c4, c5, c6 = st.columns(3)
             c4.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
             c5.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>PATT: {sigs['PATT'][0]}</div>", unsafe_allow_html=True)
@@ -473,14 +496,14 @@ else:
             fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown(f"### 🎯 Hybrid AI Analysis")
+            st.markdown(f"### 🎯 Hybrid AI Analysis (Detailed)")
             parsed = st.session_state.ai_parsed_data
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
             
-            if st.button("🚀 Analyze with Gemini 3.0 (Preview)", use_container_width=True):
+            if st.button("🚀 Analyze with Gemini 2.0 Flash", use_container_width=True):
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
@@ -488,8 +511,7 @@ else:
                 st.rerun()
 
             if "ai_result" in st.session_state:
-                # SHOWING THE USED AI PROVIDER HERE
-                st.markdown(f"**🤖 AI Provider:** `{st.session_state.active_provider}`")
+                st.markdown(f"**🤖 Provider:** `{st.session_state.active_provider}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     elif app_mode == "Market Scanner":
