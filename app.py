@@ -92,7 +92,8 @@ st.markdown("""
     .notif-wait { border-color: #555; color: #aaa; }
     
     /* --- CHAT --- */
-    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-msg { padding: 10px;
+        border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
     .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
     
     /* --- ADMIN TABLE --- */
@@ -136,37 +137,39 @@ def check_login(username, password):
             user = next((i for i in records if str(i.get("Username")) == username), None)
             
             if user and str(user.get("Password")) == password:
-                # --- DAILY RESET LOGIC ---
+                # --- DAILY RESET LOGIC (UPDATED) ---
                 current_date = get_current_date_str()
-                last_login_date = str(user.get("LastLogin", "2000-01-01"))
+                last_login_date = str(user.get("LastLogin", ""))
                 
-                # If it's a new day, reset usage to 0 and ensure limit is 10
+                # Check if it is a NEW day (Compare stored date vs today's date)
                 if last_login_date != current_date:
                     try:
                         cell = sheet.find(username)
                         headers = sheet.row_values(1)
                         
-                        # Reset UsageCount
+                        # 1. Reset UsageCount to 0
                         if "UsageCount" in headers:
                             sheet.update_cell(cell.row, headers.index("UsageCount") + 1, 0)
                             user["UsageCount"] = 0
                         
-                        # Reset HybridLimit to 10 (Standard Daily Quota)
+                        # 2. Reset HybridLimit to 10 (Standard Daily Quota)
                         if "HybridLimit" in headers:
-                             # Keep 9999 if it was a special user, otherwise reset to 10
-                            if int(user.get("HybridLimit", 10)) < 9000: 
+                            # Keep 9999 if it was a special user, otherwise reset to 10
+                            current_limit = int(user.get("HybridLimit", 10))
+                            if current_limit < 9000: 
                                 sheet.update_cell(cell.row, headers.index("HybridLimit") + 1, 10)
                                 user["HybridLimit"] = 10
                                 
-                        # Update LastLogin Date
+                        # 3. CRITICAL: Update LastLogin Date to Today
                         if "LastLogin" in headers:
                             sheet.update_cell(cell.row, headers.index("LastLogin") + 1, current_date)
-                        else:
-                             # Add column if missing (simple fallback, might fail if sheet structure rigid)
-                             pass
-                             
+                            user["LastLogin"] = current_date
+                        
                     except Exception as e:
                         print(f"Daily Reset Error: {e}")
+                
+                # If dates match (last_login_date == current_date), we do NOTHING.
+                # This prevents resetting usage when logging out and logging back in on the same day.
 
                 if "HybridLimit" not in user: user["HybridLimit"] = 10
                 if "UsageCount" not in user: user["UsageCount"] = 0
@@ -519,7 +522,6 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     2. Use SMC, Fibonacci, and Liquidity concepts to confirm the best entry.
     3. Output the explanation in SINHALA language (Technical terms in English).
     4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance.
-    
     **FINAL OUTPUT FORMAT (STRICT):**
     [Sinhala Verification & Explanation Here]
     
