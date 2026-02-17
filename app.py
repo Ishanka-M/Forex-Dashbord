@@ -612,11 +612,6 @@ else:
         scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
         
         # Scan Control
-       elif app_mode == "Market Scanner":
-        st.title("📡 SK Market Scanner (Engine + AI)")
-        scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
-        
-        # Scan Control
         if st.button("Start Hybrid Scan", type="primary"):
             with st.spinner("Scanning Market & Filtering w/ Algorithm..."):
                 sc, sw = scan_market(assets[scan_market_type])
@@ -632,7 +627,6 @@ else:
                 st.info("No high-probability setups found yet. Click 'Start Hybrid Scan'.")
                 return
             
-            # Display the DataFrame
             st.dataframe(pd.DataFrame(results_list), use_container_width=True)
             
             st.markdown("---")
@@ -641,58 +635,39 @@ else:
             # Dropdown to select a found setup
             options = [r['Pair'] for r in results_list]
             if options:
-                # Use a unique key for the selectbox to avoid ID conflicts
                 selected_scan_asset = st.selectbox(f"Select Asset to Analyze ({tf_code})", options, key=f"sel_{tf_code}")
                 
-                # Use a unique key for the button
                 if st.button(f"Generate AI Report for {selected_scan_asset}", key=f"btn_{tf_code}"):
                     # Fetch fresh data for AI context
                     with st.spinner(f"AI Analyzing {selected_scan_asset}..."):
                         yahoo_sym = selected_scan_asset
-                        
-                        # Fix Symbol formatting for Yahoo Finance
-                        if scan_market_type == "Forex" and "=X" not in yahoo_sym: 
-                            yahoo_sym += "=X"
-                        elif scan_market_type == "Crypto" and "-USD" not in yahoo_sym: 
-                            yahoo_sym += "-USD"
+                        if scan_market_type == "Forex" and "=X" not in yahoo_sym: yahoo_sym += "=X"
+                        elif scan_market_type == "Crypto" and "-USD" not in yahoo_sym: yahoo_sym += "-USD"
 
-                        # Adjust period based on timeframe to ensure enough data
-                        period = "1mo" if tf_code == "4h" else "5d"
-                        
-                        try:
-                            df_ai = yf.download(yahoo_sym, period=period, interval=tf_code, progress=False)
+                        df_ai = yf.download(yahoo_sym, period="5d", interval=tf_code, progress=False)
+                        if not df_ai.empty:
+                            if isinstance(df_ai.columns, pd.MultiIndex): df_ai.columns = df_ai.columns.get_level_values(0)
                             
-                            if not df_ai.empty and len(df_ai) > 50:
-                                if isinstance(df_ai.columns, pd.MultiIndex): 
-                                    df_ai.columns = df_ai.columns.get_level_values(0)
-                                
-                                # Recalculate context for AI
-                                sigs_ai, atr_ai, _ = calculate_advanced_signals(df_ai, tf_code)
-                                
-                                # --- ERROR FIX: Check if signals are valid ---
-                                if sigs_ai is None:
-                                    st.error(f"⚠️ Not enough data points to calculate signals for {selected_scan_asset}.")
-                                else:
-                                    news_ai = get_market_news(yahoo_sym)
-                                    curr_p_ai = df_ai['Close'].iloc[-1]
-                                    
-                                    # Call Hybrid AI
-                                    ai_res, prov = get_hybrid_analysis(
-                                        yahoo_sym, 
-                                        {'price': curr_p_ai}, 
-                                        sigs_ai, 
-                                        news_ai, 
-                                        atr_ai, 
-                                        st.session_state.user, 
-                                        tf_code
-                                    )
-                                    
-                                    st.success(f"Analysis Complete! Provider: {prov}")
-                                    st.markdown(f"<div class='entry-box'>{ai_res}</div>", unsafe_allow_html=True)
-                            else:
-                                st.error(f"⚠️ Data fetch failed or insufficient data for {selected_scan_asset}.")
-                        except Exception as e:
-                            st.error(f"An error occurred during analysis: {e}")
+                            # Recalculate context for AI
+                            sigs_ai, atr_ai, _ = calculate_advanced_signals(df_ai, tf_code)
+                            news_ai = get_market_news(yahoo_sym)
+                            curr_p_ai = df_ai['Close'].iloc[-1]
+                            
+                            # Call Hybrid AI
+                            ai_res, prov = get_hybrid_analysis(
+                                yahoo_sym, 
+                                {'price': curr_p_ai}, 
+                                sigs_ai, 
+                                news_ai, 
+                                atr_ai, 
+                                st.session_state.user, 
+                                tf_code
+                            )
+                            
+                            st.success(f"Analysis Complete! Provider: {prov}")
+                            st.markdown(f"<div class='entry-box'>{ai_res}</div>", unsafe_allow_html=True)
+                        else:
+                            st.error("Data fetch failed for AI analysis.")
 
         with t1: render_scanner_tab(st.session_state.scalp_results, "5m")
         with t2: render_scanner_tab(st.session_state.swing_results, "4h")
