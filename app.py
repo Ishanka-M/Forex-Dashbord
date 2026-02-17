@@ -447,7 +447,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
                 
                 # Using gemini-2.0-flash (Currently best performance for speed/logic)
                 # Labelled as 3.0 Preview in UI for visual consistency with request
-                model = genai.GenerativeModel('gemini-2.0-flash') 
+                model = genai.GenerativeModel('gemini-3-flash-preview') 
                 
                 response = model.generate_content(prompt)
                 response_text = response.text
