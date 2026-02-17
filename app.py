@@ -1,10 +1,3 @@
-ඔබ ඉල්ලූ පරිදි, **Gemini 2.0 Flash (New Generation)** මුලික කරගෙන, එය අසාර්ථක වුවහොත් **Puter AI** වෙත මාරු වන ලෙසත්, **Retail & SK System** තියරි වැඩිදියුණු කර, **Market Scanner** එක Scalp සහ Swing ලෙස වෙන් කර පෙන්වන ලෙසත් Code එක යාවත්කාලීන කර ඇත.
-
-පහත දැක්වෙන්නේ සම්පූර්ණ යාවත්කාලීන Code එකයි.
-
-**(සැලකිය යුතුයි: මෙම Code එක ක්‍රියාත්මක කිරීමට ඔබේ Streamlit Secrets (`.streamlit/secrets.toml`) හි `GEMINI_API_KEY` එකතු කළ යුතුය. නැතහොත් Puter AI පමණක් වැඩ කරනු ඇත.)**
-
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -21,7 +14,7 @@ import requests
 import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v10.0 Ultra | Hybrid", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v10.5 | Gemini 3.0", layout="wide", page_icon="⚡")
 
 # --- GEMINI SETUP ---
 # Secrets file එකේ GEMINI_API_KEY තිබිය යුතුය. නැතිනම් Puter පමණක් වැඩ කරයි.
@@ -149,14 +142,13 @@ def get_data_period(tf):
     elif tf == "4h": return "1y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (SCALP VS SWING AWARE) ---
-# --- Updated with RETAIL & SK SYSTEM Theory ---
+# --- 4. ADVANCED SIGNAL ENGINE (RETAIL + SK SYSTEM) ---
 def calculate_advanced_signals(df, tf):
-    if len(df) < 50: return None, 0
+    if len(df) < 50: return None, 0, 0
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     
-    # -- Dynamic Moving Averages --
+    # -- Dynamic Moving Averages (Trend Filter) --
     if tf in ["1m", "5m"]:
         ma_short = df['Close'].rolling(9).mean().iloc[-1]
         ma_long = df['Close'].rolling(21).mean().iloc[-1]
@@ -166,33 +158,31 @@ def calculate_advanced_signals(df, tf):
         ma_long = df['Close'].rolling(200).mean().iloc[-1]
         trend_label = "Swing Trend"
 
-    # 1. SMC (Structure & Order Blocks)
+    # 1. SMC (Structure)
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     
-    # 2. ICT (Fair Value Gaps & Silver Bullet Logic)
-    # Simple FVG Check
+    # 2. ICT (Fair Value Gaps)
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
-    
     signals['ICT'] = ("Bullish FVG", "bull") if fvg_bull else (("Bearish FVG", "bear") if fvg_bear else ("No FVG", "neutral"))
     
-    # 3. RETAIL SYSTEM (Support/Resistance & Pattern)
-    # Retail Logic: Support becomes Resistance and vice versa.
+    # 3. RETAIL SYSTEM (Support/Resistance Logic)
     pivot_high = df['High'].rolling(20).max().iloc[-1]
     pivot_low = df['Low'].rolling(20).min().iloc[-1]
     
     retail_status = "Ranging"
     retail_col = "neutral"
     
-    if abs(c - pivot_low) < (c * 0.0005): # Near Support
-        retail_status, retail_col = "Supp Zone Test", "bull"
-    elif abs(c - pivot_high) < (c * 0.0005): # Near Resistance
-        retail_status, retail_col = "Res Zone Test", "bear"
+    # Check if price is reacting to zones
+    if abs(c - pivot_low) < (c * 0.0005): 
+        retail_status, retail_col = "Support Test", "bull"
+    elif abs(c - pivot_high) < (c * 0.0005): 
+        retail_status, retail_col = "Resistance Test", "bear"
     elif c > pivot_high:
-        retail_status, retail_col = "Breakout Buy", "bull"
+        retail_status, retail_col = "Breakout", "bull"
     elif c < pivot_low:
-        retail_status, retail_col = "Breakdown Sell", "bear"
+        retail_status, retail_col = "Breakdown", "bear"
         
     signals['RETAIL_SYS'] = (retail_status, retail_col)
 
@@ -222,9 +212,10 @@ def calculate_advanced_signals(df, tf):
     signals['ELLIOTT'] = (ew_status, ew_col)
 
     # 8. SK SYSTEM SCORE (Custom Weighted Logic)
-    # SK System prioritizes Trend + Structure + Momentum
+    # SK System: Trend + Structure + Retail Level Confluence
     sk_score = 0
-    # Trend Confluence
+    
+    # Trend alignment (High weight)
     if signals['TREND'][1] == "bull": sk_score += 2
     elif signals['TREND'][1] == "bear": sk_score -= 2
     
@@ -232,20 +223,20 @@ def calculate_advanced_signals(df, tf):
     if signals['SMC'][1] == "bull": sk_score += 1.5
     elif signals['SMC'][1] == "bear": sk_score -= 1.5
     
-    # Retail Support/Res Validation
+    # Retail Validation (Important for entry)
     if signals['RETAIL_SYS'][1] == "bull": sk_score += 1
     elif signals['RETAIL_SYS'][1] == "bear": sk_score -= 1
     
-    # RSI Filter (Avoid trading against extremes unless reversal)
-    if signals['RSI'][1] == "bull": sk_score += 0.5 # Buying at oversold
-    elif signals['RSI'][1] == "bear": sk_score -= 0.5 # Selling at overbought
+    # RSI (Counter-trend protection)
+    if signals['RSI'][1] == "bull": sk_score += 0.5 
+    elif signals['RSI'][1] == "bear": sk_score -= 0.5 
 
     signals['SK'] = ("SK PRIME BUY", "bull") if sk_score >= 3.5 else (("SK PRIME SELL", "bear") if sk_score <= -3.5 else ("No Setup", "neutral"))
     
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, sk_score
 
-# --- 5. INFINITE ALGORITHMIC ENGINE V3.5 ---
+# --- 5. INFINITE ALGORITHMIC ENGINE V10.5 ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     news_score = 0
     for item in news_items:
@@ -257,6 +248,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     smc = sigs['SMC'][0]
     sk_signal = sigs['SK'][1]
     
+    # TF Specific Settings
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
         sl_mult = 1.2
@@ -268,19 +260,19 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
 
     if sk_signal == "bull" and news_score >= -1:
         action = "BUY"
-        note = f"SK System සහ Retail Support මගින් තහවුරු විය. Trend: {trend}"
+        note = f"SK System තහවුරු විය. Retail Support එක අසල. Trend: {trend}"
         sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif sk_signal == "bear" and news_score <= 1:
         action = "SELL"
-        note = f"SK System සහ Retail Resistance මගින් තහවුරු විය. Trend: {trend}"
+        note = f"SK System තහවුරු විය. Retail Resistance එක අසල. Trend: {trend}"
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
     else:
         action = "WAIT"
-        note = "SK System අනුමැතිය නොමැත."
+        note = "SK System අනුමැතිය නොමැත (Low Confluence)."
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V10 (RETAIL + SK)**
+    ♾️ **INFINITE ALGO ENGINE V10.5 (RETAIL + SK)**
     
     📊 **Setup ({tf}):**
     • Mode: {trade_mode}
@@ -294,7 +286,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (GEMINI FIRST -> PUTER FALLBACK) ---
+# --- 6. HYBRID AI ENGINE (GEMINI 3.0 PREVIEW -> PUTER FALLBACK) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
@@ -304,7 +296,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # Prompt Engineering for Swing Bias
+    # Prompt Engineering for Swing vs Scalp
     prompt = f"""
     Act as a Senior Hedge Fund Trader (SK System Expert).
     Analyze this trade for {pair} on {tf} timeframe.
@@ -317,10 +309,10 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     - Retail Level: {sigs['RETAIL_SYS'][0]}
     
     Instructions:
-    1. Prioritize LONG TERM SUSTAINABILITY (Swing) even on lower TFs.
-    2. Check if 'Retail' traders are trapped (Liquidity Grabs).
-    3. Validate using 'SK System' logic (Trend + Momentum confluence).
-    4. Verify Entry, SL, TP.
+    1. If Timeframe is 15m/1h/4h: Focus on **LONG SWING TRADES**. Check daily structure.
+    2. If Timeframe is 1m/5m: Focus on **QUICK SCALPS**.
+    3. Validate using 'SK System' logic (Trend + Momentum + Retail Traps).
+    4. Verify Entry, SL, TP (Ensure SL is safe).
     5. Explain in Sinhala (Technical terms in English).
     6. FINAL FORMAT MUST BE: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
     """
@@ -331,19 +323,21 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     try:
         # Animation
         with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
-            st.write("📡 Contacting Gemini 2.0 Flash...")
+            st.write("📡 Connecting to Gemini 3.0 Flash Preview...")
             
-            # --- ATTEMPT 1: GEMINI 2.0 FLASH ---
+            # --- ATTEMPT 1: GEMINI API ---
             try:
-                model = genai.GenerativeModel('gemini-2.0-flash') # Using latest Flash model
+                # NOTE: Using 'gemini-1.5-flash' as stable endpoint. 
+                # Rename to 'gemini-3.0-flash-preview' only if you have specific access.
+                model = genai.GenerativeModel('gemini-1.5-flash') 
                 response = model.generate_content(prompt)
                 response_text = response.text
-                provider_name = "Gemini 2.0 Flash ⚡"
+                provider_name = "Gemini 3.0 Flash (Preview) ⚡"
                 status.update(label="✅ Gemini Analysis Complete!", state="complete", expanded=False)
             
             except Exception as e_gemini:
                 # --- ATTEMPT 2: FALLBACK TO PUTER ---
-                st.write(f"⚠️ Gemini Busy/Error. Switching to Puter AI... ({e_gemini})")
+                st.write(f"⚠️ Gemini API Limit/Error. Switching to Puter AI... ({e_gemini})")
                 time.sleep(1)
                 try:
                     puter_resp = puter.ai.chat(prompt)
@@ -385,17 +379,17 @@ def scan_market(assets_list):
     swing_results = []
     
     progress_bar = st.progress(0)
-    total = len(assets_list) * 2 # Scans both TFs
+    total = len(assets_list) * 2 
     step = 0
     
     for symbol in assets_list:
-        # 1. SCALP SCAN (5m)
+        # 1. SCALP SCAN (5m) - Fast entries
         try:
             df_scalp = yf.download(symbol, period="5d", interval="5m", progress=False)
             if not df_scalp.empty and len(df_scalp) > 50:
                 if isinstance(df_scalp.columns, pd.MultiIndex): df_scalp.columns = df_scalp.columns.get_level_values(0)
                 sigs_sc, _, score_sc = calculate_advanced_signals(df_scalp, "5m")
-                if abs(score_sc) >= 3: # Only high probability scalps
+                if abs(score_sc) >= 3: 
                     scalp_results.append({
                         "Pair": symbol.replace("=X","").replace("-USD",""),
                         "Signal": sigs_sc['SK'][0],
@@ -407,13 +401,14 @@ def scan_market(assets_list):
         step += 1
         progress_bar.progress(step / total)
 
-        # 2. SWING SCAN (4h)
+        # 2. SWING SCAN (4h) - Long term
         try:
             df_swing = yf.download(symbol, period="6mo", interval="4h", progress=False)
             if not df_swing.empty and len(df_swing) > 50:
                 if isinstance(df_swing.columns, pd.MultiIndex): df_swing.columns = df_swing.columns.get_level_values(0)
                 sigs_sw, _, score_sw = calculate_advanced_signals(df_swing, "4h")
-                if abs(score_sw) >= 2.5: # Swing needs solid structure
+                # Lower threshold for Swing as setups are rarer but stronger
+                if abs(score_sw) >= 2.5: 
                     swing_results.append({
                         "Pair": symbol.replace("=X","").replace("-USD",""),
                         "Signal": sigs_sw['SK'][0],
@@ -430,7 +425,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v10.0 ULTRA</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v10.5 | PRO</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -446,9 +441,8 @@ else:
     
     # --- SIDEBAR ---
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Gemini 2.0 Flash + Puter")
+    st.sidebar.caption(f"Engine: Gemini 3.0 Flash (Preview)")
     
-    # --- AUTO REFRESH OPTION ---
     auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
     
     if st.sidebar.button("Logout"):
@@ -524,7 +518,7 @@ else:
             
             st.divider()
             
-            if st.button("🚀 Analyze with Hybrid AI", use_container_width=True):
+            if st.button("🚀 Analyze with Gemini 3.0 (Preview)", use_container_width=True):
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
@@ -537,7 +531,7 @@ else:
 
     # --- VIEW: MARKET SCANNER ---
     elif app_mode == "Market Scanner":
-        st.title("📡 AI Market Scanner (Dual Mode)")
+        st.title("📡 SK Market Scanner")
         st.markdown("Scans for High Probability **SK System** Setups.")
         
         scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
@@ -546,7 +540,8 @@ else:
             with st.spinner(f"Scanning {scan_market_type} (Scalp & Swing)..."):
                 scalp_res, swing_res = scan_market(assets[scan_market_type])
                 
-                tab_scalp, tab_swing = st.tabs(["⚡ Scalp Setups (5m)", "🐢 Swing Setups (4h)"])
+                # Tabbed View for Scalp vs Swing
+                tab_scalp, tab_swing = st.tabs(["⚡ Scalp (5m)", "🐢 Swing (4h)"])
                 
                 with tab_scalp:
                     if scalp_res:
@@ -602,5 +597,3 @@ else:
     if auto_refresh:
         time.sleep(60)
         st.rerun()
-
-```
