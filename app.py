@@ -159,7 +159,7 @@ def update_user_limit_in_db(username, new_limit):
                 if "HybridLimit" in headers:
                     col_idx = headers.index("HybridLimit") + 1
                     sheet.update_cell(cell.row, col_idx, new_limit)
-                return True
+            return True
         except Exception as e: return False
     return False
 
@@ -205,6 +205,16 @@ def get_market_news(symbol):
         except: pass
     return news_list
 
+# --- NEW: News Scoring Function ---
+def calculate_news_score(news_items):
+    score = 0
+    for news in news_items:
+        s_class = get_sentiment_class(news['title'])
+        if s_class == "news-positive": score += 10
+        elif s_class == "news-negative": score -= 10
+    # Cap score between -20 and 20
+    return max(min(score, 20), -20)
+
 def get_data_period(tf):
     if tf in ["1m", "5m"]: return "5d"
     elif tf == "15m": return "1mo"
@@ -214,21 +224,27 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE ---
-def calculate_advanced_signals(df, tf):
+# --- 4. ADVANCED SIGNAL ENGINE (UPDATED) ---
+def calculate_advanced_signals(df, tf, news_items=[]):
     if df is None or len(df) < 50: return None, 0, 0
     signals = {}
     c = df['Close'].iloc[-1]
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
     
-    # --- 1. TREND ---
+    # --- 1. TREND (MA & Trendlines) ---
     ma_50 = df['Close'].rolling(50).mean().iloc[-1]
     ma_200 = df['Close'].rolling(200).mean().iloc[-1] if len(df) > 200 else ma_50
+    
+    # Calculate Slope (Trendline Logic)
+    y_vals = df['Close'].tail(20).values
+    x_vals = np.arange(len(y_vals))
+    slope, intercept = np.polyfit(x_vals, y_vals, 1)
+    
     trend_dir = "neutral"
-    if c > ma_50 and c > ma_200: trend_dir = "bull"
-    elif c < ma_50 and c < ma_200: trend_dir = "bear"
-    signals['TREND'] = (f"Trend {trend_dir.upper()}", trend_dir)
+    if c > ma_50 and c > ma_200 and slope > 0: trend_dir = "bull"
+    elif c < ma_50 and c < ma_200 and slope < 0: trend_dir = "bear"
+    signals['TREND'] = (f"Trend {trend_dir.upper()} (Slope {slope:.2f})", trend_dir)
 
     # --- 2. MACD ---
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
@@ -241,27 +257,43 @@ def calculate_advanced_signals(df, tf):
     if macd_val > sig_val and macd_val > 0: macd_signal = "bull"
     elif macd_val < sig_val and macd_val < 0: macd_signal = "bear"
     
-    # --- 3. SMC & ICT ---
+    # --- 3. SMC & ICT (Order Blocks & FVG) ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     smc_signal = "neutral"
-    if c > highs.iloc[-2]: smc_signal = "bull"
-    elif c < lows.iloc[-2]: smc_signal = "bear"
-    signals['SMC'] = (f"{smc_signal.upper()} Structure", smc_signal)
     
+    # Identify Order Block (Simplified: Down candle before up move breaks structure)
+    last_candles = df.tail(5)
+    is_bullish_ob = (last_candles['Close'].iloc[-3] < last_candles['Open'].iloc[-3]) and \
+                    (last_candles['Close'].iloc[-1] > last_candles['High'].iloc[-3])
+    is_bearish_ob = (last_candles['Close'].iloc[-3] > last_candles['Open'].iloc[-3]) and \
+                    (last_candles['Close'].iloc[-1] < last_candles['Low'].iloc[-3])
+
+    if c > highs.iloc[-2] or is_bullish_ob: smc_signal = "bull"
+    elif c < lows.iloc[-2] or is_bearish_ob: smc_signal = "bear"
+    signals['SMC'] = (f"{smc_signal.upper()} Structure/OB", smc_signal)
+    
+    # ICT FVG
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     ict_signal = "bull" if fvg_bull else ("bear" if fvg_bear else "neutral")
     signals['ICT'] = (f"{ict_signal.upper()} FVG", ict_signal)
 
-    # --- 4. LIQUIDITY ---
+    # --- 4. LIQUIDITY & RETAIL (S/R) ---
     liq_signal = "neutral"
     liq_text = "Holding"
-    if l < df['Low'].iloc[-10:-1].min(): 
+    
+    # Retail Support/Resistance
+    recent_low = df['Low'].tail(30).min()
+    recent_high = df['High'].tail(30).max()
+    is_at_support = abs(c - recent_low) < (c * 0.002)
+    is_at_resistance = abs(c - recent_high) < (c * 0.002)
+
+    if l < df['Low'].iloc[-10:-1].min() or is_at_support: 
         liq_signal = "bull" 
-        liq_text = "Liq Grab (Low)"
-    elif h > df['High'].iloc[-10:-1].max():
+        liq_text = "Liq Grab / Support"
+    elif h > df['High'].iloc[-10:-1].max() or is_at_resistance:
         liq_signal = "bear" 
-        liq_text = "Liq Grab (High)"
+        liq_text = "Liq Grab / Resist"
     signals['LIQ'] = (liq_text, liq_signal)
     
     # --- 5. PATTERNS ---
@@ -309,6 +341,7 @@ def calculate_advanced_signals(df, tf):
     last_50 = df['Close'].tail(50)
     max_50, min_50 = last_50.max(), last_50.min()
     current_pos = (c - min_50) / (max_50 - min_50) if (max_50 - min_50) != 0 else 0.5
+    
     ew_status = "Wave Analysis"
     ew_col = "neutral"
     if trend_dir == "bull":
@@ -321,15 +354,19 @@ def calculate_advanced_signals(df, tf):
         else: ew_status, ew_col = "Wave B (Rally)", "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # --- 10. CONFIDENCE SCORING ---
+    # --- 10. CONFIDENCE SCORING (WEIGHTED) ---
     confidence = 0
     
+    # News Impact
+    news_score = calculate_news_score(news_items)
+    confidence += news_score
+
     # Weightings
-    if trend_dir == "bull": confidence += 25
-    elif trend_dir == "bear": confidence -= 25
+    if trend_dir == "bull": confidence += 20
+    elif trend_dir == "bear": confidence -= 20
     
-    if macd_signal == "bull": confidence += 15
-    elif macd_signal == "bear": confidence -= 15
+    if macd_signal == "bull": confidence += 10
+    elif macd_signal == "bear": confidence -= 10
     
     if smc_signal == "bull": confidence += 20
     elif smc_signal == "bear": confidence -= 20
@@ -342,6 +379,12 @@ def calculate_advanced_signals(df, tf):
     
     if patt_signal == "bull": confidence += 15
     elif patt_signal == "bear": confidence -= 15
+
+    # SK System Confirmation (RSI Divergence check)
+    sk_conf = 0
+    if rsi_val < 30 and trend_dir == "bull": sk_conf = 10
+    elif rsi_val > 70 and trend_dir == "bear": sk_conf = -10
+    confidence += sk_conf
 
     final_signal = "neutral"
     if confidence > 0: final_signal = "bull"
@@ -490,7 +533,8 @@ def scan_market(assets_list):
             df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
             if not df_sw.empty and len(df_sw) > 50:
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
-                sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h")
+                # Pass empty list for news in scan to speed up
+                sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h", [])
                 
                 # Filter: > 25% Accuracy
                 if abs(conf_sw) > 25: 
@@ -508,7 +552,7 @@ def scan_market(assets_list):
             df_sc = yf.download(symbol, period="1mo", interval="15m", progress=False)
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
-                sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "15m")
+                sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "15m", [])
                 
                 # Filter: > 25% Accuracy
                 if abs(conf_sc) > 25: 
@@ -572,9 +616,17 @@ else:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             curr_p = float(df['Close'].iloc[-1])
             st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
-            sigs, current_atr, conf_score = calculate_advanced_signals(df, tf)
+            
+            # Pass news_items for sentiment weighting
+            sigs, current_atr, conf_score = calculate_advanced_signals(df, tf, news_items)
             
             signal_dir = sigs['SK'][1]
+            
+            # --- NOTIFICATION FEATURE ---
+            if abs(conf_score) > 30: # Only notify if high confidence
+                msg_type = "Buy" if signal_dir == "bull" else "Sell"
+                st.toast(f"Trade Captured: {msg_type} {pair} ({abs(conf_score)}%)", icon="🔔")
+            
             if signal_dir == "bull": 
                 st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
             elif signal_dir == "bear": 
@@ -584,7 +636,7 @@ else:
 
             # --- SIGNAL GRID ---
             r1c1, r1c2, r1c3 = st.columns(3)
-            r1c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
+            r1c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>{sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             r1c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
             r1c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
             
