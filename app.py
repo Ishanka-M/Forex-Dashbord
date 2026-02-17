@@ -16,11 +16,6 @@ import xml.etree.ElementTree as ET
 # --- 1. SETUP & STYLE ---
 st.set_page_config(page_title="Infinite System v10.5 | Gemini 3.0", layout="wide", page_icon="⚡")
 
-# --- GEMINI SETUP ---
-# Secrets file එකේ GEMINI_API_KEY තිබිය යුතුය. නැතිනම් Puter පමණක් වැඩ කරයි.
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
 st.markdown("""
 <style>
     .price-up { color: #00ff00; font-size: 22px; font-weight: bold; }
@@ -98,7 +93,6 @@ def update_usage_in_db(username, new_usage):
         except Exception as e:
             print(f"DB Update Error: {e}")
 
-# --- ADMIN ADD USER FUNCTION ---
 def add_new_user(username, password, role, limit):
     sheet, _ = get_user_sheet()
     if sheet:
@@ -142,13 +136,12 @@ def get_data_period(tf):
     elif tf == "4h": return "1y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (RETAIL + SK SYSTEM) ---
+# --- 4. ADVANCED SIGNAL ENGINE ---
 def calculate_advanced_signals(df, tf):
     if len(df) < 50: return None, 0, 0
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     
-    # -- Dynamic Moving Averages (Trend Filter) --
     if tf in ["1m", "5m"]:
         ma_short = df['Close'].rolling(9).mean().iloc[-1]
         ma_long = df['Close'].rolling(21).mean().iloc[-1]
@@ -158,23 +151,19 @@ def calculate_advanced_signals(df, tf):
         ma_long = df['Close'].rolling(200).mean().iloc[-1]
         trend_label = "Swing Trend"
 
-    # 1. SMC (Structure)
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     
-    # 2. ICT (Fair Value Gaps)
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     signals['ICT'] = ("Bullish FVG", "bull") if fvg_bull else (("Bearish FVG", "bear") if fvg_bear else ("No FVG", "neutral"))
     
-    # 3. RETAIL SYSTEM (Support/Resistance Logic)
     pivot_high = df['High'].rolling(20).max().iloc[-1]
     pivot_low = df['Low'].rolling(20).min().iloc[-1]
     
     retail_status = "Ranging"
     retail_col = "neutral"
     
-    # Check if price is reacting to zones
     if abs(c - pivot_low) < (c * 0.0005): 
         retail_status, retail_col = "Support Test", "bull"
     elif abs(c - pivot_high) < (c * 0.0005): 
@@ -186,7 +175,6 @@ def calculate_advanced_signals(df, tf):
         
     signals['RETAIL_SYS'] = (retail_status, retail_col)
 
-    # 4. RSI (Momentum)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -194,14 +182,11 @@ def calculate_advanced_signals(df, tf):
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
     signals['RSI'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
 
-    # 5. LIQUIDITY
     signals['LIQ'] = ("Liquidity Sweep (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Sweep (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
 
-    # 6. TREND 
     trend_direction = "bull" if c > ma_short else "bear"
     signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
     
-    # 7. ELLIOTT WAVE (Simplified)
     ema_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
     if c > ma_short:
         ew_status = "Impulse (Wave 3)" if c > ema_20 else "Correction (Wave 4)"
@@ -211,23 +196,13 @@ def calculate_advanced_signals(df, tf):
         ew_col = "bear" if c < ema_20 else "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # 8. SK SYSTEM SCORE (Custom Weighted Logic)
-    # SK System: Trend + Structure + Retail Level Confluence
     sk_score = 0
-    
-    # Trend alignment (High weight)
     if signals['TREND'][1] == "bull": sk_score += 2
     elif signals['TREND'][1] == "bear": sk_score -= 2
-    
-    # SMC Validation
     if signals['SMC'][1] == "bull": sk_score += 1.5
     elif signals['SMC'][1] == "bear": sk_score -= 1.5
-    
-    # Retail Validation (Important for entry)
     if signals['RETAIL_SYS'][1] == "bull": sk_score += 1
     elif signals['RETAIL_SYS'][1] == "bear": sk_score -= 1
-    
-    # RSI (Counter-trend protection)
     if signals['RSI'][1] == "bull": sk_score += 0.5 
     elif signals['RSI'][1] == "bear": sk_score -= 0.5 
 
@@ -248,7 +223,6 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     smc = sigs['SMC'][0]
     sk_signal = sigs['SK'][1]
     
-    # TF Specific Settings
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
         sl_mult = 1.2
@@ -286,7 +260,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (GEMINI 3.0 PREVIEW -> PUTER FALLBACK) ---
+# --- 6. HYBRID AI ENGINE (MULTI-KEY GEMINI 3.0 -> PUTER FALLBACK) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
@@ -296,67 +270,56 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # Prompt Engineering for Swing vs Scalp
     prompt = f"""
-    Act as a Senior Hedge Fund Trader (SK System Expert).
-    Analyze this trade for {pair} on {tf} timeframe.
-    
-    Current Algo Output: {algo_result}
-    Technical Data:
-    - Trend: {sigs['TREND'][0]}
-    - SMC Structure: {sigs['SMC'][0]}
-    - RSI: {sigs['RSI'][0]}
-    - Retail Level: {sigs['RETAIL_SYS'][0]}
-    
-    Instructions:
-    1. If Timeframe is 15m/1h/4h: Focus on **LONG SWING TRADES**. Check daily structure.
-    2. If Timeframe is 1m/5m: Focus on **QUICK SCALPS**.
-    3. Validate using 'SK System' logic (Trend + Momentum + Retail Traps).
-    4. Verify Entry, SL, TP (Ensure SL is safe).
-    5. Explain in Sinhala (Technical terms in English).
-    6. FINAL FORMAT MUST BE: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
+    Act as a Senior Hedge Fund Trader (SK System Expert). Analyze {pair} on {tf}.
+    Algo Output: {algo_result}
+    Technical Data: Trend:{sigs['TREND'][0]}, SMC:{sigs['SMC'][0]}, RSI:{sigs['RSI'][0]}, Retail:{sigs['RETAIL_SYS'][0]}
+    Final Format: Explain in Sinhala (Technical terms in English).
+    FINAL FORMAT MUST BE: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
     """
 
-    provider_name = "Unknown"
-    response_text = ""
+    # --- GEMINI KEY ROTATION LOGIC (7 KEYS) ---
+    gemini_keys = [st.secrets.get(f"GEMINI_API_KEY_{i}") for i in range(1, 8)]
+    gemini_keys = [k for k in gemini_keys if k] # Filter out missing keys
 
-    try:
-        # Animation
-        with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
-            st.write("📡 Connecting to Gemini 3.0 Flash Preview...")
-            
-            # --- ATTEMPT 1: GEMINI API ---
+    response_text = ""
+    provider_name = ""
+
+    with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
+        # Step 1: Try Gemini Keys
+        for idx, key in enumerate(gemini_keys):
             try:
-                # UPDATED TO GEMINI 2.0 FLASH (User-facing as 3.0)
-                model = genai.GenerativeModel('gemini-2.0-flash') 
+                st.write(f"📡 Trying Gemini Key {idx+1}...")
+                genai.configure(api_key=key)
+                model = genai.GenerativeModel('gemini-2.0-flash') # User terms: Gemini 3.0
                 response = model.generate_content(prompt)
                 response_text = response.text
-                provider_name = "Gemini 3.0 Flash (Preview) ⚡"
-                status.update(label="✅ Gemini Analysis Complete!", state="complete", expanded=False)
-            
-            except Exception as e_gemini:
-                # --- ATTEMPT 2: FALLBACK TO PUTER ---
-                st.write(f"⚠️ Gemini API Limit/Error. Switching to Puter AI... ({e_gemini})")
-                time.sleep(1)
-                try:
-                    puter_resp = puter.ai.chat(prompt)
-                    response_text = puter_resp.message.content
-                    provider_name = "Puter AI (Fallback) 🔵"
-                    status.update(label="✅ Puter Analysis Complete!", state="complete", expanded=False)
-                except Exception as e_puter:
-                    st.error(f"All AI Services Failed. Using Algo. {e_puter}")
-                    return algo_result, "Infinite Algo (Fallback)"
+                provider_name = f"Gemini 3.0 Flash (Key {idx+1}) ⚡"
+                status.update(label=f"✅ Gemini Analysis (Key {idx+1}) Complete!", state="complete", expanded=False)
+                break # Success! Break the loop
+            except Exception as e:
+                st.write(f"⚠️ Key {idx+1} failed/limited. Trying next...")
+                continue
 
-        if response_text:
-            new_usage = current_usage + 1
-            user_info["UsageCount"] = new_usage
-            st.session_state.user = user_info 
-            if user_info["Username"] != "Admin":
-                update_usage_in_db(user_info["Username"], new_usage)
-            return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
-            
-    except Exception as e:
-        return algo_result, "Infinite Algo (Error)"
+        # Step 2: Fallback to Puter if all Gemini keys fail
+        if not response_text:
+            st.write("⚠️ All Gemini Keys Failed. Switching to Puter AI...")
+            try:
+                puter_resp = puter.ai.chat(prompt)
+                response_text = puter_resp.message.content
+                provider_name = "Puter AI (Fallback) 🔵"
+                status.update(label="✅ Puter Analysis Complete!", state="complete", expanded=False)
+            except Exception as e_puter:
+                st.error(f"All AI Services Failed. Using Algo. {e_puter}")
+                return algo_result, "Infinite Algo (Fallback)"
+
+    if response_text:
+        new_usage = current_usage + 1
+        user_info["UsageCount"] = new_usage
+        st.session_state.user = user_info 
+        if user_info["Username"] != "Admin":
+            update_usage_in_db(user_info["Username"], new_usage)
+        return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
     
     return algo_result, "Infinite Algo (Default)"
 
@@ -372,55 +335,34 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# --- SCANNER FUNCTION (SPLIT SCALP & SWING) ---
 def scan_market(assets_list):
-    scalp_results = []
-    swing_results = []
-    
+    scalp_results, swing_results = [], []
     progress_bar = st.progress(0)
-    total = len(assets_list) * 2 
+    total = len(assets_list) * 2
     step = 0
-    
     for symbol in assets_list:
-        # 1. SCALP SCAN (5m) - Fast entries
         try:
-            df_scalp = yf.download(symbol, period="5d", interval="5m", progress=False)
-            if not df_scalp.empty and len(df_scalp) > 50:
-                if isinstance(df_scalp.columns, pd.MultiIndex): df_scalp.columns = df_scalp.columns.get_level_values(0)
-                sigs_sc, _, score_sc = calculate_advanced_signals(df_scalp, "5m")
-                if abs(score_sc) >= 3: 
-                    scalp_results.append({
-                        "Pair": symbol.replace("=X","").replace("-USD",""),
-                        "Signal": sigs_sc['SK'][0],
-                        "Trend": sigs_sc['TREND'][0],
-                        "Score": score_sc,
-                        "Price": df_scalp['Close'].iloc[-1]
-                    })
+            # Scalp Scan
+            df_sc = yf.download(symbol, period="5d", interval="5m", progress=False)
+            if not df_sc.empty and len(df_sc) > 50:
+                if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
+                sigs_sc, _, score_sc = calculate_advanced_signals(df_sc, "5m")
+                if abs(score_sc) >= 3: scalp_results.append({"Pair": symbol.replace("=X",""), "Signal": sigs_sc['SK'][0], "Score": score_sc, "Price": df_sc['Close'].iloc[-1]})
         except: pass
         step += 1
         progress_bar.progress(step / total)
-
-        # 2. SWING SCAN (4h) - Long term
         try:
-            df_swing = yf.download(symbol, period="6mo", interval="4h", progress=False)
-            if not df_swing.empty and len(df_swing) > 50:
-                if isinstance(df_swing.columns, pd.MultiIndex): df_swing.columns = df_swing.columns.get_level_values(0)
-                sigs_sw, _, score_sw = calculate_advanced_signals(df_swing, "4h")
-                # Lower threshold for Swing as setups are rarer but stronger
-                if abs(score_sw) >= 2.5: 
-                    swing_results.append({
-                        "Pair": symbol.replace("=X","").replace("-USD",""),
-                        "Signal": sigs_sw['SK'][0],
-                        "Trend": sigs_sw['TREND'][0],
-                        "Score": score_sw,
-                        "Price": df_swing['Close'].iloc[-1]
-                    })
+            # Swing Scan
+            df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
+            if not df_sw.empty and len(df_sw) > 50:
+                if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
+                sigs_sw, _, score_sw = calculate_advanced_signals(df_sw, "4h")
+                if abs(score_sw) >= 2.5: swing_results.append({"Pair": symbol.replace("=X",""), "Signal": sigs_sw['SK'][0], "Score": score_sw, "Price": df_sw['Close'].iloc[-1]})
         except: pass
         step += 1
         progress_bar.progress(step / total)
-    
     progress_bar.empty()
-    return sorted(scalp_results, key=lambda x: abs(x['Score']), reverse=True), sorted(swing_results, key=lambda x: abs(x['Score']), reverse=True)
+    return scalp_results, swing_results
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
@@ -437,85 +379,57 @@ if not st.session_state.logged_in:
                 else: st.error("Invalid Credentials")
 else:
     user_info = st.session_state.get('user', {})
-    
-    # --- SIDEBAR ---
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Gemini 3.0 Flash (Preview)")
-    
+    st.sidebar.caption(f"Engine: Multi-Key Gemini 3.0 (Preview)")
     auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
-    
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
     
-    # Navigation
     app_mode = st.sidebar.radio("Navigation", ["Terminal", "Market Scanner", "Trader Chat", "Admin Panel"])
-    
     assets = {
         "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X"],
         "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD"],
         "Metals": ["XAUUSD=X", "XAGUSD=X"] 
     }
 
-    # --- VIEW: TERMINAL ---
     if app_mode == "Terminal":
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
-        
         tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
-        
-        st.sidebar.divider()
-        st.sidebar.subheader("📰 Market News")
         news_items = get_market_news(pair)
         for news in news_items:
-            color_class = get_sentiment_class(news['title'])
-            st.sidebar.markdown(f"<div class='news-card {color_class}'><div class='news-title'>{news['title']}</div></div>", unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}</div>", unsafe_allow_html=True)
 
-        data_period = get_data_period(tf)
-        st.caption(f"Fetching {data_period} history for {tf} analysis...")
-        
-        df = yf.download(pair, period=data_period, interval=tf, progress=False)
-        
+        df = yf.download(pair, period=get_data_period(tf), interval=tf, progress=False)
         if not df.empty:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             curr_p = float(df['Close'].iloc[-1])
             st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
-            
             sigs, current_atr, sk_score = calculate_advanced_signals(df, tf)
             
             # Notification
             sk_signal = sigs['SK'][1]
-            if sk_signal == "bull":
-                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>SK BUY SIGNAL ({tf}):</b> Setup Detected (Score: {sk_score})</div>", unsafe_allow_html=True)
-            elif sk_signal == "bear":
-                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SK SELL SIGNAL ({tf}):</b> Setup Detected (Score: {sk_score})</div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div class='notif-container notif-wait'>📡 <b>MONITORING:</b> Waiting for SK System Confluence...</div>", unsafe_allow_html=True)
+            if sk_signal == "bull": st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>SK BUY SIGNAL:</b> Score {sk_score}</div>", unsafe_allow_html=True)
+            elif sk_signal == "bear": st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SK SELL SIGNAL:</b> Score {sk_score}</div>", unsafe_allow_html=True)
+            else: st.markdown(f"<div class='notif-container notif-wait'>📡 Monitoring Market...</div>", unsafe_allow_html=True)
 
-            # --- SIGNAL GRID ---
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
-            c1.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT FVG: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
-            c2.markdown(f"<div class='sig-box {sigs['RETAIL_SYS'][1]}'>RETAIL: {sigs['RETAIL_SYS'][0]}</div>", unsafe_allow_html=True)
-            c3.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>LIQ: {sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
 
-            # Chart
             fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
             fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            # Dashboard
-            st.markdown(f"### 🎯 Hybrid AI Analysis (Focus: {tf})")
-            c1, c2, c3 = st.columns(3)
+            st.markdown(f"### 🎯 Hybrid AI Analysis")
             parsed = st.session_state.ai_parsed_data
+            c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
-            
-            st.divider()
             
             if st.button("🚀 Analyze with Gemini 3.0 (Preview)", use_container_width=True):
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
@@ -528,71 +442,36 @@ else:
                 st.markdown(f"**Provider:** `{st.session_state.active_provider}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
-    # --- VIEW: MARKET SCANNER ---
     elif app_mode == "Market Scanner":
         st.title("📡 SK Market Scanner")
-        st.markdown("Scans for High Probability **SK System** Setups.")
-        
         scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
-        
         if st.button("Start Hybrid Scan", type="primary"):
-            with st.spinner(f"Scanning {scan_market_type} (Scalp & Swing)..."):
-                scalp_res, swing_res = scan_market(assets[scan_market_type])
-                
-                # Tabbed View for Scalp vs Swing
-                tab_scalp, tab_swing = st.tabs(["⚡ Scalp (5m)", "🐢 Swing (4h)"])
-                
-                with tab_scalp:
-                    if scalp_res:
-                        st.success(f"Found {len(scalp_res)} Scalp Opps")
-                        st.dataframe(pd.DataFrame(scalp_res))
-                    else: st.warning("No high-quality Scalp setups found.")
-                    
-                with tab_swing:
-                    if swing_res:
-                        st.success(f"Found {len(swing_res)} Swing Opps")
-                        st.dataframe(pd.DataFrame(swing_res))
-                    else: st.warning("No high-quality Swing setups found.")
+            with st.spinner("Scanning..."):
+                sc, sw = scan_market(assets[scan_market_type])
+                t1, t2 = st.tabs(["⚡ Scalp (5m)", "🐢 Swing (4h)"])
+                with t1: st.dataframe(pd.DataFrame(sc))
+                with t2: st.dataframe(pd.DataFrame(sw))
 
-    # --- VIEW: TRADER CHAT ---
     elif app_mode == "Trader Chat":
         st.title("💬 Global Trader Room")
-        
-        chat_container = st.container()
-        with chat_container:
-            for msg in st.session_state.chat_history:
-                st.markdown(f"<div class='chat-msg'><span class='chat-user'>{msg['user']}</span>: {msg['text']} <span style='font-size:10px;color:#555;'>{msg['time']}</span></div>", unsafe_allow_html=True)
-        
+        for msg in st.session_state.chat_history:
+            st.markdown(f"<div class='chat-msg'><span class='chat-user'>{msg['user']}</span>: {msg['text']}</div>", unsafe_allow_html=True)
         with st.form("chat_form", clear_on_submit=True):
-            user_msg = st.text_input("Type your message...")
-            if st.form_submit_button("Send"):
-                if user_msg:
-                    new_msg = {
-                        "user": user_info['Username'],
-                        "text": user_msg,
-                        "time": datetime.now().strftime("%H:%M")
-                    }
-                    st.session_state.chat_history.append(new_msg)
-                    st.rerun()
+            user_msg = st.text_input("Type message...")
+            if st.form_submit_button("Send") and user_msg:
+                st.session_state.chat_history.append({"user": user_info['Username'], "text": user_msg, "time": datetime.now().strftime("%H:%M")})
+                st.rerun()
 
-    # --- VIEW: ADMIN PANEL ---
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
-            st.title("🛡️ Admin Control Center")
-            tab1, tab2 = st.tabs(["User Management", "Add New User"])
-            with tab1:
-                st.dataframe(pd.DataFrame([{"User": "Demo", "Usage": "0"}]), use_container_width=True)
-            with tab2:
-                with st.form("add_user_form"):
-                    new_u = st.text_input("New Username")
-                    new_p = st.text_input("Password", type="password")
-                    if st.form_submit_button("Create"):
-                         add_new_user(new_u, new_p, "User", 10)
-                         st.success("Done")
-        else:
-            st.error("Access Denied.")
-            
-    # --- AUTO REFRESH LOGIC ---
+            st.title("🛡️ Admin Center")
+            with st.form("add_user_form"):
+                new_u, new_p = st.text_input("New User"), st.text_input("Pass", type="password")
+                if st.form_submit_button("Create"): 
+                    add_new_user(new_u, new_p, "User", 10)
+                    st.success("Done")
+        else: st.error("Access Denied.")
+
     if auto_refresh:
         time.sleep(60)
         st.rerun()
