@@ -563,7 +563,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-1.5-flash')  # Updated model name
+                model = genai.GenerativeModel('gemini-3-flash-preview')  # Updated model name
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
