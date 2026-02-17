@@ -14,7 +14,7 @@ import requests
 import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v10.5 | Gemini 3.0", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v11.0 | Hybrid Pro", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -115,6 +115,7 @@ def get_sentiment_class(title):
 def get_market_news(symbol):
     news_list = []
     clean_sym = symbol.replace("=X", "").replace("-USD", "")
+    # Method 1: Google RSS
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, timeout=5)
@@ -125,9 +126,22 @@ def get_market_news(symbol):
                     "title": item.find('title').text,
                     "link": item.find('link').text
                 })
-            if news_list: return news_list
     except: pass
-    return []
+    
+    # Method 2: Yahoo Finance Fallback (From Old Code)
+    if not news_list:
+        try:
+            ticker = yf.Ticker(symbol)
+            yf_news = ticker.news
+            if yf_news:
+                for item in yf_news[:3]:
+                    news_list.append({
+                        "title": item.get('title'),
+                        "link": item.get('link')
+                    })
+        except: pass
+
+    return news_list
 
 def get_data_period(tf):
     if tf in ["1m", "5m"]: return "5d"
@@ -136,20 +150,22 @@ def get_data_period(tf):
     elif tf == "4h": return "1y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE ---
+# --- 4. ADVANCED SIGNAL ENGINE (MERGED v10.5 + v7.0) ---
 def calculate_advanced_signals(df, tf):
     if len(df) < 50: return None, 0, 0
     signals = {}
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     
+    # --- TREND ---
     if tf in ["1m", "5m"]:
         ma_short = df['Close'].rolling(9).mean().iloc[-1]
-        ma_long = df['Close'].rolling(21).mean().iloc[-1]
         trend_label = "Scalp Trend"
     else:
         ma_short = df['Close'].rolling(50).mean().iloc[-1]
-        ma_long = df['Close'].rolling(200).mean().iloc[-1]
         trend_label = "Swing Trend"
+    
+    trend_direction = "bull" if c > ma_short else "bear"
+    signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
 
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
@@ -158,6 +174,17 @@ def calculate_advanced_signals(df, tf):
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     signals['ICT'] = ("Bullish FVG", "bull") if fvg_bull else (("Bearish FVG", "bear") if fvg_bear else ("No FVG", "neutral"))
     
+    # --- ADDED: FIBONACCI (From Old Code) ---
+    ph_fib = df['High'].rolling(50).max().iloc[-1]
+    pl_fib = df['Low'].rolling(50).min().iloc[-1]
+    fib_range = ph_fib - pl_fib
+    fib_618 = ph_fib - (fib_range * 0.618)
+    signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
+
+    # --- ADDED: PATTERNS (From Old Code) ---
+    signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
+
+    # --- RETAIL LOGIC ---
     pivot_high = df['High'].rolling(20).max().iloc[-1]
     pivot_low = df['Low'].rolling(20).min().iloc[-1]
     
@@ -175,6 +202,7 @@ def calculate_advanced_signals(df, tf):
         
     signals['RETAIL_SYS'] = (retail_status, retail_col)
 
+    # --- RSI ---
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -184,9 +212,7 @@ def calculate_advanced_signals(df, tf):
 
     signals['LIQ'] = ("Liquidity Sweep (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Sweep (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
 
-    trend_direction = "bull" if c > ma_short else "bear"
-    signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
-    
+    # --- ELLIOTT WAVE ---
     ema_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
     if c > ma_short:
         ew_status = "Impulse (Wave 3)" if c > ema_20 else "Correction (Wave 4)"
@@ -196,22 +222,30 @@ def calculate_advanced_signals(df, tf):
         ew_col = "bear" if c < ema_20 else "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
+    # --- SCORING SYSTEM ---
     sk_score = 0
     if signals['TREND'][1] == "bull": sk_score += 2
     elif signals['TREND'][1] == "bear": sk_score -= 2
+    
     if signals['SMC'][1] == "bull": sk_score += 1.5
     elif signals['SMC'][1] == "bear": sk_score -= 1.5
+    
     if signals['RETAIL_SYS'][1] == "bull": sk_score += 1
     elif signals['RETAIL_SYS'][1] == "bear": sk_score -= 1
+    
     if signals['RSI'][1] == "bull": sk_score += 0.5 
     elif signals['RSI'][1] == "bear": sk_score -= 0.5 
+
+    # Adding points for restored features
+    if signals['FIB'][1] == "bull": sk_score += 0.5
+    if signals['PATT'][1] == "bull": sk_score += 0.5
 
     signals['SK'] = ("SK PRIME BUY", "bull") if sk_score >= 3.5 else (("SK PRIME SELL", "bear") if sk_score <= -3.5 else ("No Setup", "neutral"))
     
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, sk_score
 
-# --- 5. INFINITE ALGORITHMIC ENGINE V10.5 ---
+# --- 5. INFINITE ALGORITHMIC ENGINE V11.0 ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     news_score = 0
     for item in news_items:
@@ -234,19 +268,19 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
 
     if sk_signal == "bull" and news_score >= -1:
         action = "BUY"
-        note = f"SK System තහවුරු විය. Retail Support එක අසල. Trend: {trend}"
+        note = f"SK System තහවුරු විය. Retail Support සහ Fibonacci මට්ටම් අසල. Trend: {trend}"
         sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif sk_signal == "bear" and news_score <= 1:
         action = "SELL"
-        note = f"SK System තහවුරු විය. Retail Resistance එක අසල. Trend: {trend}"
+        note = f"SK System තහවුරු විය. Retail Resistance සහ පැටර්න් අනුමැතිය. Trend: {trend}"
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
     else:
         action = "WAIT"
-        note = "SK System අනුමැතිය නොමැත (Low Confluence)."
+        note = "SK System අනුමැතිය නොමැත (Low Confluence). FIB/Pattern සහාය මදි."
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V10.5 (RETAIL + SK)**
+    ♾️ **INFINITE ALGO ENGINE V11.0 (RETAIL + SK + FIB)**
     
     📊 **Setup ({tf}):**
     • Mode: {trade_mode}
@@ -270,10 +304,18 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return algo_result, "Infinite Algo (Limit Reached)"
 
+    # Included FIB and PATT in the prompt
     prompt = f"""
     Act as a Senior Hedge Fund Trader (SK System Expert). Analyze {pair} on {tf}.
     Algo Output: {algo_result}
-    Technical Data: Trend:{sigs['TREND'][0]}, SMC:{sigs['SMC'][0]}, RSI:{sigs['RSI'][0]}, Retail:{sigs['RETAIL_SYS'][0]}
+    Technical Data: 
+    - Trend: {sigs['TREND'][0]}
+    - SMC: {sigs['SMC'][0]}
+    - RSI: {sigs['RSI'][0]}
+    - Retail: {sigs['RETAIL_SYS'][0]}
+    - Fibonacci: {sigs['FIB'][0]}
+    - Patterns: {sigs['PATT'][0]}
+    
     Final Format: Explain in Sinhala (Technical terms in English).
     FINAL FORMAT MUST BE: DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
     """
@@ -366,7 +408,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v10.5 | PRO</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff;'>⚡ INFINITE SYSTEM v11.0 | PRO</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -415,10 +457,17 @@ else:
             elif sk_signal == "bear": st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SK SELL SIGNAL:</b> Score {sk_score}</div>", unsafe_allow_html=True)
             else: st.markdown(f"<div class='notif-container notif-wait'>📡 Monitoring Market...</div>", unsafe_allow_html=True)
 
+            # --- SIGNAL GRID (Updated to Include Missing Options) ---
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
+            
+            # Added Second Row for FIB and PATT
+            c4, c5, c6 = st.columns(3)
+            c4.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
+            c5.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>PATT: {sigs['PATT'][0]}</div>", unsafe_allow_html=True)
+            c6.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
 
             fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
             fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=20, b=0))
@@ -439,7 +488,8 @@ else:
                 st.rerun()
 
             if "ai_result" in st.session_state:
-                st.markdown(f"**Provider:** `{st.session_state.active_provider}`")
+                # SHOWING THE USED AI PROVIDER HERE
+                st.markdown(f"**🤖 AI Provider:** `{st.session_state.active_provider}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
 
     elif app_mode == "Market Scanner":
