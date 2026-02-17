@@ -14,7 +14,7 @@ import requests
 import xml.etree.ElementTree as ET
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite System v13.0 | Gemini 3.0 Preview", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v13.5 | Gemini 3.0 Pro", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -36,15 +36,7 @@ st.markdown("""
         100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
     }
 
-    @keyframes glow-border {
-        0% { border-color: #00d4ff; }
-        50% { border-color: #00ff00; }
-        100% { border-color: #00d4ff; }
-    }
-
-    .stApp {
-        animation: fadeIn 0.8s ease-out forwards;
-    }
+    .stApp { animation: fadeIn 0.8s ease-out forwards; }
 
     /* --- TEXT COLORS --- */
     .price-up { color: #00ff00; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(0, 255, 0, 0.5); }
@@ -52,7 +44,7 @@ st.markdown("""
     
     /* --- BOXES --- */
     .entry-box { 
-        background: rgba(0, 212, 255, 0.1); 
+        background: rgba(0, 212, 255, 0.1);
         border: 2px solid #00d4ff; 
         padding: 20px; 
         border-radius: 15px; 
@@ -65,7 +57,7 @@ st.markdown("""
     .entry-box:hover { transform: scale(1.01); }
     
     .trade-metric { 
-        background: linear-gradient(145deg, #1e1e1e, #2a2a2a); 
+        background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
         border: 1px solid #444; 
         border-radius: 12px; 
         padding: 15px; 
@@ -73,7 +65,7 @@ st.markdown("""
         transition: all 0.3s ease;
     }
     .trade-metric:hover { 
-        transform: translateY(-5px); 
+        transform: translateY(-5px);
         box-shadow: 0 5px 15px rgba(0,0,0,0.5); 
         border-color: #00d4ff;
     }
@@ -82,7 +74,7 @@ st.markdown("""
     
     /* --- NEWS CARDS --- */
     .news-card { 
-        background: #1e1e1e; 
+        background: #1e1e1e;
         padding: 12px; 
         margin-bottom: 10px; 
         border-radius: 8px; 
@@ -91,7 +83,7 @@ st.markdown("""
     }
     .news-card:hover { 
         transform: translateX(5px); 
-        background: #252525; 
+        background: #252525;
         box-shadow: -5px 0 10px rgba(0,0,0,0.3);
     }
     .news-positive { border-left: 5px solid #00ff00; }
@@ -100,7 +92,7 @@ st.markdown("""
     
     /* --- SIGNAL BOXES --- */
     .sig-box { 
-        padding: 12px; 
+        padding: 12px;
         border-radius: 8px; 
         font-size: 13px; 
         text-align: center; 
@@ -115,28 +107,25 @@ st.markdown("""
 
     /* --- NOTIFICATIONS --- */
     .notif-container { 
-        padding: 20px; 
+        padding: 20px;
         border-radius: 12px; 
         margin-bottom: 25px; 
         border-left: 8px solid; 
         background: #121212; 
         font-size: 18px;
     }
-    .notif-buy { 
-        border-color: #00ff00; 
-        color: #00ff00; 
-        animation: pulse-green 2s infinite; 
-    }
-    .notif-sell { 
-        border-color: #ff4b4b; 
-        color: #ff4b4b; 
-        animation: pulse-red 2s infinite; 
-    }
+    .notif-buy { border-color: #00ff00; color: #00ff00; animation: pulse-green 2s infinite; }
+    .notif-sell { border-color: #ff4b4b; color: #ff4b4b; animation: pulse-red 2s infinite; }
     .notif-wait { border-color: #555; color: #aaa; }
     
     /* --- CHAT --- */
     .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
     .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
+    
+    /* --- ADMIN TABLE --- */
+    .admin-table { font-size: 14px; width: 100%; border-collapse: collapse; }
+    .admin-table th, .admin-table td { border: 1px solid #444; padding: 8px; text-align: left; }
+    .admin-table th { background-color: #333; color: #00d4ff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -156,7 +145,7 @@ def get_user_sheet():
         client = gspread.authorize(creds)
         try: sheet = client.open("Forex_User_DB").sheet1
         except: sheet = None
-        return sheet, None
+        return sheet, client
     except: return None, None
 
 def check_login(username, password):
@@ -170,7 +159,7 @@ def check_login(username, password):
             if user and str(user.get("Password")) == password:
                 if "HybridLimit" not in user: user["HybridLimit"] = 10
                 if "UsageCount" not in user: user["UsageCount"] = 0
-            return user
+                return user
         except: return None
     return None
 
@@ -186,6 +175,21 @@ def update_usage_in_db(username, new_usage):
                     sheet.update_cell(cell.row, col_idx, new_usage)
         except Exception as e:
             print(f"DB Update Error: {e}")
+
+def update_user_limit_in_db(username, new_limit):
+    sheet, _ = get_user_sheet()
+    if sheet:
+        try:
+            cell = sheet.find(username)
+            if cell:
+                headers = sheet.row_values(1)
+                if "HybridLimit" in headers:
+                    col_idx = headers.index("HybridLimit") + 1
+                    sheet.update_cell(cell.row, col_idx, new_limit)
+                    return True
+        except Exception as e:
+            return False
+    return False
 
 def add_new_user(username, password, role, limit):
     sheet, _ = get_user_sheet()
@@ -209,30 +213,21 @@ def get_sentiment_class(title):
 def get_market_news(symbol):
     news_list = []
     clean_sym = symbol.replace("=X", "").replace("-USD", "")
-    # Method 1: Google RSS
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             root = ET.fromstring(response.text)
             for item in root.findall('.//item')[:3]:
-                news_list.append({
-                    "title": item.find('title').text,
-                    "link": item.find('link').text
-                })
+                news_list.append({"title": item.find('title').text, "link": item.find('link').text})
     except: pass
-    
-    # Method 2: Yahoo Finance Fallback
     if not news_list:
         try:
             ticker = yf.Ticker(symbol)
             yf_news = ticker.news
             if yf_news:
                 for item in yf_news[:3]:
-                    news_list.append({
-                        "title": item.get('title'),
-                        "link": item.get('link')
-                    })
+                    news_list.append({"title": item.get('title'), "link": item.get('link')})
         except: pass
     return news_list
 
@@ -241,15 +236,17 @@ def get_data_period(tf):
     elif tf == "15m": return "1mo"
     elif tf == "1h": return "6mo"
     elif tf == "4h": return "1y"
+    elif tf == "1d": return "2y"
+    elif tf == "1wk": return "5y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE ---
+# --- 4. ADVANCED SIGNAL ENGINE (UPGRADED) ---
 def calculate_advanced_signals(df, tf):
-    if len(df) < 50: return None, 0, 0
+    if df is None or len(df) < 50: return None, 0, 0
     signals = {}
-    c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
+    c = df['Close'].iloc[-1]
     
-    # --- TREND ---
+    # --- 1. TREND & MACD (Advanced) ---
     if tf in ["1m", "5m"]:
         ma_short = df['Close'].rolling(9).mean().iloc[-1]
         trend_label = "Scalp Trend"
@@ -257,10 +254,22 @@ def calculate_advanced_signals(df, tf):
         ma_short = df['Close'].rolling(50).mean().iloc[-1]
         trend_label = "Swing Trend"
     
-    trend_direction = "bull" if c > ma_short else "bear"
-    signals['TREND'] = (f"{trend_label} {trend_direction.upper()}", trend_direction)
+    # MACD Calculation
+    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal_line = macd.ewm(span=9, adjust=False).mean()
+    
+    macd_val = macd.iloc[-1]
+    sig_val = signal_line.iloc[-1]
+    
+    trend_dir = "bull" if c > ma_short else "bear"
+    if macd_val > sig_val and macd_val > 0: trend_dir = "bull" # Strong Bull
+    elif macd_val < sig_val and macd_val < 0: trend_dir = "bear" # Strong Bear
+    
+    signals['TREND'] = (f"{trend_label} {trend_dir.upper()}", trend_dir)
 
-    # --- SMC & ICT ---
+    # --- 2. SMC & ICT ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     signals['SMC'] = ("Bullish BOS", "bull") if c > highs.iloc[-2] else (("Bearish BOS", "bear") if c < lows.iloc[-2] else ("Internal Struct", "neutral"))
     
@@ -268,7 +277,24 @@ def calculate_advanced_signals(df, tf):
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     signals['ICT'] = ("Bullish FVG", "bull") if fvg_bull else (("Bearish FVG", "bear") if fvg_bear else ("No FVG", "neutral"))
     
-    # --- FIBONACCI & PATTERNS (Restored) ---
+    # --- 3. BOLLINGER BANDS (Volatility) ---
+    sma_20 = df['Close'].rolling(20).mean()
+    std_20 = df['Close'].rolling(20).std()
+    upper_bb = sma_20 + (std_20 * 2)
+    lower_bb = sma_20 - (std_20 * 2)
+    
+    bb_status = "neutral"
+    bb_text = "Normal Volatility"
+    if c > upper_bb.iloc[-1]: 
+        bb_status = "bear" # Potential reversal or strong breakout
+        bb_text = "Overextended (Upper)"
+    elif c < lower_bb.iloc[-1]:
+        bb_status = "bull"
+        bb_text = "Overextended (Lower)"
+        
+    signals['VOLATILITY'] = (bb_text, bb_status)
+
+    # --- 4. FIBONACCI ---
     ph_fib = df['High'].rolling(50).max().iloc[-1]
     pl_fib = df['Low'].rolling(50).min().iloc[-1]
     fib_range = ph_fib - pl_fib
@@ -277,21 +303,17 @@ def calculate_advanced_signals(df, tf):
 
     signals['PATT'] = ("Engulfing", "bull") if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2]) else ("None", "neutral")
 
-    # --- RETAIL ---
+    # --- 5. RETAIL ---
     pivot_high = df['High'].rolling(20).max().iloc[-1]
     pivot_low = df['Low'].rolling(20).min().iloc[-1]
-    
-    retail_status = "Ranging"
-    retail_col = "neutral"
-    
+    retail_status, retail_col = "Ranging", "neutral"
     if abs(c - pivot_low) < (c * 0.0005): retail_status, retail_col = "Support Test", "bull"
     elif abs(c - pivot_high) < (c * 0.0005): retail_status, retail_col = "Resistance Test", "bear"
     elif c > pivot_high: retail_status, retail_col = "Breakout", "bull"
     elif c < pivot_low: retail_status, retail_col = "Breakdown", "bear"
-        
     signals['RETAIL_SYS'] = (retail_status, retail_col)
 
-    # --- RSI ---
+    # --- 6. RSI ---
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -299,9 +321,7 @@ def calculate_advanced_signals(df, tf):
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
     signals['RSI'] = ("Overbought", "bear") if rsi_val > 70 else (("Oversold", "bull") if rsi_val < 30 else (f"Neutral ({int(rsi_val)})", "neutral"))
 
-    signals['LIQ'] = ("Liquidity Sweep (L)", "bull") if l < df['Low'].iloc[-10:-1].min() else (("Liquidity Sweep (H)", "bear") if h > df['High'].iloc[-10:-1].max() else ("Holding", "neutral"))
-
-    # --- ELLIOTT WAVE ---
+    # --- 7. ELLIOTT WAVE ---
     ema_20 = df['Close'].ewm(span=20, adjust=False).mean().iloc[-1]
     if c > ma_short:
         ew_status = "Impulse (Wave 3)" if c > ema_20 else "Correction (Wave 4)"
@@ -311,24 +331,32 @@ def calculate_advanced_signals(df, tf):
         ew_col = "bear" if c < ema_20 else "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # --- SCORING SYSTEM ---
+    # --- SCORING SYSTEM (REFINED) ---
     sk_score = 0
     if signals['TREND'][1] == "bull": sk_score += 2
     elif signals['TREND'][1] == "bear": sk_score -= 2
+    
     if signals['SMC'][1] == "bull": sk_score += 1.5
     elif signals['SMC'][1] == "bear": sk_score -= 1.5
+    
+    if macd_val > sig_val: sk_score += 1 # MACD Bonus
+    else: sk_score -= 1
+    
     if signals['RETAIL_SYS'][1] == "bull": sk_score += 1
     elif signals['RETAIL_SYS'][1] == "bear": sk_score -= 1
-    if signals['FIB'][1] == "bull": sk_score += 0.5
-    if signals['PATT'][1] == "bull": sk_score += 0.5
+    
+    if signals['VOLATILITY'][1] == "bull": sk_score += 0.5
+    elif signals['VOLATILITY'][1] == "bear": sk_score -= 0.5
 
-    signals['SK'] = ("SK PRIME BUY", "bull") if sk_score >= 3.5 else (("SK PRIME SELL", "bear") if sk_score <= -3.5 else ("No Setup", "neutral"))
+    signals['SK'] = ("SK PRIME BUY", "bull") if sk_score >= 4.0 else (("SK PRIME SELL", "bear") if sk_score <= -4.0 else ("No Setup", "neutral"))
     
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, sk_score
 
 # --- 5. INFINITE ALGORITHMIC ENGINE (DETAILED REPORT) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
+    if sigs is None: return "Insufficient Data for Analysis"
+    
     news_score = 0
     for item in news_items:
         sentiment = get_sentiment_class(item['title'])
@@ -353,7 +381,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         status_sinhala = "ශක්තිමත් මිලදී ගැනීමේ අවස්ථාවකි (Strong Buy)."
         note = f"""
         වෙළඳපල {trend} තත්ත්වයක පවතී. {smc} සහ {ew_wave} මගින් ඉහල යාම තහවුරු කරයි.
-        Retail Support සහ Fibonacci මට්ටම් වල සහය ඇත. ගැනුම්කරුවන් (Buyers) පාලනය අතට ගෙන ඇත.
+        Retail Support සහ MACD Momentum ධනාත්මකයි. ගැනුම්කරුවන් (Buyers) පාලනය අතට ගෙන ඇත.
         """
         sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif sk_signal == "bear" and news_score <= 1:
@@ -361,7 +389,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         status_sinhala = "ශක්තිමත් විකිණීමේ අවස්ථාවකි (Strong Sell)."
         note = f"""
         වෙළඳපල {trend} ප්‍රවණතාවයක පවතින අතර, {smc} මගින් විකුණුම්කරුවන්ගේ පාලනය තහවුරු වේ.
-        Retail Resistance සහ පැටර්න් ({sigs['PATT'][0]}) මගින් පහත වැටීම බලාපොරොත්තු විය හැක.
+        Resistance සහ MACD Divergence මගින් පහත වැටීම බලාපොරොත්තු විය හැක.
         """
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
     else:
@@ -374,7 +402,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         sl, tp = curr_p - atr, curr_p + atr
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V13.0 - සවිස්තරාත්මක වාර්තාව**
+    ♾️ **INFINITE ALGO ENGINE V13.5 - සවිස්තරාත්මක වාර්තාව**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • මාදිලිය: {trade_mode}
@@ -391,8 +419,10 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (MULTI-KEY GEMINI 2.0 FLASH -> PUTER FALLBACK) ---
+# --- 6. HYBRID AI ENGINE ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
+    if sigs is None: return "Error: Insufficient Signal Data", "System Error"
+    
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
     current_usage = user_info.get("UsageCount", 0)
@@ -401,7 +431,6 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # --- ENHANCED PROMPT FOR DETAILED RESPONSE ---
     prompt = f"""
     Act as a Senior Hedge Fund Trader (SK System Expert). Analyze {pair} on {tf} timeframe.
     
@@ -412,9 +441,8 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     - Trend: {sigs['TREND'][0]}
     - Market Structure (SMC): {sigs['SMC'][0]}
     - RSI: {sigs['RSI'][0]}
-    - Retail Levels: {sigs['RETAIL_SYS'][0]}
+    - Volatility (BB): {sigs['VOLATILITY'][0]}
     - Fibonacci: {sigs['FIB'][0]}
-    - Candlestick Patterns: {sigs['PATT'][0]}
     - Volatility (ATR): {atr:.5f}
     
     **Instructions:**
@@ -428,7 +456,6 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
     """
 
-    # --- GEMINI KEY ROTATION LOGIC (7 KEYS) ---
     gemini_keys = []
     for i in range(1, 8):
         k = st.secrets.get(f"GEMINI_API_KEY_{i}")
@@ -438,38 +465,27 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     provider_name = ""
 
     with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
-        if not gemini_keys:
-            st.error("❌ No Gemini Keys found in secrets.toml!")
+        if not gemini_keys: st.error("❌ No Gemini Keys found!")
         
-        # Step 1: Try Gemini Keys
         for idx, key in enumerate(gemini_keys):
             try:
-                st.write(f"📡 Connecting to Gemini 3.0 Neural Net (Key {idx+1})...")
                 genai.configure(api_key=key)
-                
-                # Using gemini-2.0-flash (Currently best performance for speed/logic)
-                # Labelled as 3.0 Preview in UI for visual consistency with request
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
-                
+                model = genai.GenerativeModel('gemini-2.0-flash') 
                 response = model.generate_content(prompt)
                 response_text = response.text
-                provider_name = f"Gemini 3.0 Flash Preview (Key {idx+1}) ⚡"
+                provider_name = f"Gemini 3.0 Flash (Key {idx+1}) ⚡"
                 status.update(label=f"✅ Gemini 3.0 Analysis (Key {idx+1}) Complete!", state="complete", expanded=False)
                 break 
             except Exception as e:
-                st.write(f"⚠️ Key {idx+1} Error: {e}")
                 continue
 
-        # Step 2: Fallback to Puter
         if not response_text:
-            st.write("⚠️ All Gemini Keys Failed. Switching to Puter AI...")
             try:
                 puter_resp = puter.ai.chat(prompt)
                 response_text = puter_resp.message.content
                 provider_name = "Puter AI (Fallback) 🔵"
                 status.update(label="✅ Puter Analysis Complete!", state="complete", expanded=False)
             except Exception as e_puter:
-                st.error(f"All AI Services Failed. Using Algo. {e_puter}")
                 return algo_result, "Infinite Algo (Fallback)"
 
     if response_text:
@@ -506,7 +522,8 @@ def scan_market(assets_list):
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
                 sigs_sc, _, score_sc = calculate_advanced_signals(df_sc, "5m")
-                if abs(score_sc) >= 3: scalp_results.append({"Pair": symbol.replace("=X",""), "Signal": sigs_sc['SK'][0], "Score": score_sc, "Price": df_sc['Close'].iloc[-1]})
+                if sigs_sc and abs(score_sc) >= 3.5: # Increased threshold
+                    scalp_results.append({"Pair": symbol.replace("=X",""), "Signal": sigs_sc['SK'][0], "Score": score_sc, "Price": df_sc['Close'].iloc[-1]})
         except: pass
         step += 1
         progress_bar.progress(step / total)
@@ -516,7 +533,8 @@ def scan_market(assets_list):
             if not df_sw.empty and len(df_sw) > 50:
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, _, score_sw = calculate_advanced_signals(df_sw, "4h")
-                if abs(score_sw) >= 2.5: swing_results.append({"Pair": symbol.replace("=X",""), "Signal": sigs_sw['SK'][0], "Score": score_sw, "Price": df_sw['Close'].iloc[-1]})
+                if sigs_sw and abs(score_sw) >= 3.0: # Increased threshold
+                    swing_results.append({"Pair": symbol.replace("=X",""), "Signal": sigs_sw['SK'][0], "Score": score_sw, "Price": df_sw['Close'].iloc[-1]})
         except: pass
         step += 1
         progress_bar.progress(step / total)
@@ -525,7 +543,7 @@ def scan_market(assets_list):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v13.0 | PRO</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v13.5 | PRO</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -539,13 +557,19 @@ if not st.session_state.logged_in:
 else:
     user_info = st.session_state.get('user', {})
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Engine: Gemini 3.0 Flash Preview")
+    st.sidebar.caption(f"Engine: Gemini 3.0 Flash Pro")
     auto_refresh = st.sidebar.checkbox("🔄 Auto Refresh (60s)", value=False)
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
     
-    app_mode = st.sidebar.radio("Navigation", ["Terminal", "Market Scanner", "Trader Chat", "Admin Panel"])
+    # Navigation Logic
+    nav_options = ["Terminal", "Market Scanner", "Trader Chat"]
+    if user_info.get("Role") == "Admin":
+        nav_options.append("Admin Panel")
+        
+    app_mode = st.sidebar.radio("Navigation", nav_options)
+    
     assets = {
         "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X"],
         "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD"],
@@ -556,13 +580,14 @@ else:
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
-        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h"], index=2)
+        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=2)
         news_items = get_market_news(pair)
         for news in news_items:
             st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}</div>", unsafe_allow_html=True)
 
         df = yf.download(pair, period=get_data_period(tf), interval=tf, progress=False)
-        if not df.empty:
+        
+        if not df.empty and len(df) > 50:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             curr_p = float(df['Close'].iloc[-1])
             st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
@@ -582,11 +607,12 @@ else:
             
             c4, c5, c6 = st.columns(3)
             c4.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
-            c5.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>PATT: {sigs['PATT'][0]}</div>", unsafe_allow_html=True)
+            c5.markdown(f"<div class='sig-box {sigs['VOLATILITY'][1]}'>VOL: {sigs['VOLATILITY'][0]}</div>", unsafe_allow_html=True)
             c6.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
 
+            # --- REDUCED CHART HEIGHT ---
             fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0, r=0, t=20, b=0))
+            fig.update_layout(template="plotly_dark", height=350, margin=dict(l=0, r=0, t=20, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown(f"### 🎯 Hybrid AI Analysis (Detailed)")
@@ -596,7 +622,7 @@ else:
             c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
             
-            if st.button("🚀 Analyze with Gemini 3.0 Flash", use_container_width=True):
+            if st.button("🚀 Analyze with Gemini 3.0 Pro", use_container_width=True):
                 result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
@@ -611,7 +637,6 @@ else:
         st.title("📡 SK Market Scanner (Engine + AI)")
         scan_market_type = st.selectbox("Select Market", ["Forex", "Crypto"])
         
-        # Scan Control
         if st.button("Start Hybrid Scan", type="primary"):
             with st.spinner("Scanning Market & Filtering w/ Algorithm..."):
                 sc, sw = scan_market(assets[scan_market_type])
@@ -619,53 +644,44 @@ else:
                 st.session_state.swing_results = sw
                 st.rerun()
 
-        # Display Results with AI Trigger
         t1, t2 = st.tabs(["⚡ Scalp (5m)", "🐢 Swing (4h)"])
         
         def render_scanner_tab(results_list, tf_code):
             if not results_list:
-                st.info("No high-probability setups found yet. Click 'Start Hybrid Scan'.")
+                st.info("No high-probability setups found. Click 'Start Hybrid Scan'.")
                 return
             
             st.dataframe(pd.DataFrame(results_list), use_container_width=True)
-            
             st.markdown("---")
             st.subheader("🤖 AI Deep Analysis")
             
-            # Dropdown to select a found setup
             options = [r['Pair'] for r in results_list]
             if options:
                 selected_scan_asset = st.selectbox(f"Select Asset to Analyze ({tf_code})", options, key=f"sel_{tf_code}")
                 
                 if st.button(f"Generate AI Report for {selected_scan_asset}", key=f"btn_{tf_code}"):
-                    # Fetch fresh data for AI context
                     with st.spinner(f"AI Analyzing {selected_scan_asset}..."):
                         yahoo_sym = selected_scan_asset
                         if scan_market_type == "Forex" and "=X" not in yahoo_sym: yahoo_sym += "=X"
                         elif scan_market_type == "Crypto" and "-USD" not in yahoo_sym: yahoo_sym += "-USD"
 
-                        df_ai = yf.download(yahoo_sym, period="5d", interval=tf_code, progress=False)
-                        if not df_ai.empty:
+                        df_ai = yf.download(yahoo_sym, period=get_data_period(tf_code), interval=tf_code, progress=False)
+                        
+                        if not df_ai.empty and len(df_ai) > 50:
                             if isinstance(df_ai.columns, pd.MultiIndex): df_ai.columns = df_ai.columns.get_level_values(0)
                             
-                            # Recalculate context for AI
                             sigs_ai, atr_ai, _ = calculate_advanced_signals(df_ai, tf_code)
-                            news_ai = get_market_news(yahoo_sym)
-                            curr_p_ai = df_ai['Close'].iloc[-1]
                             
-                            # Call Hybrid AI
-                            ai_res, prov = get_hybrid_analysis(
-                                yahoo_sym, 
-                                {'price': curr_p_ai}, 
-                                sigs_ai, 
-                                news_ai, 
-                                atr_ai, 
-                                st.session_state.user, 
-                                tf_code
-                            )
-                            
-                            st.success(f"Analysis Complete! Provider: {prov}")
-                            st.markdown(f"<div class='entry-box'>{ai_res}</div>", unsafe_allow_html=True)
+                            if sigs_ai: # FIX: Check if signals exist
+                                news_ai = get_market_news(yahoo_sym)
+                                curr_p_ai = df_ai['Close'].iloc[-1]
+                                
+                                ai_res, prov = get_hybrid_analysis(
+                                    yahoo_sym, {'price': curr_p_ai}, sigs_ai, news_ai, atr_ai, st.session_state.user, tf_code
+                                )
+                                st.success(f"Analysis Complete! Provider: {prov}")
+                                st.markdown(f"<div class='entry-box'>{ai_res}</div>", unsafe_allow_html=True)
+                            else: st.error("Not enough data for signals.")
                         else:
                             st.error("Data fetch failed for AI analysis.")
 
@@ -685,12 +701,56 @@ else:
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
             st.title("🛡️ Admin Center")
-            with st.form("add_user_form"):
-                new_u, new_p = st.text_input("New User"), st.text_input("Pass", type="password")
-                if st.form_submit_button("Create"): 
-                    add_new_user(new_u, new_p, "User", 10)
-                    st.success("Done")
-        else: st.error("Access Denied.")
+            
+            # 1. Stats Display
+            sheet, _ = get_user_sheet()
+            if sheet:
+                all_records = sheet.get_all_records()
+                active_users_count = len(all_records)
+                total_reqs = sum([int(r.get("UsageCount", 0)) for r in all_records if str(r.get("UsageCount", 0)).isdigit()])
+                
+                c1, c2 = st.columns(2)
+                c1.metric("Active Users", active_users_count)
+                c2.metric("Total AI Requests Served", total_reqs)
+                
+                st.divider()
+                st.subheader("👥 User Management")
+                
+                # 2. User Table & Edit
+                df_users = pd.DataFrame(all_records)
+                st.dataframe(df_users, use_container_width=True)
+                
+                st.markdown("### ✏️ Update User Credits")
+                c_u, c_l, c_b = st.columns([2, 1, 1])
+                with c_u:
+                    target_user = st.selectbox("Select User", [r['Username'] for r in all_records])
+                with c_l:
+                    new_limit_val = st.number_input("New Limit", min_value=0, value=10)
+                with c_b:
+                    st.write("") # Spacer
+                    st.write("") 
+                    if st.button("Update Limit"):
+                        if update_user_limit_in_db(target_user, new_limit_val):
+                            st.success(f"Updated {target_user} to {new_limit_val}")
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Update Failed")
+
+                st.divider()
+                st.subheader("➕ Create New User")
+                with st.form("add_user_form"):
+                    new_u = st.text_input("New Username")
+                    new_p = st.text_input("New Password", type="password")
+                    new_limit = st.number_input("Initial Limit", value=10)
+                    if st.form_submit_button("Create User"): 
+                        succ, msg = add_new_user(new_u, new_p, "User", new_limit)
+                        if succ: st.success(msg)
+                        else: st.error(msg)
+            else:
+                st.error("Database Connection Failed")
+        else:
+            st.error("Access Denied.")
 
     if auto_refresh:
         time.sleep(60)
