@@ -166,6 +166,23 @@ def update_user_limit_in_db(username, new_limit):
         except Exception as e: return False
     return False
 
+def add_new_user_to_db(username, password, limit):
+    sheet, _ = get_user_sheet()
+    if sheet:
+        try:
+            # Check if user already exists
+            cell = sheet.find(username)
+            if cell:
+                return False, "User already exists!"
+            
+            # Append new row [Username, Password, Role, HybridLimit, UsageCount]
+            # Assumes the Sheet Headers are in this order
+            sheet.append_row([username, password, "User", limit, 0])
+            return True, f"User {username} created successfully!"
+        except Exception as e:
+            return False, f"Error creating user: {e}"
+    return False, "Database connection failed"
+
 def get_sentiment_class(title):
     title_lower = title.lower()
     negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
@@ -450,7 +467,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview') 
+                model = genai.GenerativeModel('gemini-2.0-flash') 
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
@@ -690,20 +707,34 @@ else:
                 df_users = pd.DataFrame(all_records)
                 st.dataframe(df_users, use_container_width=True)
                 
+                # --- NEW: Create User Section ---
+                st.markdown("---")
+                with st.expander("➕ Create New User", expanded=False):
+                    with st.form("create_user_form"):
+                        new_u_name = st.text_input("Username")
+                        new_u_pass = st.text_input("Password")
+                        new_u_limit = st.number_input("Initial Hybrid Limit", value=10, min_value=1)
+                        if st.form_submit_button("Create User"):
+                            if new_u_name and new_u_pass:
+                                success, msg = add_new_user_to_db(new_u_name, new_u_pass, new_u_limit)
+                                if success: 
+                                    st.success(msg)
+                                    time.sleep(1)
+                                    st.rerun()
+                                else: st.error(msg)
+                            else: st.warning("Please fill all fields")
+
                 st.markdown("### ✏️ Manage User Credits")
                 
-                # User Selection logic updated to be more robust (similar to expected Admin functions)
                 user_list = [r['Username'] for r in all_records if str(r.get('Username')) != 'Admin']
                 target_user = st.selectbox("Select User to Update", user_list)
                 
                 if target_user:
-                    # Find current stats for display
                     curr_user_data = next((u for u in all_records if u['Username'] == target_user), {})
                     st.info(f"User: **{target_user}** | Current Limit: **{curr_user_data.get('HybridLimit', 'N/A')}** | Used: **{curr_user_data.get('UsageCount', 'N/A')}**")
                     
                     c1, c2 = st.columns(2)
                     
-                    # Update Limit
                     with c1:
                         st.subheader("Update Limit")
                         new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 10)))
@@ -713,7 +744,6 @@ else:
                             time.sleep(1)
                             st.rerun()
                             
-                    # Reset Usage (Functionality implied by 'options' for admin management)
                     with c2:
                         st.subheader("Reset Usage")
                         new_usage_val = st.number_input("Set Usage Count", min_value=0, value=0)
