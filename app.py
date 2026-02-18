@@ -172,15 +172,10 @@ def get_live_price(symbol):
         ticker = yf.Ticker(get_yf_symbol(symbol))
         # Try fast_info first (faster)
         if hasattr(ticker, 'fast_info') and ticker.fast_info:
-            price = ticker.fast_info['lastPrice']
-            st.write(f"DEBUG: Live price for {symbol} (fast_info): {price}")  # DEBUG
-            return price
+            return ticker.fast_info['lastPrice']
         # Fallback to regularMarketPrice from info
-        price = ticker.info.get('regularMarketPrice', None)
-        st.write(f"DEBUG: Live price for {symbol} (info): {price}")  # DEBUG
-        return price
-    except Exception as e:
-        st.write(f"DEBUG: Error getting live price for {symbol}: {e}")  # DEBUG
+        return ticker.info.get('regularMarketPrice', None)
+    except:
         return None
 
 # --- Google Sheets Functions (User DB) ---
@@ -272,7 +267,6 @@ def update_trade_status_by_row(row_index, new_status, closed_date=""):
             sheet.update_cell(row_index + 2, status_col, new_status)
             if closed_date:
                 sheet.update_cell(row_index + 2, closed_col, closed_date)
-            st.success(f"DEBUG: Updated row {row_index+2} to {new_status}")  # DEBUG
             return True
         except Exception as e:
             st.error(f"Error updating trade: {e}")
@@ -287,13 +281,9 @@ def check_and_update_trades(username):
     
     try:
         records = sheet.get_all_records()
-        st.write(f"DEBUG: Total records in sheet: {len(records)}")  # DEBUG
-        
         # Find rows for this user with Active status
         for idx, record in enumerate(records):
             if record.get('User') == username and record.get('Status') == 'Active':
-                st.write(f"DEBUG: Checking trade: {record}")  # DEBUG
-                
                 # Get current live price
                 pair = record['Pair']
                 # Need original symbol for live price
@@ -310,20 +300,12 @@ def check_and_update_trades(username):
                     orig_sym = pair
                 
                 live = get_live_price(orig_sym)
-                st.write(f"DEBUG: Live price for {pair}: {live}")  # DEBUG
-                
                 if live is None:
-                    st.write(f"DEBUG: Skipping due to no live price")  # DEBUG
                     continue
                 
-                try:
-                    entry = float(record['Entry'])
-                    sl = float(record['SL'])
-                    tp = float(record['TP'])
-                except Exception as e:
-                    st.error(f"DEBUG: Error converting values to float: {e}")
-                    continue
-                
+                entry = float(record['Entry'])
+                sl = float(record['SL'])
+                tp = float(record['TP'])
                 direction = record['Direction']
                 
                 # Check if SL or TP hit
@@ -333,24 +315,19 @@ def check_and_update_trades(username):
                     if live <= sl:
                         new_status = "SL Hit"
                         hit = True
-                        st.write(f"DEBUG: BUY SL HIT: live={live} <= sl={sl}")  # DEBUG
                     elif live >= tp:
                         new_status = "TP Hit"
                         hit = True
-                        st.write(f"DEBUG: BUY TP HIT: live={live} >= tp={tp}")  # DEBUG
                 else:  # SELL
                     if live >= sl:
                         new_status = "SL Hit"
                         hit = True
-                        st.write(f"DEBUG: SELL SL HIT: live={live} >= sl={sl}")  # DEBUG
                     elif live <= tp:
                         new_status = "TP Hit"
                         hit = True
-                        st.write(f"DEBUG: SELL TP HIT: live={live} <= tp={tp}")  # DEBUG
                 
                 if hit:
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.write(f"DEBUG: Updating trade at row index {idx} to {new_status}")  # DEBUG
                     update_trade_status_by_row(idx, new_status, now)
         
         # Reload active trades after updates
@@ -1476,9 +1453,7 @@ else:
         
         with tab1:
             # Check and update active trades (SL/TP hits)
-            st.write("DEBUG: Checking active trades...")  # DEBUG
             active_trades = check_and_update_trades(user_info['Username'])
-            st.write(f"DEBUG: Active trades after check: {len(active_trades)}")  # DEBUG
             
             if active_trades:
                 for trade in active_trades:
