@@ -167,10 +167,14 @@ def get_yf_symbol(symbol):
     return symbol
 
 def get_live_price(symbol):
-    """Fetch current live price using yfinance Ticker"""
+    """Fetch current live price using yfinance (more robust method)"""
     try:
         ticker = yf.Ticker(get_yf_symbol(symbol))
-        # Try fast_info first (faster)
+        # Try to get latest price from 1-minute data
+        hist = ticker.history(period="1d", interval="1m")
+        if not hist.empty:
+            return float(hist['Close'].iloc[-1])
+        # Fallback to fast_info
         if hasattr(ticker, 'fast_info') and ticker.fast_info:
             return ticker.fast_info['lastPrice']
         # Fallback to regularMarketPrice from info
