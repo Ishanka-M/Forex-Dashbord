@@ -1609,3 +1609,4 @@ else:
     if auto_refresh:
         time.sleep(60)
         st.rerun()
+        
