@@ -718,7 +718,7 @@ def calculate_advanced_signals(df, tf):
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence
 
-# --- 5. INFINITE ALGORITHMIC ENGINE ---
+# --- 5. INFINITE ALGORITHMIC ENGINE (UPDATED SL MULTIPLIERS) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     if sigs is None: return "Insufficient Data for Analysis"
     
@@ -728,11 +728,11 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
-        sl_mult = 1.2
+        sl_mult = 1.0      # REDUCED from 1.2
         tp_mult = 2.0
     else:
         trade_mode = "SWING (දිගු කාලීන)"
-        sl_mult = 1.5
+        sl_mult = 1.2      # REDUCED from 1.5
         tp_mult = 3.5
 
     action = "WAIT"
@@ -1005,14 +1005,14 @@ def scan_market(assets_list, active_trades=None):
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
-                    # Calculate entry, SL, TP based on direction and ATR
+                    # Calculate entry, SL, TP based on direction and ATR (UPDATED SL MULTIPLIERS)
                     if direction == "BUY":
                         entry = curr_price
-                        sl = entry - (atr_sw * 1.5)   # swing SL multiplier
-                        tp = entry + (atr_sw * 3.5)   # swing TP multiplier
+                        sl = entry - (atr_sw * 1.2)   # REDUCED from 1.5 to 1.2
+                        tp = entry + (atr_sw * 3.5)   # TP multiplier unchanged
                     else:
                         entry = curr_price
-                        sl = entry + (atr_sw * 1.5)
+                        sl = entry + (atr_sw * 1.2)
                         tp = entry - (atr_sw * 3.5)
                     
                     trade_candidate = {
@@ -1045,11 +1045,11 @@ def scan_market(assets_list, active_trades=None):
                     curr_price = df_sc['Close'].iloc[-1]
                     if direction == "BUY":
                         entry = curr_price
-                        sl = entry - (atr_sc * 1.2)   # scalp SL multiplier
-                        tp = entry + (atr_sc * 2.0)   # scalp TP multiplier
+                        sl = entry - (atr_sc * 1.0)   # REDUCED from 1.2 to 1.0
+                        tp = entry + (atr_sc * 2.0)   # TP multiplier unchanged
                     else:
                         entry = curr_price
-                        sl = entry + (atr_sc * 1.2)
+                        sl = entry + (atr_sc * 1.0)
                         tp = entry - (atr_sc * 2.0)
                     
                     trade_candidate = {
@@ -1298,6 +1298,14 @@ else:
                 live_price = get_live_price(pair) or curr_p
                 result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
+                
+                # --- FALLBACK: If AI didn't provide numbers, use algo-generated ones ---
+                algo_text = infinite_algorithmic_engine(pair, live_price, sigs, news_items, current_atr, tf)
+                algo_parsed = parse_ai_response(algo_text)
+                for key in ['ENTRY', 'SL', 'TP']:
+                    if st.session_state.ai_parsed_data[key] == 'N/A' and algo_parsed[key] != 'N/A':
+                        st.session_state.ai_parsed_data[key] = algo_parsed[key]
+                
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
                 
@@ -1345,14 +1353,55 @@ else:
                 if not results['swing'] and not results['scalp']:
                     st.warning("No signals found above 40% accuracy.")
                 else:
-                    st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
+                    st.success(f"Scan Complete! Found {len(results['scalp'])} Scalp & {len(results['swing'])} Swing setups.")  # SWAPPED ORDER
         
         # Display Results with progress bar and deep analysis button and track button
         res = st.session_state.scan_results
         
         st.markdown("---")
         
-        # --- SWING SECTION ---
+        # --- SCALP SECTION (NOW FIRST - GIVEN PRIORITY) ---
+        st.subheader("🐇 SCALP TRADES (15M)")
+        if res['scalp']:
+            for idx, sig in enumerate(res['scalp']):
+                max_diff = abs(sig['entry'] - sig['sl'])
+                if max_diff > 0:
+                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
+                    progress = max(0, min(1, progress))
+                else:
+                    progress = 0
+                
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                    st.markdown(f"""
+                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
+                        <b>{sig['pair']} | {sig['dir']}</b><br>
+                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
+                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col2:
+                    st.progress(progress, text="Approach")
+                with col3:
+                    if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
+                        st.session_state.selected_trade = sig
+                        st.session_state.deep_analysis_result = None
+                        st.session_state.deep_analysis_provider = None
+                        st.session_state.deep_forecast_chart = None
+                        st.rerun()
+                with col4:
+                    if st.button("📌 Track", key=f"scalp_track_{idx}"):
+                        if save_trade_to_ongoing(sig, user_info['Username']):
+                            st.success("Trade saved to Ongoing Trades!")
+                            time.sleep(1)
+                            st.rerun()
+        else:
+            st.info("No Scalp setups found.")
+        
+        st.markdown("---")
+        
+        # --- SWING SECTION (NOW SECOND) ---
         st.subheader("🐢 SWING TRADES (4H)")
         if res['swing']:
             for idx, sig in enumerate(res['swing']):
@@ -1391,47 +1440,6 @@ else:
                             st.rerun()
         else:
             st.info("No Swing setups found.")
-        
-        st.markdown("---")
-        
-        # --- SCALP SECTION ---
-        st.subheader("🐇 SCALP TRADES (15M)")
-        if res['scalp']:
-            for idx, sig in enumerate(res['scalp']):
-                max_diff = abs(sig['entry'] - sig['sl'])
-                if max_diff > 0:
-                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
-                    progress = max(0, min(1, progress))
-                else:
-                    progress = 0
-                
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                with col1:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b><br>
-                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.progress(progress, text="Approach")
-                with col3:
-                    if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
-                        st.session_state.selected_trade = sig
-                        st.session_state.deep_analysis_result = None
-                        st.session_state.deep_analysis_provider = None
-                        st.session_state.deep_forecast_chart = None
-                        st.rerun()
-                with col4:
-                    if st.button("📌 Track", key=f"scalp_track_{idx}"):
-                        if save_trade_to_ongoing(sig, user_info['Username']):
-                            st.success("Trade saved to Ongoing Trades!")
-                            time.sleep(1)
-                            st.rerun()
-        else:
-            st.info("No Scalp setups found.")
         
         # Show deep analysis result if a trade was selected
         if st.session_state.selected_trade:
@@ -1609,4 +1617,3 @@ else:
     if auto_refresh:
         time.sleep(60)
         st.rerun()
-        
