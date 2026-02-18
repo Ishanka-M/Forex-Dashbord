@@ -84,11 +84,19 @@ st.markdown("""
         padding: 12px; margin-bottom: 10px; 
         border-radius: 8px; transition: all 0.3s ease; border-right: 1px solid #333;
         animation: fadeIn 0.5s;
+        position: relative;
     }
     .news-card:hover { transform: translateX(5px); background: #252525; box-shadow: -5px 0 10px rgba(0,0,0,0.3); }
     .news-positive { border-left: 5px solid #00ff00; }
     .news-negative { border-left: 5px solid #ff4b4b; }
     .news-neutral { border-left: 5px solid #00d4ff; }
+    .news-time {
+        font-size: 10px;
+        color: #888;
+        position: absolute;
+        bottom: 2px;
+        right: 8px;
+    }
     
     /* --- SIGNAL BOXES --- */
     .sig-box { 
@@ -291,18 +299,20 @@ def save_trade_to_ongoing(trade, username):
     return False
 
 def load_user_trades(username, status=None):
-    """Load trades for a user, optionally filtered by status (Active, SL Hit, TP Hit, or None for all)"""
+    """Load trades for a user, optionally filtered by status (Active, SL Hit, TP Hit, or None for all).
+       Returns list of dicts each including 'row_num' (sheet row number)."""
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
-            # Filter by username
-            user_trades = [r for r in records if r.get('User') == username]
-            if status:
-                if isinstance(status, list):
-                    user_trades = [r for r in user_trades if r.get('Status') in status]
-                else:
-                    user_trades = [r for r in user_trades if r.get('Status') == status]
+            user_trades = []
+            for idx, record in enumerate(records):
+                if record.get('User') == username:
+                    if status is None or record.get('Status') == status or (isinstance(status, list) and record.get('Status') in status):
+                        # Add row number (sheet row = idx + 2 because headers are row 1)
+                        record_copy = record.copy()
+                        record_copy['row_num'] = idx + 2
+                        user_trades.append(record_copy)
             return user_trades
         except Exception as e:
             st.error(f"Error loading trades: {e}")
@@ -323,6 +333,18 @@ def update_trade_status_by_row(row_index, new_status, closed_date=""):
             return True
         except Exception as e:
             st.error(f"Error updating trade: {e}")
+            return False
+    return False
+
+def delete_trade_by_row_number(row_number):
+    """Delete a trade row from Ongoing_Trades sheet by its sheet row number."""
+    sheet, _ = get_ongoing_sheet()
+    if sheet:
+        try:
+            sheet.delete_row(row_number)
+            return True
+        except Exception as e:
+            st.error(f"Error deleting trade: {e}")
             return False
     return False
 
@@ -504,25 +526,62 @@ def get_sentiment_class(title):
     else: return "news-neutral"
 
 def get_market_news(symbol):
+    """
+    Fetch market news for a symbol.
+    Returns list of dicts with 'title', 'link', and 'time' (formatted string).
+    """
     news_list = []
     clean_sym = symbol.replace("=X", "").replace("-USD", "").replace("-USDT", "")
+    tz = pytz.timezone('Asia/Colombo')
+    
+    # Try Google News RSS
     try:
         url = f"https://news.google.com/rss/search?q={clean_sym}+finance+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             root = ET.fromstring(response.text)
             for item in root.findall('.//item')[:4]:
-                news_list.append({"title": item.find('title').text, "link": item.find('link').text})
-    except: pass
+                title = item.find('title').text
+                link = item.find('link').text
+                pubDate = item.find('pubDate').text if item.find('pubDate') is not None else ""
+                # Parse pubDate to a readable format
+                try:
+                    if pubDate:
+                        # pubDate format: 'Wed, 19 Feb 2025 10:30:00 GMT'
+                        dt = datetime.strptime(pubDate, '%a, %d %b %Y %H:%M:%S %Z')
+                        # Convert to Colombo time
+                        dt_utc = pytz.utc.localize(dt)
+                        dt_colombo = dt_utc.astimezone(tz)
+                        time_str = dt_colombo.strftime('%H:%M %d/%m')
+                    else:
+                        time_str = ""
+                except:
+                    time_str = ""
+                news_list.append({"title": title, "link": link, "time": time_str})
+    except:
+        pass
     
+    # Fallback to yfinance news if RSS fails
     if not news_list:
         try:
             ticker = yf.Ticker(get_yf_symbol(symbol))
             yf_news = ticker.news
             if yf_news:
                 for item in yf_news[:4]:
-                    news_list.append({"title": item.get('title'), "link": item.get('link')})
-        except: pass
+                    title = item.get('title')
+                    link = item.get('link')
+                    # Try to get publish time
+                    pub_time = item.get('providerPublishTime')
+                    if pub_time:
+                        dt_utc = datetime.fromtimestamp(pub_time, tz=pytz.utc)
+                        dt_colombo = dt_utc.astimezone(tz)
+                        time_str = dt_colombo.strftime('%H:%M %d/%m')
+                    else:
+                        time_str = ""
+                    news_list.append({"title": title, "link": link, "time": time_str})
+        except:
+            pass
+    
     return news_list
 
 def calculate_news_impact(news_list):
@@ -718,7 +777,7 @@ def calculate_advanced_signals(df, tf):
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence
 
-# --- 5. INFINITE ALGORITHMIC ENGINE (UPDATED SL MULTIPLIERS) ---
+# --- 5. INFINITE ALGORITHMIC ENGINE ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     if sigs is None: return "Insufficient Data for Analysis"
     
@@ -728,11 +787,11 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
-        sl_mult = 1.0      # REDUCED from 1.2
+        sl_mult = 1.2
         tp_mult = 2.0
     else:
         trade_mode = "SWING (දිගු කාලීන)"
-        sl_mult = 1.2      # REDUCED from 1.5
+        sl_mult = 1.5
         tp_mult = 3.5
 
     action = "WAIT"
@@ -1005,14 +1064,14 @@ def scan_market(assets_list, active_trades=None):
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
-                    # Calculate entry, SL, TP based on direction and ATR (UPDATED SL MULTIPLIERS)
+                    # Calculate entry, SL, TP based on direction and ATR
                     if direction == "BUY":
                         entry = curr_price
-                        sl = entry - (atr_sw * 1.2)   # REDUCED from 1.5 to 1.2
-                        tp = entry + (atr_sw * 3.5)   # TP multiplier unchanged
+                        sl = entry - (atr_sw * 1.5)   # swing SL multiplier
+                        tp = entry + (atr_sw * 3.5)   # swing TP multiplier
                     else:
                         entry = curr_price
-                        sl = entry + (atr_sw * 1.2)
+                        sl = entry + (atr_sw * 1.5)
                         tp = entry - (atr_sw * 3.5)
                     
                     trade_candidate = {
@@ -1045,11 +1104,11 @@ def scan_market(assets_list, active_trades=None):
                     curr_price = df_sc['Close'].iloc[-1]
                     if direction == "BUY":
                         entry = curr_price
-                        sl = entry - (atr_sc * 1.0)   # REDUCED from 1.2 to 1.0
-                        tp = entry + (atr_sc * 2.0)   # TP multiplier unchanged
+                        sl = entry - (atr_sc * 1.2)   # scalp SL multiplier
+                        tp = entry + (atr_sc * 2.0)   # scalp TP multiplier
                     else:
                         entry = curr_price
-                        sl = entry + (atr_sc * 1.0)
+                        sl = entry + (atr_sc * 1.2)
                         tp = entry - (atr_sc * 2.0)
                     
                     trade_candidate = {
@@ -1230,12 +1289,18 @@ else:
         news_impact = calculate_news_impact(news_items)
         
         st.sidebar.markdown("### 📰 Market News")
+        # Show current time next to progress bar
+        tz = pytz.timezone('Asia/Colombo')
+        current_time_str = datetime.now(tz).strftime("%H:%M:%S")
+        st.sidebar.caption(f"Last updated: {current_time_str}")
         st.sidebar.progress(news_impact)
         if news_impact > 70: st.sidebar.caption("⚠️ HIGH VOLATILITY EXPECTED")
         else: st.sidebar.caption("✅ Market Stable")
         
         for news in news_items:
-            st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}</div>", unsafe_allow_html=True)
+            # Display news card with time if available
+            time_display = f"<span class='news-time'>{news['time']}</span>" if news['time'] else ""
+            st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}{time_display}</div>", unsafe_allow_html=True)
 
         df = yf.download(get_yf_symbol(pair), period=get_data_period(tf), interval=tf, progress=False)
         
@@ -1298,14 +1363,6 @@ else:
                 live_price = get_live_price(pair) or curr_p
                 result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
-                
-                # --- FALLBACK: If AI didn't provide numbers, use algo-generated ones ---
-                algo_text = infinite_algorithmic_engine(pair, live_price, sigs, news_items, current_atr, tf)
-                algo_parsed = parse_ai_response(algo_text)
-                for key in ['ENTRY', 'SL', 'TP']:
-                    if st.session_state.ai_parsed_data[key] == 'N/A' and algo_parsed[key] != 'N/A':
-                        st.session_state.ai_parsed_data[key] = algo_parsed[key]
-                
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
                 
@@ -1353,55 +1410,14 @@ else:
                 if not results['swing'] and not results['scalp']:
                     st.warning("No signals found above 40% accuracy.")
                 else:
-                    st.success(f"Scan Complete! Found {len(results['scalp'])} Scalp & {len(results['swing'])} Swing setups.")  # SWAPPED ORDER
+                    st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
         
         # Display Results with progress bar and deep analysis button and track button
         res = st.session_state.scan_results
         
         st.markdown("---")
         
-        # --- SCALP SECTION (NOW FIRST - GIVEN PRIORITY) ---
-        st.subheader("🐇 SCALP TRADES (15M)")
-        if res['scalp']:
-            for idx, sig in enumerate(res['scalp']):
-                max_diff = abs(sig['entry'] - sig['sl'])
-                if max_diff > 0:
-                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
-                    progress = max(0, min(1, progress))
-                else:
-                    progress = 0
-                
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                with col1:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b><br>
-                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.progress(progress, text="Approach")
-                with col3:
-                    if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
-                        st.session_state.selected_trade = sig
-                        st.session_state.deep_analysis_result = None
-                        st.session_state.deep_analysis_provider = None
-                        st.session_state.deep_forecast_chart = None
-                        st.rerun()
-                with col4:
-                    if st.button("📌 Track", key=f"scalp_track_{idx}"):
-                        if save_trade_to_ongoing(sig, user_info['Username']):
-                            st.success("Trade saved to Ongoing Trades!")
-                            time.sleep(1)
-                            st.rerun()
-        else:
-            st.info("No Scalp setups found.")
-        
-        st.markdown("---")
-        
-        # --- SWING SECTION (NOW SECOND) ---
+        # --- SWING SECTION ---
         st.subheader("🐢 SWING TRADES (4H)")
         if res['swing']:
             for idx, sig in enumerate(res['swing']):
@@ -1440,6 +1456,47 @@ else:
                             st.rerun()
         else:
             st.info("No Swing setups found.")
+        
+        st.markdown("---")
+        
+        # --- SCALP SECTION ---
+        st.subheader("🐇 SCALP TRADES (15M)")
+        if res['scalp']:
+            for idx, sig in enumerate(res['scalp']):
+                max_diff = abs(sig['entry'] - sig['sl'])
+                if max_diff > 0:
+                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
+                    progress = max(0, min(1, progress))
+                else:
+                    progress = 0
+                
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                with col1:
+                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                    st.markdown(f"""
+                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
+                        <b>{sig['pair']} | {sig['dir']}</b><br>
+                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
+                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col2:
+                    st.progress(progress, text="Approach")
+                with col3:
+                    if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
+                        st.session_state.selected_trade = sig
+                        st.session_state.deep_analysis_result = None
+                        st.session_state.deep_analysis_provider = None
+                        st.session_state.deep_forecast_chart = None
+                        st.rerun()
+                with col4:
+                    if st.button("📌 Track", key=f"scalp_track_{idx}"):
+                        if save_trade_to_ongoing(sig, user_info['Username']):
+                            st.success("Trade saved to Ongoing Trades!")
+                            time.sleep(1)
+                            st.rerun()
+        else:
+            st.info("No Scalp setups found.")
         
         # Show deep analysis result if a trade was selected
         if st.session_state.selected_trade:
@@ -1523,14 +1580,22 @@ else:
                     live = get_live_price(pair)
                     live_display = f"{live:.4f}" if live else "N/A"
                     
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                        <b>{trade['Pair']} | {trade['Direction']}</b><br>
-                        Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                        Live: {live_display} | Confidence: {trade['Confidence']}%<br>
-                        <small>Tracked since: {trade['Timestamp']}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    col1, col2 = st.columns([5,1])
+                    with col1:
+                        st.markdown(f"""
+                        <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                            <b>{trade['Pair']} | {trade['Direction']}</b><br>
+                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                            Live: {live_display} | Confidence: {trade['Confidence']}%<br>
+                            <small>Tracked since: {trade['Timestamp']}</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col2:
+                        # Delete button
+                        if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
+                            if delete_trade_by_row_number(trade['row_num']):
+                                st.success("Trade deleted.")
+                                st.rerun()
             else:
                 st.info("No active ongoing trades.")
         
@@ -1545,14 +1610,22 @@ else:
                 
                 for trade in closed_trades:
                     color = "#ff4b4b" if trade['Status'] == 'SL Hit' else "#00ff00"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                        <b>{trade['Pair']} | {trade['Direction']}</b> - <span style='color:{color};'>{trade['Status']}</span><br>
-                        Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                        Confidence: {trade['Confidence']}%<br>
-                        <small>Tracked: {trade['Timestamp']} | Closed: {trade.get('ClosedDate', 'N/A')}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    col1, col2 = st.columns([5,1])
+                    with col1:
+                        st.markdown(f"""
+                        <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                            <b>{trade['Pair']} | {trade['Direction']}</b> - <span style='color:{color};'>{trade['Status']}</span><br>
+                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                            Confidence: {trade['Confidence']}%<br>
+                            <small>Tracked: {trade['Timestamp']} | Closed: {trade.get('ClosedDate', 'N/A')}</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col2:
+                        # Delete button
+                        if st.button("🗑️ Delete", key=f"del_closed_{trade['row_num']}"):
+                            if delete_trade_by_row_number(trade['row_num']):
+                                st.success("Trade deleted.")
+                                st.rerun()
             else:
                 st.info("No closed trades found.")
         
