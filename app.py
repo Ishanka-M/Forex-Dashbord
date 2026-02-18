@@ -191,7 +191,7 @@ def get_user_sheet():
 
 # --- NEW: Google Sheets Functions for Ongoing Trades (Sheet2) ---
 def get_ongoing_sheet():
-    """Get or create the Ongoing Trades worksheet (Sheet2)"""
+    """Get or create the Ongoing Trades worksheet (Sheet2) with proper headers"""
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
@@ -201,21 +201,22 @@ def get_ongoing_sheet():
             sheet = spreadsheet.worksheet("Ongoing_Trades")
         except gspread.WorksheetNotFound:
             # Create worksheet with headers
-            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=10)
-            headers = ["Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDateTime", "HitLevel"]
+            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=11)
+            headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes"]
             sheet.append_row(headers)
         return sheet, client
     except Exception as e:
         st.error(f"Ongoing Trades sheet error: {e}")
         return None, None
 
-def save_trade_to_ongoing(trade):
+def save_trade_to_ongoing(trade, username):
     """Save a trade dictionary to Ongoing_Trades sheet with Status='Active'"""
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             row = [
+                username,
                 now,
                 trade['pair'],
                 trade['dir'],
@@ -234,40 +235,101 @@ def save_trade_to_ongoing(trade):
             return False
     return False
 
-def load_ongoing_trades():
-    """Load all trades from Ongoing_Trades with Status='Active'"""
+def load_ongoing_trades(username):
+    """Load all trades from Ongoing_Theets for this user with Status='Active'"""
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
-            # Filter only Active
-            active = [r for r in records if r.get('Status') == 'Active']
-            return active
+            # Filter by username and active status
+            user_trades = [r for r in records if r.get('User') == username and r.get('Status') == 'Active']
+            return user_trades
         except Exception as e:
             st.error(f"Error loading trades: {e}")
             return []
     return []
 
-def update_trade_status(row_index, new_status, closed_datetime="", hit_level=""):
-    """Update the status of a trade by row index (1-based)"""
+def update_trade_status_by_row(row_index, new_status, closed_date=""):
+    """Update the status of a trade by row index (0-based from records)"""
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
+            # Find the row (index + 2 because headers are row1)
             headers = sheet.row_values(1)
             status_col = headers.index("Status") + 1
-            closed_col = headers.index("ClosedDateTime") + 1
-            hit_col = headers.index("HitLevel") + 1
+            closed_col = headers.index("ClosedDate") + 1
             # Update status
-            sheet.update_cell(row_index + 2, status_col, new_status)  # row_index is 0-based from records
-            if closed_datetime:
-                sheet.update_cell(row_index + 2, closed_col, closed_datetime)
-            if hit_level:
-                sheet.update_cell(row_index + 2, hit_col, hit_level)
+            sheet.update_cell(row_index + 2, status_col, new_status)
+            if closed_date:
+                sheet.update_cell(row_index + 2, closed_col, closed_date)
             return True
         except Exception as e:
             st.error(f"Error updating trade: {e}")
             return False
     return False
+
+def check_and_update_trades(username):
+    """Check all active trades for this user, update if SL/TP hit, return updated list"""
+    sheet, _ = get_ongoing_sheet()
+    if not sheet:
+        return []
+    
+    try:
+        records = sheet.get_all_records()
+        # Find rows for this user with Active status
+        for idx, record in enumerate(records):
+            if record.get('User') == username and record.get('Status') == 'Active':
+                # Get current live price
+                pair = record['Pair']
+                # Need original symbol for live price
+                # We'll try to construct original symbol
+                # For simplicity, we'll assume the pair is as stored
+                # Convert to yfinance symbol if needed
+                if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+                    # Guess
+                    if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+                        orig_sym = pair + "=X"
+                    else:
+                        orig_sym = pair + "-USDT"
+                else:
+                    orig_sym = pair
+                
+                live = get_live_price(orig_sym)
+                if live is None:
+                    continue
+                
+                entry = float(record['Entry'])
+                sl = float(record['SL'])
+                tp = float(record['TP'])
+                direction = record['Direction']
+                
+                # Check if SL or TP hit
+                hit = False
+                new_status = ""
+                if direction == "BUY":
+                    if live <= sl:
+                        new_status = "SL Hit"
+                        hit = True
+                    elif live >= tp:
+                        new_status = "TP Hit"
+                        hit = True
+                else:  # SELL
+                    if live >= sl:
+                        new_status = "SL Hit"
+                        hit = True
+                    elif live <= tp:
+                        new_status = "TP Hit"
+                        hit = True
+                
+                if hit:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    update_trade_status_by_row(idx, new_status, now)
+        
+        # Reload active trades after updates
+        return load_ongoing_trades(username)
+    except Exception as e:
+        st.error(f"Error checking trades: {e}")
+        return []
 
 # --- Existing helper functions (unchanged) ---
 def get_current_date_str():
@@ -857,7 +919,7 @@ def scan_market(assets_list):
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
-                # Filter: > 40% Accuracy
+                # Filter: > 40% Accuracy (changed from 25)
                 if abs(conf_sw) > 40: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
@@ -1045,12 +1107,12 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    # Updated navigation options (Trader Chat removed, Ongoing Trades added)
+    # Navigation options (removed Trader Chat)
     nav_options = ["Terminal", "Market Scanner", "Ongoing Trades"]
     if user_info.get("Role") == "Admin": nav_options.append("Admin Panel")
     app_mode = st.sidebar.radio("Navigation", nav_options)
     
-    # --- ASSETS (unchanged) ---
+    # --- UPDATED ASSETS WITH MORE PAIRS AND USDT CRYPTO ---
     assets = {
         "Forex": [
             "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", 
@@ -1064,7 +1126,6 @@ else:
         "Metals": ["XAUUSD=X", "XAGUSD=X", "XPTUSD=X", "XPDUSD=X"] 
     }
 
-    # --- TERMINAL (unchanged) ---
     if app_mode == "Terminal":
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
@@ -1176,7 +1237,6 @@ else:
         else:
             st.error("Insufficient data for this pair/timeframe. Please try another.")
 
-    # --- MARKET SCANNER (UPDATED: Added Track button) ---
     elif app_mode == "Market Scanner":
         st.title("📡 Global Market Scanner (Multi-Timeframe)")
         
@@ -1191,7 +1251,7 @@ else:
                 else:
                     st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
         
-        # Display Results with progress bar, deep analysis button, and track button
+        # Display Results with progress bar and deep analysis button and track button
         res = st.session_state.scan_results
         
         st.markdown("---")
@@ -1229,8 +1289,8 @@ else:
                         st.rerun()
                 with col4:
                     if st.button("📌 Track", key=f"swing_track_{idx}"):
-                        if save_trade_to_ongoing(sig):
-                            st.success(f"Trade {sig['pair']} added to Ongoing Trades!")
+                        if save_trade_to_ongoing(sig, user_info['Username']):
+                            st.success("Trade saved to Ongoing Trades!")
                             time.sleep(1)
                             st.rerun()
         else:
@@ -1270,36 +1330,40 @@ else:
                         st.rerun()
                 with col4:
                     if st.button("📌 Track", key=f"scalp_track_{idx}"):
-                        if save_trade_to_ongoing(sig):
-                            st.success(f"Trade {sig['pair']} added to Ongoing Trades!")
+                        if save_trade_to_ongoing(sig, user_info['Username']):
+                            st.success("Trade saved to Ongoing Trades!")
                             time.sleep(1)
                             st.rerun()
         else:
             st.info("No Scalp setups found.")
         
-        # Show deep analysis result if a trade was selected (unchanged)
+        # Show deep analysis result if a trade was selected
         if st.session_state.selected_trade:
             st.markdown("---")
             st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
             
+            # Run analysis if not already done
             if st.session_state.deep_analysis_result is None:
                 with st.spinner("Running deep analysis with Gemini + Puter..."):
                     result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user)
                     st.session_state.deep_analysis_result = result
                     st.session_state.deep_analysis_provider = provider
                     
-                    parsed = parse_ai_response(result)
+                    # Parse forecast from result
+                    parsed = parse_ai_response(result)  # reuse the same parser
                     forecast_text = parsed.get('FORECAST', '')
                     
+                    # Fetch historical data for chart
                     try:
                         symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
+                        # Determine interval based on tf
                         tf_display = st.session_state.selected_trade['tf']
                         if "Swing" in tf_display:
                             interval = "4h"
-                            period = "3mo"
+                            period = "3mo"  # more data for swing
                         else:
                             interval = "15m"
-                            period = "1mo"
+                            period = "1mo"  # more data for scalp
                         
                         df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
                         if not df_hist.empty and len(df_hist) > 10:
@@ -1318,9 +1382,11 @@ else:
                     except Exception as e:
                         st.error(f"Error creating forecast chart: {e}")
             
+            # Display results
             st.markdown(f"**🤖 Provider:** `{st.session_state.deep_analysis_provider}`")
             st.markdown(f"<div class='entry-box'>{st.session_state.deep_analysis_result}</div>", unsafe_allow_html=True)
             
+            # Show forecast chart if available
             if st.session_state.deep_forecast_chart is not None:
                 st.plotly_chart(st.session_state.deep_forecast_chart, use_container_width=True)
             else:
@@ -1333,92 +1399,44 @@ else:
                 st.session_state.deep_forecast_chart = None
                 st.rerun()
 
-    # --- NEW: ONGOING TRADES PAGE ---
     elif app_mode == "Ongoing Trades":
         st.title("📋 Ongoing Trades")
-
-        # Auto-refresh every 30 seconds
-        if st.button("🔄 Refresh Now"):
-            st.rerun()
         
-        # Load active trades
-        active_trades = load_ongoing_trades()
+        # Check and update trades (SL/TP hits)
+        active_trades = check_and_update_trades(user_info['Username'])
         
-        if not active_trades:
-            st.info("No active trades found.")
+        if active_trades:
+            for trade in active_trades:
+                # Determine color based on direction
+                color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                
+                # Get live price for display
+                pair = trade['Pair']
+                if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+                    if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+                        orig_sym = pair + "=X"
+                    else:
+                        orig_sym = pair + "-USDT"
+                else:
+                    orig_sym = pair
+                live = get_live_price(orig_sym)
+                live_display = f"{live:.4f}" if live else "N/A"
+                
+                st.markdown(f"""
+                <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                    <b>{trade['Pair']} | {trade['Direction']}</b><br>
+                    Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                    Live: {live_display} | Confidence: {trade['Confidence']}%<br>
+                    <small>Tracked since: {trade['Timestamp']}</small>
+                </div>
+                """, unsafe_allow_html=True)
         else:
-            st.write(f"Found {len(active_trades)} active trade(s).")
-            
-            # Prepare for display and check for hits
-            updated_indices = []
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            for i, trade in enumerate(active_trades):
-                # Get current live price
-                symbol = trade['Pair']
-                live = get_live_price(symbol)
-                if live is None:
-                    live = trade['Entry']  # fallback
-                
-                # Determine if SL or TP hit
-                direction = trade['Direction']
-                sl = float(trade['SL'])
-                tp = float(trade['TP'])
-                
-                hit = None
-                if direction == "BUY":
-                    if live <= sl:
-                        hit = "SL"
-                    elif live >= tp:
-                        hit = "TP"
-                else:  # SELL
-                    if live >= sl:
-                        hit = "SL"
-                    elif live <= tp:
-                        hit = "TP"
-                
-                # Display trade info
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:15px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
-                        <b>{trade['Pair']} | {trade['Direction']}</b><br>
-                        Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                        Live: {live:.5f} | Confidence: {trade['Confidence']}%<br>
-                        <span style='color: {"#ff4b4b" if hit else "#aaa"};'>Status: {hit if hit else "Active"}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    if hit:
-                        st.warning(f"{hit} HIT")
-                
-                # If hit, mark for update
-                if hit:
-                    updated_indices.append((i, hit))
-            
-            # Update sheet for trades that hit SL/TP
-            if updated_indices:
-                sheet, _ = get_ongoing_sheet()
-                if sheet:
-                    all_records = sheet.get_all_records()
-                    for idx, hit in updated_indices:
-                        # Find the row in sheet corresponding to this trade
-                        # We need to match by timestamp or unique ID? Use index in active_trades list
-                        # active_trades is filtered, so we need to find original row index in full records
-                        # Simple approach: loop through all_records and match fields
-                        for row_idx, rec in enumerate(all_records):
-                            if (rec['Pair'] == active_trades[idx]['Pair'] and 
-                                rec['Entry'] == active_trades[idx]['Entry'] and
-                                rec['Status'] == 'Active'):
-                                # Update this row
-                                new_status = f"{hit} Hit"
-                                update_trade_status(row_idx, new_status, now_str, hit)
-                                break
-                # Rerun to refresh display
-                st.rerun()
+            st.info("No active ongoing trades.")
+        
+        # Manual refresh button
+        if st.button("Refresh & Check Status"):
+            st.rerun()
 
-    # --- ADMIN PANEL (unchanged) ---
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
             st.title("🛡️ Admin Center & User Management")
