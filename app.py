@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS) ---
-st.set_page_config(page_title="Infinite System v16.0 (Pro Max)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v26.1 (V.HYBRID)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -337,11 +337,12 @@ def update_trade_status_by_row(row_index, new_status, closed_date=""):
     return False
 
 def delete_trade_by_row_number(row_number):
-    """Delete a trade row from Ongoing_Trades sheet by its sheet row number."""
+    """Delete a trade row from Ongoing_Trades sheet by its sheet row number (1‑based)."""
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
-            sheet.delete_row(row_number)
+            # delete_rows expects 1‑based index; it deletes the row at that index
+            sheet.delete_rows(row_number)
             return True
         except Exception as e:
             st.error(f"Error deleting trade: {e}")
