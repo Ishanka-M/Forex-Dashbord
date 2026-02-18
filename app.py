@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS) ---
-st.set_page_config(page_title="Infinite System v16.0 (Pro Max)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite Hybrid Trading Terminal V26.1", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -1260,7 +1260,7 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v16.0 | UNLOCKED</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE HYBRID TRADING TERMINAL V26.1</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
