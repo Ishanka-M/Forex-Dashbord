@@ -159,7 +159,10 @@ if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
 if "forecast_chart" not in st.session_state: st.session_state.forecast_chart = None
-if "selected_trade" not in st.session_state: st.session_state.selected_trade = None  # For deep analysis
+if "selected_trade" not in st.session_state: st.session_state.selected_trade = None
+if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysis_result = None
+if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analysis_provider = None
+if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 
 # ==================== NEW HELPER FUNCTIONS ====================
 def get_yf_symbol(symbol):
@@ -660,42 +663,44 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# ==================== NEW FUNCTION FOR DEEP ANALYSIS ====================
-def get_deep_analysis_for_trade(trade, user_info):
-    """Run a deep analysis for a specific trade using Gemini"""
+# ==================== NEW DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
+def get_deep_hybrid_analysis(trade, user_info):
+    """Run deep analysis using Gemini + Puter (hybrid engine) for a scanner trade"""
     pair = trade['pair']
-    # Convert to yfinance symbol for news etc.
-    if pair in [a.replace("=X","").replace("-USD","").replace("-USDT","") for a in assets["Forex"]]:
-        # Find the original symbol from assets
-        for cat in assets.values():
-            for sym in cat:
-                if pair in sym:
-                    orig_sym = sym
-                    break
-            else:
-                continue
-            break
+    # Construct original symbol for news and data
+    if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+        # Assume forex or metal without suffix
+        if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+            orig_sym = pair + "=X"
         else:
-            orig_sym = pair + "=X"  # guess
+            # check if it's crypto (USDT)
+            orig_sym = pair + "-USDT"  # will be converted by get_yf_symbol later
     else:
-        # crypto
-        orig_sym = pair + "-USDT" if pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"] else pair + "=X"
+        orig_sym = pair
     
+    # Fetch news
     news_items = get_market_news(orig_sym)
     news_str = "\n".join([f"- {n['title']}" for n in news_items])
     
+    # Get current live price
+    live_price = trade.get('live_price', trade['price'])
+    
+    # Determine timeframe display
+    tf_display = trade['tf']
+    
+    # Prompt for deep analysis
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
     Perform a deep analysis of the following trade setup:
     
     **Asset:** {pair}
-    **Timeframe:** {trade['tf']}
+    **Timeframe:** {tf_display}
     **Direction:** {trade['dir']}
     **Entry:** {trade['entry']:.5f}
     **Stop Loss:** {trade['sl']:.5f}
     **Take Profit:** {trade['tp']:.5f}
     **Confidence:** {trade['conf']}%
-    **Current Live Price:** {trade['live_price']:.5f}
+    **Current Live Price:** {live_price:.5f}
     
     **Recent News Headlines:**
     {news_str}
@@ -705,45 +710,76 @@ def get_deep_analysis_for_trade(trade, user_info):
     2. Check if the current price is near entry and if it's a good moment to enter.
     3. Provide a detailed analysis in SINHALA (use English for technical terms).
     4. Suggest any adjustments to SL/TP based on recent price action.
-    5. Give a short-term forecast (next 5-10 candles).
+    5. Give a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
     
-    **FINAL OUTPUT FORMAT:**
+    **FINAL OUTPUT FORMAT (STRICT):**
     [Sinhala Analysis]
     
     RISK:REWARD = x:y
-    VERDICT: [BUY/SELL/WAIT]
+    FORECAST: [Brief forecast description]
     """
     
+    # Use hybrid AI (Gemini + Puter)
     gemini_keys = []
     for i in range(1, 8):
         k = st.secrets.get(f"GEMINI_API_KEY_{i}")
         if k: gemini_keys.append(k)
     
     response_text = ""
-    if not gemini_keys:
-        return "Gemini API keys not configured."
+    provider_name = ""
     
-    for idx, key in enumerate(gemini_keys):
-        try:
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash-preview')
-            response = model.generate_content(prompt)
-            response_text = response.text
-            break
-        except:
-            continue
+    # Check usage limit
+    current_usage = user_info.get("UsageCount", 0)
+    max_limit = user_info.get("HybridLimit", 10)
+    if current_usage >= max_limit and user_info["Role"] != "Admin":
+        # If limit reached, return a basic message
+        return "Daily limit reached. Please try again tomorrow.", "Limit Reached"
     
-    if not response_text:
-        return "Deep analysis failed. Please try again."
+    with st.status(f"🔍 Deep AI Analysis for {pair}...", expanded=True) as status:
+        if not gemini_keys:
+            st.error("❌ No Gemini Keys found!")
+            # Fallback to Puter directly
+            try:
+                puter_resp = puter.ai.chat(prompt)
+                response_text = puter_resp.message.content
+                provider_name = "Puter AI (Fallback) 🔵"
+                status.update(label="✅ Deep Analysis Complete (Puter)", state="complete", expanded=False)
+            except:
+                return "Deep analysis failed. Please try again.", "Error"
+        else:
+            # Try Gemini first
+            for idx, key in enumerate(gemini_keys):
+                try:
+                    genai.configure(api_key=key)
+                    model = genai.GenerativeModel('gemini-3-flash-preview')
+                    response = model.generate_content(prompt)
+                    response_text = response.text
+                    provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
+                    status.update(label="✅ Deep Analysis Complete (Gemini)", state="complete", expanded=False)
+                    break
+                except Exception as e:
+                    continue
+            
+            # Fallback to Puter if Gemini fails
+            if not response_text:
+                try:
+                    puter_resp = puter.ai.chat(prompt)
+                    response_text = puter_resp.message.content
+                    provider_name = "Puter AI (Fallback) 🔵"
+                    status.update(label="✅ Deep Analysis Complete (Puter)", state="complete", expanded=False)
+                except Exception as e_puter:
+                    return "Deep analysis failed. Please try again.", "Error"
     
-    # Update usage count
-    if user_info["Username"] != "Admin":
-        new_usage = user_info.get("UsageCount", 0) + 1
+    if response_text:
+        # Update usage count
+        new_usage = current_usage + 1
         user_info["UsageCount"] = new_usage
         st.session_state.user = user_info
-        update_usage_in_db(user_info["Username"], new_usage)
+        if user_info["Username"] != "Admin":
+            update_usage_in_db(user_info["Username"], new_usage)
+        return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
     
-    return response_text
+    return "Deep analysis failed.", "Error"
 
 # ==================== UPDATED SCAN FUNCTION (filter >40%) ====================
 def scan_market(assets_list):
@@ -776,7 +812,8 @@ def scan_market(assets_list):
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
                         "conf": abs(conf_sw), "price": curr_price,
                         "entry": entry, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(symbol) or curr_price
+                        "live_price": get_live_price(symbol) or curr_price,
+                        "symbol_orig": symbol  # store original symbol for later use
                     })
         except: pass
         
@@ -805,7 +842,8 @@ def scan_market(assets_list):
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
                         "conf": abs(conf_sc), "price": curr_price,
                         "entry": entry, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(symbol) or curr_price
+                        "live_price": get_live_price(symbol) or curr_price,
+                        "symbol_orig": symbol
                     })
         except: pass
         
@@ -1119,6 +1157,10 @@ else:
                 with col3:
                     if st.button("🔍 Deep", key=f"swing_{idx}"):
                         st.session_state.selected_trade = sig
+                        # Clear previous deep analysis
+                        st.session_state.deep_analysis_result = None
+                        st.session_state.deep_analysis_provider = None
+                        st.session_state.deep_forecast_chart = None
                         st.rerun()
         else:
             st.info("No Swing setups found.")
@@ -1151,6 +1193,9 @@ else:
                 with col3:
                     if st.button("🔍 Deep", key=f"scalp_{idx}"):
                         st.session_state.selected_trade = sig
+                        st.session_state.deep_analysis_result = None
+                        st.session_state.deep_analysis_provider = None
+                        st.session_state.deep_forecast_chart = None
                         st.rerun()
         else:
             st.info("No Scalp setups found.")
@@ -1159,11 +1204,57 @@ else:
         if st.session_state.selected_trade:
             st.markdown("---")
             st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
-            with st.spinner("Analyzing with Gemini..."):
-                analysis = get_deep_analysis_for_trade(st.session_state.selected_trade, st.session_state.user)
-            st.markdown(f"<div class='entry-box'>{analysis}</div>", unsafe_allow_html=True)
+            
+            # Run analysis if not already done
+            if st.session_state.deep_analysis_result is None:
+                with st.spinner("Running deep analysis with Gemini + Puter..."):
+                    result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user)
+                    st.session_state.deep_analysis_result = result
+                    st.session_state.deep_analysis_provider = provider
+                    
+                    # Parse forecast from result and generate chart
+                    forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", result, re.IGNORECASE | re.DOTALL)
+                    forecast_text = forecast_match.group(1).strip() if forecast_match else ""
+                    
+                    # Fetch historical data for chart
+                    try:
+                        symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
+                        # Determine interval based on tf
+                        tf_display = st.session_state.selected_trade['tf']
+                        if "Swing" in tf_display:
+                            interval = "4h"
+                            period = "1mo"
+                        else:
+                            interval = "15m"
+                            period = "5d"
+                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
+                        if not df_hist.empty:
+                            if isinstance(df_hist.columns, pd.MultiIndex):
+                                df_hist.columns = df_hist.columns.get_level_values(0)
+                            chart = create_forecast_chart(
+                                df_hist,
+                                st.session_state.selected_trade['entry'],
+                                st.session_state.selected_trade['sl'],
+                                st.session_state.selected_trade['tp'],
+                                forecast_text
+                            )
+                            st.session_state.deep_forecast_chart = chart
+                    except Exception as e:
+                        st.warning(f"Could not generate forecast chart: {e}")
+            
+            # Display results
+            st.markdown(f"**🤖 Provider:** `{st.session_state.deep_analysis_provider}`")
+            st.markdown(f"<div class='entry-box'>{st.session_state.deep_analysis_result}</div>", unsafe_allow_html=True)
+            
+            # Show forecast chart if available
+            if st.session_state.deep_forecast_chart is not None:
+                st.plotly_chart(st.session_state.deep_forecast_chart, use_container_width=True)
+            
             if st.button("Close Analysis"):
                 st.session_state.selected_trade = None
+                st.session_state.deep_analysis_result = None
+                st.session_state.deep_analysis_provider = None
+                st.session_state.deep_forecast_chart = None
                 st.rerun()
 
     elif app_mode == "Trader Chat":
