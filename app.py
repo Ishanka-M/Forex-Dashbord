@@ -235,14 +235,19 @@ def save_trade_to_ongoing(trade, username):
             return False
     return False
 
-def load_ongoing_trades(username):
-    """Load all trades from Ongoing_Theets for this user with Status='Active'"""
+def load_user_trades(username, status=None):
+    """Load trades for a user, optionally filtered by status (Active, SL Hit, TP Hit, or None for all)"""
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
-            # Filter by username and active status
-            user_trades = [r for r in records if r.get('User') == username and r.get('Status') == 'Active']
+            # Filter by username
+            user_trades = [r for r in records if r.get('User') == username]
+            if status:
+                if isinstance(status, list):
+                    user_trades = [r for r in user_trades if r.get('Status') in status]
+                else:
+                    user_trades = [r for r in user_trades if r.get('Status') == status]
             return user_trades
         except Exception as e:
             st.error(f"Error loading trades: {e}")
@@ -326,7 +331,7 @@ def check_and_update_trades(username):
                     update_trade_status_by_row(idx, new_status, now)
         
         # Reload active trades after updates
-        return load_ongoing_trades(username)
+        return load_user_trades(username, status='Active')
     except Exception as e:
         st.error(f"Error checking trades: {e}")
         return []
@@ -1402,36 +1407,62 @@ else:
     elif app_mode == "Ongoing Trades":
         st.title("📋 Ongoing Trades")
         
-        # Check and update trades (SL/TP hits)
-        active_trades = check_and_update_trades(user_info['Username'])
+        # Create tabs
+        tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
         
-        if active_trades:
-            for trade in active_trades:
-                # Determine color based on direction
-                color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
-                
-                # Get live price for display
-                pair = trade['Pair']
-                if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                    if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                        orig_sym = pair + "=X"
+        with tab1:
+            # Check and update active trades (SL/TP hits)
+            active_trades = check_and_update_trades(user_info['Username'])
+            
+            if active_trades:
+                for trade in active_trades:
+                    # Determine color based on direction
+                    color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                    
+                    # Get live price for display
+                    pair = trade['Pair']
+                    if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+                        if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
+                            orig_sym = pair + "=X"
+                        else:
+                            orig_sym = pair + "-USDT"
                     else:
-                        orig_sym = pair + "-USDT"
-                else:
-                    orig_sym = pair
-                live = get_live_price(orig_sym)
-                live_display = f"{live:.4f}" if live else "N/A"
+                        orig_sym = pair
+                    live = get_live_price(orig_sym)
+                    live_display = f"{live:.4f}" if live else "N/A"
+                    
+                    st.markdown(f"""
+                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                        <b>{trade['Pair']} | {trade['Direction']}</b><br>
+                        Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                        Live: {live_display} | Confidence: {trade['Confidence']}%<br>
+                        <small>Tracked since: {trade['Timestamp']}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No active ongoing trades.")
+        
+        with tab2:
+            st.subheader("Closed Trades History")
+            # Load closed trades (SL Hit or TP Hit)
+            closed_trades = load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit'])
+            
+            if closed_trades:
+                # Sort by ClosedDate descending (most recent first)
+                closed_trades.sort(key=lambda x: x.get('ClosedDate', ''), reverse=True)
                 
-                st.markdown(f"""
-                <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                    <b>{trade['Pair']} | {trade['Direction']}</b><br>
-                    Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                    Live: {live_display} | Confidence: {trade['Confidence']}%<br>
-                    <small>Tracked since: {trade['Timestamp']}</small>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("No active ongoing trades.")
+                for trade in closed_trades:
+                    color = "#ff4b4b" if trade['Status'] == 'SL Hit' else "#00ff00"
+                    st.markdown(f"""
+                    <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                        <b>{trade['Pair']} | {trade['Direction']}</b> - <span style='color:{color};'>{trade['Status']}</span><br>
+                        Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                        Confidence: {trade['Confidence']}%<br>
+                        <small>Tracked: {trade['Timestamp']} | Closed: {trade.get('ClosedDate', 'N/A')}</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No closed trades found.")
         
         # Manual refresh button
         if st.button("Refresh & Check Status"):
