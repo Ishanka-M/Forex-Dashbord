@@ -159,7 +159,12 @@ if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysi
 if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analysis_provider = None
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 
-# ==================== NEW HELPER FUNCTIONS ====================
+# Cache for live prices (to avoid rate limits)
+if "_live_price_cache" not in st.session_state:
+    st.session_state._live_price_cache = {}
+    st.session_state._cache_time = {}
+
+# ==================== HELPER FUNCTIONS ====================
 def get_yf_symbol(symbol):
     """Convert display symbol to yfinance symbol (e.g., BTC-USDT -> BTC-USD)"""
     if symbol.endswith("-USDT"):
@@ -167,20 +172,59 @@ def get_yf_symbol(symbol):
     return symbol
 
 def get_live_price(symbol):
-    """Fetch current live price using yfinance Ticker"""
+    """Fetch current live price using appropriate API based on symbol type"""
+    current_time = time.time()
+    
+    # Check cache (1 minute)
+    if symbol in st.session_state._cache_time:
+        if current_time - st.session_state._cache_time[symbol] < 60:
+            return st.session_state._live_price_cache[symbol]
+    
+    # For crypto pairs (ending with USDT or USD)
+    if symbol.endswith("-USDT") or symbol.endswith("USDT") or (symbol.endswith("-USD") and "=X" not in symbol):
+        # Use Binance API
+        try:
+            # Convert to Binance format (remove - and use uppercase)
+            binance_symbol = symbol.replace("-", "").replace("USDT", "USDT").upper()
+            # If it ends with USD but not USDT (like BTC-USD), use BTCUSDT
+            if binance_symbol.endswith("USD") and not binance_symbol.endswith("USDT"):
+                binance_symbol = binance_symbol.replace("USD", "USDT")
+            
+            url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                price = float(data['price'])
+                st.session_state._live_price_cache[symbol] = price
+                st.session_state._cache_time[symbol] = current_time
+                return price
+        except Exception as e:
+            print(f"Binance API error for {symbol}: {e}")
+    
+    # For other symbols (Forex, Metals), use yfinance
     try:
         ticker = yf.Ticker(get_yf_symbol(symbol))
-        # Try fast_info first (faster)
+        # Try to get latest price from 1-minute data
+        hist = ticker.history(period="1d", interval="1m")
+        if not hist.empty:
+            price = float(hist['Close'].iloc[-1])
+            st.session_state._live_price_cache[symbol] = price
+            st.session_state._cache_time[symbol] = current_time
+            return price
+        # Fallback to fast_info
         if hasattr(ticker, 'fast_info') and ticker.fast_info:
             price = ticker.fast_info['lastPrice']
-            st.write(f"DEBUG: Live price for {symbol} (fast_info): {price}")  # DEBUG
+            st.session_state._live_price_cache[symbol] = price
+            st.session_state._cache_time[symbol] = current_time
             return price
         # Fallback to regularMarketPrice from info
         price = ticker.info.get('regularMarketPrice', None)
-        st.write(f"DEBUG: Live price for {symbol} (info): {price}")  # DEBUG
+        if price:
+            st.session_state._live_price_cache[symbol] = price
+            st.session_state._cache_time[symbol] = current_time
         return price
     except Exception as e:
-        st.write(f"DEBUG: Error getting live price for {symbol}: {e}")  # DEBUG
+        print(f"yfinance error for {symbol}: {e}")
         return None
 
 # --- Google Sheets Functions (User DB) ---
@@ -194,7 +238,7 @@ def get_user_sheet():
         return sheet, client
     except: return None, None
 
-# --- NEW: Google Sheets Functions for Ongoing Trades (Sheet2) ---
+# --- Google Sheets Functions for Ongoing Trades (Sheet2) ---
 def get_ongoing_sheet():
     """Get or create the Ongoing Trades worksheet (Sheet2) with proper headers"""
     try:
@@ -264,15 +308,12 @@ def update_trade_status_by_row(row_index, new_status, closed_date=""):
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
-            # Find the row (index + 2 because headers are row1)
             headers = sheet.row_values(1)
             status_col = headers.index("Status") + 1
             closed_col = headers.index("ClosedDate") + 1
-            # Update status
             sheet.update_cell(row_index + 2, status_col, new_status)
             if closed_date:
                 sheet.update_cell(row_index + 2, closed_col, closed_date)
-            st.success(f"DEBUG: Updated row {row_index+2} to {new_status}")  # DEBUG
             return True
         except Exception as e:
             st.error(f"Error updating trade: {e}")
@@ -287,21 +328,14 @@ def check_and_update_trades(username):
     
     try:
         records = sheet.get_all_records()
-        st.write(f"DEBUG: Total records in sheet: {len(records)}")  # DEBUG
         
         # Find rows for this user with Active status
         for idx, record in enumerate(records):
             if record.get('User') == username and record.get('Status') == 'Active':
-                st.write(f"DEBUG: Checking trade: {record}")  # DEBUG
-                
                 # Get current live price
                 pair = record['Pair']
-                # Need original symbol for live price
-                # We'll try to construct original symbol
-                # For simplicity, we'll assume the pair is as stored
-                # Convert to yfinance symbol if needed
+                # Construct original symbol for live price
                 if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                    # Guess
                     if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
                         orig_sym = pair + "=X"
                     else:
@@ -310,18 +344,19 @@ def check_and_update_trades(username):
                     orig_sym = pair
                 
                 live = get_live_price(orig_sym)
-                st.write(f"DEBUG: Live price for {pair}: {live}")  # DEBUG
-                
                 if live is None:
-                    st.write(f"DEBUG: Skipping due to no live price")  # DEBUG
                     continue
                 
+                # Convert string values to float (remove commas if any)
                 try:
-                    entry = float(record['Entry'])
-                    sl = float(record['SL'])
-                    tp = float(record['TP'])
+                    entry_str = str(record['Entry']).replace(',', '')
+                    sl_str = str(record['SL']).replace(',', '')
+                    tp_str = str(record['TP']).replace(',', '')
+                    entry = float(entry_str)
+                    sl = float(sl_str)
+                    tp = float(tp_str)
                 except Exception as e:
-                    st.error(f"DEBUG: Error converting values to float: {e}")
+                    st.warning(f"Could not convert values for {pair}: {e}")
                     continue
                 
                 direction = record['Direction']
@@ -333,24 +368,19 @@ def check_and_update_trades(username):
                     if live <= sl:
                         new_status = "SL Hit"
                         hit = True
-                        st.write(f"DEBUG: BUY SL HIT: live={live} <= sl={sl}")  # DEBUG
                     elif live >= tp:
                         new_status = "TP Hit"
                         hit = True
-                        st.write(f"DEBUG: BUY TP HIT: live={live} >= tp={tp}")  # DEBUG
                 else:  # SELL
                     if live >= sl:
                         new_status = "SL Hit"
                         hit = True
-                        st.write(f"DEBUG: SELL SL HIT: live={live} >= sl={sl}")  # DEBUG
                     elif live <= tp:
                         new_status = "TP Hit"
                         hit = True
-                        st.write(f"DEBUG: SELL TP HIT: live={live} <= tp={tp}")  # DEBUG
                 
                 if hit:
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    st.write(f"DEBUG: Updating trade at row index {idx} to {new_status}")  # DEBUG
                     update_trade_status_by_row(idx, new_status, now)
         
         # Reload active trades after updates
@@ -1476,9 +1506,7 @@ else:
         
         with tab1:
             # Check and update active trades (SL/TP hits)
-            st.write("DEBUG: Checking active trades...")  # DEBUG
             active_trades = check_and_update_trades(user_info['Username'])
-            st.write(f"DEBUG: Active trades after check: {len(active_trades)}")  # DEBUG
             
             if active_trades:
                 for trade in active_trades:
