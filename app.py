@@ -159,7 +159,7 @@ if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysi
 if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analysis_provider = None
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 
-# ==================== NEW HELPER FUNCTIONS ====================
+# ==================== HELPER FUNCTIONS ====================
 def get_yf_symbol(symbol):
     """Convert display symbol to yfinance symbol (e.g., BTC-USDT -> BTC-USD)"""
     if symbol.endswith("-USDT"):
@@ -189,7 +189,7 @@ def get_user_sheet():
         return sheet, client
     except: return None, None
 
-# --- NEW: Google Sheets Functions for Ongoing Trades (Sheet2) ---
+# --- Google Sheets Functions for Ongoing Trades (Sheet2) ---
 def get_ongoing_sheet():
     """Get or create the Ongoing Trades worksheet (Sheet2) with proper headers"""
     try:
@@ -281,17 +281,14 @@ def check_and_update_trades(username):
     
     try:
         records = sheet.get_all_records()
+        
         # Find rows for this user with Active status
         for idx, record in enumerate(records):
             if record.get('User') == username and record.get('Status') == 'Active':
                 # Get current live price
                 pair = record['Pair']
                 # Need original symbol for live price
-                # We'll try to construct original symbol
-                # For simplicity, we'll assume the pair is as stored
-                # Convert to yfinance symbol if needed
                 if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                    # Guess
                     if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
                         orig_sym = pair + "=X"
                     else:
@@ -303,9 +300,13 @@ def check_and_update_trades(username):
                 if live is None:
                     continue
                 
-                entry = float(record['Entry'])
-                sl = float(record['SL'])
-                tp = float(record['TP'])
+                try:
+                    entry = float(record['Entry'])
+                    sl = float(record['SL'])
+                    tp = float(record['TP'])
+                except:
+                    continue
+                
                 direction = record['Direction']
                 
                 # Check if SL or TP hit
