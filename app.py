@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS) ---
-st.set_page_config(page_title="Infinite System v26.1 (V.HYBRID)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v16.0 (Pro Max)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -826,7 +826,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     return analysis_text
 
 # --- 6. HYBRID AI ENGINE (VERIFICATION LOGIC) ---
-def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
+def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, recent_high=None, recent_low=None):
     if sigs is None: return "Error: Insufficient Signal Data", "System Error"
     
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
@@ -839,6 +839,16 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
 
     # Format news for AI
     news_str = "\n".join([f"- {n['title']}" for n in news_items])
+
+    # Include recent high/low if available
+    swing_info = ""
+    if recent_high is not None and recent_low is not None:
+        swing_info = f"""
+    **Recent Swing Levels (last 20 candles):**
+    - Highest High: {recent_high:.5f}
+    - Lowest Low: {recent_low:.5f}
+    Consider these levels for placing logical Stop Loss and Take Profit.
+    """
 
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
@@ -853,12 +863,13 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     
     **Recent News Headlines:**
     {news_str}
+    {swing_info}
     
     **Task:**
     1. VERIFY the Algo Signal against the News. If news is highly negative but signal is Buy, WARN the user.
     2. Use SMC, Fibonacci, and Liquidity concepts to confirm the best entry.
     3. Output the explanation in SINHALA language (Technical terms in English).
-    4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance.
+    4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance. If swing levels are provided, use them to refine SL and TP (e.g., place SL just below the recent low for a buy, or just above the recent high for a sell).
     5. Additionally, provide a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
     
     **FINAL OUTPUT FORMAT (STRICT):**
@@ -926,7 +937,7 @@ def parse_ai_response(text):
     return data
 
 # ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
-def get_deep_hybrid_analysis(trade, user_info):
+def get_deep_hybrid_analysis(trade, user_info, recent_high=None, recent_low=None):
     """Run deep analysis using Gemini + Puter (hybrid engine) for a scanner trade"""
     pair = trade['pair']
     # Construct original symbol for news and data
@@ -949,6 +960,15 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     # Determine timeframe display
     tf_display = trade['tf']
+
+    # Include recent high/low if available
+    swing_info = ""
+    if recent_high is not None and recent_low is not None:
+        swing_info = f"""
+    **Recent Swing Levels (last 20 candles):**
+    - Highest High: {recent_high:.5f}
+    - Lowest Low: {recent_low:.5f}
+    """
     
     # Prompt for deep analysis
     prompt = f"""
@@ -966,12 +986,13 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     **Recent News Headlines:**
     {news_str}
+    {swing_info}
     
     **Task:**
     1. Evaluate the risk-reward ratio of this trade.
     2. Check if the current price is near entry and if it's a good moment to enter.
     3. Provide a detailed analysis in SINHALA (use English for technical terms).
-    4. Suggest any adjustments to SL/TP based on recent price action.
+    4. Suggest any adjustments to SL/TP based on recent price action and the provided swing levels.
     5. Give a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
     
     **FINAL OUTPUT FORMAT (STRICT):**
@@ -1239,7 +1260,7 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v26.1 (V.HYBRID)</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v16.0 | UNLOCKED</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -1362,7 +1383,10 @@ else:
                 
                 # Use live price for analysis
                 live_price = get_live_price(pair) or curr_p
-                result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf)
+                # Compute recent swing levels from df (last 20 candles)
+                recent_high = df['High'].tail(20).max()
+                recent_low = df['Low'].tail(20).min()
+                result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf, recent_high=recent_high, recent_low=recent_low)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
@@ -1507,7 +1531,30 @@ else:
             # Run analysis if not already done
             if st.session_state.deep_analysis_result is None:
                 with st.spinner("Running deep analysis with Gemini + Puter..."):
-                    result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user)
+                    # Fetch historical data to compute recent swing levels
+                    try:
+                        symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
+                        # Determine interval based on tf
+                        tf_display = st.session_state.selected_trade['tf']
+                        if "Swing" in tf_display:
+                            interval = "4h"
+                            period = "3mo"
+                        else:
+                            interval = "15m"
+                            period = "1mo"
+                        
+                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
+                        if not df_hist.empty and len(df_hist) > 20:
+                            if isinstance(df_hist.columns, pd.MultiIndex):
+                                df_hist.columns = df_hist.columns.get_level_values(0)
+                            recent_high = df_hist['High'].tail(20).max()
+                            recent_low = df_hist['Low'].tail(20).min()
+                        else:
+                            recent_high = recent_low = None
+                    except:
+                        recent_high = recent_low = None
+
+                    result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user, recent_high=recent_high, recent_low=recent_low)
                     st.session_state.deep_analysis_result = result
                     st.session_state.deep_analysis_provider = provider
                     
@@ -1515,22 +1562,9 @@ else:
                     parsed = parse_ai_response(result)  # reuse the same parser
                     forecast_text = parsed.get('FORECAST', '')
                     
-                    # Fetch historical data for chart
+                    # Fetch historical data for chart (again if needed)
                     try:
-                        symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
-                        # Determine interval based on tf
-                        tf_display = st.session_state.selected_trade['tf']
-                        if "Swing" in tf_display:
-                            interval = "4h"
-                            period = "3mo"  # more data for swing
-                        else:
-                            interval = "15m"
-                            period = "1mo"  # more data for scalp
-                        
-                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
-                        if not df_hist.empty and len(df_hist) > 10:
-                            if isinstance(df_hist.columns, pd.MultiIndex):
-                                df_hist.columns = df_hist.columns.get_level_values(0)
+                        if df_hist is not None and not df_hist.empty and len(df_hist) > 10:
                             chart = create_forecast_chart(
                                 df_hist,
                                 st.session_state.selected_trade['entry'],
