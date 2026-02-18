@@ -663,7 +663,7 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# ==================== NEW DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
+# ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
 def get_deep_hybrid_analysis(trade, user_info):
     """Run deep analysis using Gemini + Puter (hybrid engine) for a scanner trade"""
     pair = trade['pair']
@@ -781,7 +781,7 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     return "Deep analysis failed.", "Error"
 
-# ==================== UPDATED SCAN FUNCTION (filter >40%) ====================
+# ==================== SCAN FUNCTION (filter >40%) ====================
 def scan_market(assets_list):
     swing_list = []
     scalp_list = []
@@ -849,7 +849,7 @@ def scan_market(assets_list):
         
     return {"swing": swing_list, "scalp": scalp_list}
 
-# --- UPDATED FORECAST CHART FUNCTION (Entry, SL, TP දැන් පැහැදිලිව පෙන්වයි) ---
+# --- FORECAST CHART FUNCTION (Entry, SL, TP දැන් පැහැදිලිව පෙන්වයි) ---
 def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
     """
     Create a forecast chart with historical candles and projected path.
@@ -1157,7 +1157,6 @@ else:
                 with col3:
                     if st.button("🔍 Deep", key=f"swing_{idx}"):
                         st.session_state.selected_trade = sig
-                        # Clear previous deep analysis
                         st.session_state.deep_analysis_result = None
                         st.session_state.deep_analysis_provider = None
                         st.session_state.deep_forecast_chart = None
@@ -1212,9 +1211,9 @@ else:
                     st.session_state.deep_analysis_result = result
                     st.session_state.deep_analysis_provider = provider
                     
-                    # Parse forecast from result and generate chart
-                    forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", result, re.IGNORECASE | re.DOTALL)
-                    forecast_text = forecast_match.group(1).strip() if forecast_match else ""
+                    # Parse forecast from result
+                    parsed = parse_ai_response(result)  # reuse the same parser
+                    forecast_text = parsed.get('FORECAST', '')
                     
                     # Fetch historical data for chart
                     try:
@@ -1223,12 +1222,13 @@ else:
                         tf_display = st.session_state.selected_trade['tf']
                         if "Swing" in tf_display:
                             interval = "4h"
-                            period = "1mo"
+                            period = "3mo"  # more data for swing
                         else:
                             interval = "15m"
-                            period = "5d"
+                            period = "1mo"  # more data for scalp
+                        
                         df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
-                        if not df_hist.empty:
+                        if not df_hist.empty and len(df_hist) > 10:
                             if isinstance(df_hist.columns, pd.MultiIndex):
                                 df_hist.columns = df_hist.columns.get_level_values(0)
                             chart = create_forecast_chart(
@@ -1239,8 +1239,10 @@ else:
                                 forecast_text
                             )
                             st.session_state.deep_forecast_chart = chart
+                        else:
+                            st.warning("Not enough historical data for forecast chart.")
                     except Exception as e:
-                        st.warning(f"Could not generate forecast chart: {e}")
+                        st.error(f"Error creating forecast chart: {e}")
             
             # Display results
             st.markdown(f"**🤖 Provider:** `{st.session_state.deep_analysis_provider}`")
@@ -1249,6 +1251,8 @@ else:
             # Show forecast chart if available
             if st.session_state.deep_forecast_chart is not None:
                 st.plotly_chart(st.session_state.deep_forecast_chart, use_container_width=True)
+            else:
+                st.info("Forecast chart could not be generated.")
             
             if st.button("Close Analysis"):
                 st.session_state.selected_trade = None
