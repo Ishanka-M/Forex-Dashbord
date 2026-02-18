@@ -161,10 +161,21 @@ if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
-    st.session_state.price_cache = {}  # symbol -> (price, timestamp)
+    st.session_state.price_cache = {}  # clean_pair -> (price, timestamp)
 
 # ==================== HELPER FUNCTIONS ====================
-def get_yf_symbol(clean_pair):
+
+def get_yf_symbol(display_symbol):
+    """
+    Convert a display symbol (from assets list) to yfinance symbol.
+    - Forex/Metals: already end with =X, return as is.
+    - Crypto: end with -USDT, replace with -USD.
+    """
+    if display_symbol.endswith("-USDT"):
+        return display_symbol.replace("-USDT", "-USD")
+    return display_symbol  # already has =X for forex/metals
+
+def clean_pair_to_yf_symbol(clean_pair):
     """
     Convert a clean pair string (as stored in sheet) to yfinance symbol.
     Examples:
@@ -198,7 +209,7 @@ def get_live_price(clean_pair):
             return price
 
     # Convert to yfinance symbol
-    yf_sym = get_yf_symbol(clean_pair)
+    yf_sym = clean_pair_to_yf_symbol(clean_pair)
 
     try:
         ticker = yf.Ticker(yf_sym)
@@ -1008,7 +1019,7 @@ def scan_market(assets_list, active_trades=None):
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
                         "conf": abs(conf_sw), "price": curr_price,
                         "entry": entry, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(symbol) or curr_price,
+                        "live_price": get_live_price(clean_sym) or curr_price,  # Use clean_sym for live price
                         "symbol_orig": symbol
                     }
                     
@@ -1045,7 +1056,7 @@ def scan_market(assets_list, active_trades=None):
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
                         "conf": abs(conf_sc), "price": curr_price,
                         "entry": entry, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(symbol) or curr_price,
+                        "live_price": get_live_price(clean_sym) or curr_price,
                         "symbol_orig": symbol
                     }
                     
