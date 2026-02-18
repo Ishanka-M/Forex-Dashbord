@@ -336,6 +336,28 @@ def check_and_update_trades(username):
         st.error(f"Error checking trades: {e}")
         return []
 
+# --- Helper function to check if a scan result is already tracked ---
+def is_trade_tracked(scan_trade, active_trades):
+    """
+    Check if a scan result (dict with pair, dir, entry) exists in active_trades list.
+    Uses approximate entry price matching (within 0.1%).
+    """
+    for active in active_trades:
+        if active['Pair'] != scan_trade['pair']:
+            continue
+        if active['Direction'] != scan_trade['dir']:
+            continue
+        # Compare entry prices with tolerance (0.1% of entry price)
+        try:
+            active_entry = float(active['Entry'])
+            scan_entry = scan_trade['entry']
+            diff_percent = abs(active_entry - scan_entry) / scan_entry
+            if diff_percent < 0.001:  # 0.1% tolerance
+                return True
+        except:
+            pass
+    return False
+
 # --- Existing helper functions (unchanged) ---
 def get_current_date_str():
     tz = pytz.timezone('Asia/Colombo')
@@ -911,8 +933,12 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     return "Deep analysis failed.", "Error"
 
-# ==================== SCAN FUNCTION (filter >40%) ====================
-def scan_market(assets_list):
+# ==================== UPDATED SCAN FUNCTION (filter >40% AND exclude tracked trades) ====================
+def scan_market(assets_list, active_trades=None):
+    """
+    Scan market for swing and scalp setups with >40% confidence.
+    If active_trades list is provided, exclude any trades that are already being tracked.
+    """
     swing_list = []
     scalp_list = []
     
@@ -938,13 +964,20 @@ def scan_market(assets_list):
                         entry = curr_price
                         sl = entry + (atr_sw * 1.5)
                         tp = entry - (atr_sw * 3.5)
-                    swing_list.append({
+                    
+                    trade_candidate = {
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
                         "conf": abs(conf_sw), "price": curr_price,
                         "entry": entry, "sl": sl, "tp": tp,
                         "live_price": get_live_price(symbol) or curr_price,
-                        "symbol_orig": symbol  # store original symbol for later use
-                    })
+                        "symbol_orig": symbol
+                    }
+                    
+                    # If active_trades provided, check if this trade is already tracked
+                    if active_trades and is_trade_tracked(trade_candidate, active_trades):
+                        continue  # skip this trade
+                    
+                    swing_list.append(trade_candidate)
         except: pass
         
     # --- SCALP SCAN (15M) ---
@@ -968,13 +1001,19 @@ def scan_market(assets_list):
                         entry = curr_price
                         sl = entry + (atr_sc * 1.2)
                         tp = entry - (atr_sc * 2.0)
-                    scalp_list.append({
+                    
+                    trade_candidate = {
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
                         "conf": abs(conf_sc), "price": curr_price,
                         "entry": entry, "sl": sl, "tp": tp,
                         "live_price": get_live_price(symbol) or curr_price,
                         "symbol_orig": symbol
-                    })
+                    }
+                    
+                    if active_trades and is_trade_tracked(trade_candidate, active_trades):
+                        continue
+                    
+                    scalp_list.append(trade_candidate)
         except: pass
         
     return {"swing": swing_list, "scalp": scalp_list}
@@ -1248,7 +1287,9 @@ else:
         if st.button("Start Global Scan (All Pairs)", type="primary"):
             with st.spinner("Scanning markets for High Probability Setups (>40%)..."):
                 all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
-                results = scan_market(all_scan_assets)
+                # Load active trades for this user to exclude them from scan results
+                active_trades = load_user_trades(user_info['Username'], status='Active')
+                results = scan_market(all_scan_assets, active_trades)
                 st.session_state.scan_results = results
                 
                 if not results['swing'] and not results['scalp']:
