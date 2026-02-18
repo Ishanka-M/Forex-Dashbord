@@ -159,6 +159,7 @@ if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {
 if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
 if "forecast_chart" not in st.session_state: st.session_state.forecast_chart = None
+if "selected_trade" not in st.session_state: st.session_state.selected_trade = None  # For deep analysis
 
 # ==================== NEW HELPER FUNCTIONS ====================
 def get_yf_symbol(symbol):
@@ -659,7 +660,92 @@ def parse_ai_response(text):
     except: pass
     return data
 
-# ==================== UPDATED SCAN FUNCTION ====================
+# ==================== NEW FUNCTION FOR DEEP ANALYSIS ====================
+def get_deep_analysis_for_trade(trade, user_info):
+    """Run a deep analysis for a specific trade using Gemini"""
+    pair = trade['pair']
+    # Convert to yfinance symbol for news etc.
+    if pair in [a.replace("=X","").replace("-USD","").replace("-USDT","") for a in assets["Forex"]]:
+        # Find the original symbol from assets
+        for cat in assets.values():
+            for sym in cat:
+                if pair in sym:
+                    orig_sym = sym
+                    break
+            else:
+                continue
+            break
+        else:
+            orig_sym = pair + "=X"  # guess
+    else:
+        # crypto
+        orig_sym = pair + "-USDT" if pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"] else pair + "=X"
+    
+    news_items = get_market_news(orig_sym)
+    news_str = "\n".join([f"- {n['title']}" for n in news_items])
+    
+    prompt = f"""
+    Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
+    Perform a deep analysis of the following trade setup:
+    
+    **Asset:** {pair}
+    **Timeframe:** {trade['tf']}
+    **Direction:** {trade['dir']}
+    **Entry:** {trade['entry']:.5f}
+    **Stop Loss:** {trade['sl']:.5f}
+    **Take Profit:** {trade['tp']:.5f}
+    **Confidence:** {trade['conf']}%
+    **Current Live Price:** {trade['live_price']:.5f}
+    
+    **Recent News Headlines:**
+    {news_str}
+    
+    **Task:**
+    1. Evaluate the risk-reward ratio of this trade.
+    2. Check if the current price is near entry and if it's a good moment to enter.
+    3. Provide a detailed analysis in SINHALA (use English for technical terms).
+    4. Suggest any adjustments to SL/TP based on recent price action.
+    5. Give a short-term forecast (next 5-10 candles).
+    
+    **FINAL OUTPUT FORMAT:**
+    [Sinhala Analysis]
+    
+    RISK:REWARD = x:y
+    VERDICT: [BUY/SELL/WAIT]
+    """
+    
+    gemini_keys = []
+    for i in range(1, 8):
+        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
+        if k: gemini_keys.append(k)
+    
+    response_text = ""
+    if not gemini_keys:
+        return "Gemini API keys not configured."
+    
+    for idx, key in enumerate(gemini_keys):
+        try:
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel('gemini-3-flash-preview')
+            response = model.generate_content(prompt)
+            response_text = response.text
+            break
+        except:
+            continue
+    
+    if not response_text:
+        return "Deep analysis failed. Please try again."
+    
+    # Update usage count
+    if user_info["Username"] != "Admin":
+        new_usage = user_info.get("UsageCount", 0) + 1
+        user_info["UsageCount"] = new_usage
+        st.session_state.user = user_info
+        update_usage_in_db(user_info["Username"], new_usage)
+    
+    return response_text
+
+# ==================== UPDATED SCAN FUNCTION (filter >40%) ====================
 def scan_market(assets_list):
     swing_list = []
     scalp_list = []
@@ -672,8 +758,8 @@ def scan_market(assets_list):
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
-                # Filter: > 25% Accuracy
-                if abs(conf_sw) > 25: 
+                # Filter: > 40% Accuracy (changed from 25)
+                if abs(conf_sw) > 40: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
@@ -702,8 +788,8 @@ def scan_market(assets_list):
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
                 sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m")
                 
-                # Filter: > 25% Accuracy
-                if abs(conf_sc) > 25: 
+                # Filter: > 40% Accuracy
+                if abs(conf_sc) > 40: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     curr_price = df_sc['Close'].iloc[-1]
@@ -991,53 +1077,94 @@ else:
         st.title("📡 Global Market Scanner (Multi-Timeframe)")
         
         if st.button("Start Global Scan (All Pairs)", type="primary"):
-            with st.spinner("Scanning markets for High Probability Setups (>25%)..."):
+            with st.spinner("Scanning markets for High Probability Setups (>40%)..."):
                 all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
                 results = scan_market(all_scan_assets)
                 st.session_state.scan_results = results
                 
                 if not results['swing'] and not results['scalp']:
-                    st.warning("No signals found above 25% accuracy.")
+                    st.warning("No signals found above 40% accuracy.")
                 else:
                     st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
-            
-        # Display Results with animation class and entry/sl/tp
+        
+        # Display Results with progress bar and deep analysis button
         res = st.session_state.scan_results
         
         st.markdown("---")
-        c1, c2 = st.columns(2)
         
-        with c1:
-            st.subheader("🐢 SWING TRADES (4H)")
-            if res['swing']:
-                for i, sig in enumerate(res['swing']):
+        # --- SWING SECTION ---
+        st.subheader("🐢 SWING TRADES (4H)")
+        if res['swing']:
+            for idx, sig in enumerate(res['swing']):
+                # Calculate progress towards entry
+                max_diff = abs(sig['entry'] - sig['sl'])
+                if max_diff > 0:
+                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
+                    progress = max(0, min(1, progress))
+                else:
+                    progress = 0
+                
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     st.markdown(f"""
-                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
-                        <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
-                        <p style='margin:5px 0; color:#aaa;'>Price: {sig['price']:.4f} | Live: {sig['live_price']:.4f}</p>
-                        <p style='margin:5px 0; color:#00d4ff;'>Entry: {sig['entry']:.4f} | SL: <span style='color:#ff4b4b;'>{sig['sl']:.4f}</span> | TP: <span style='color:#00ff00;'>{sig['tp']:.4f}</span></p>
-                        <p style='margin:5px 0 0 0; color:#aaa;'>Accuracy: <b>{sig['conf']}%</b></p>
+                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
+                        <b>{sig['pair']} | {sig['dir']}</b><br>
+                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
+                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
                     </div>
                     """, unsafe_allow_html=True)
-            else:
-                st.info("No Swing setups found.")
-
-        with c2:
-            st.subheader("🐇 SCALP TRADES (15M)")
-            if res['scalp']:
-                for i, sig in enumerate(res['scalp']):
+                with col2:
+                    st.progress(progress, text="Approach")
+                with col3:
+                    if st.button("🔍 Deep", key=f"swing_{idx}"):
+                        st.session_state.selected_trade = sig
+                        st.rerun()
+        else:
+            st.info("No Swing setups found.")
+        
+        st.markdown("---")
+        
+        # --- SCALP SECTION ---
+        st.subheader("🐇 SCALP TRADES (15M)")
+        if res['scalp']:
+            for idx, sig in enumerate(res['scalp']):
+                max_diff = abs(sig['entry'] - sig['sl'])
+                if max_diff > 0:
+                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
+                    progress = max(0, min(1, progress))
+                else:
+                    progress = 0
+                
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     st.markdown(f"""
-                    <div class='scan-card' style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'>
-                        <h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3>
-                        <p style='margin:5px 0; color:#aaa;'>Price: {sig['price']:.4f} | Live: {sig['live_price']:.4f}</p>
-                        <p style='margin:5px 0; color:#00d4ff;'>Entry: {sig['entry']:.4f} | SL: <span style='color:#ff4b4b;'>{sig['sl']:.4f}</span> | TP: <span style='color:#00ff00;'>{sig['tp']:.4f}</span></p>
-                        <p style='margin:5px 0 0 0; color:#aaa;'>Accuracy: <b>{sig['conf']}%</b></p>
+                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
+                        <b>{sig['pair']} | {sig['dir']}</b><br>
+                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
+                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
                     </div>
                     """, unsafe_allow_html=True)
-            else:
-                st.info("No Scalp setups found.")
+                with col2:
+                    st.progress(progress, text="Approach")
+                with col3:
+                    if st.button("🔍 Deep", key=f"scalp_{idx}"):
+                        st.session_state.selected_trade = sig
+                        st.rerun()
+        else:
+            st.info("No Scalp setups found.")
+        
+        # Show deep analysis result if a trade was selected
+        if st.session_state.selected_trade:
+            st.markdown("---")
+            st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
+            with st.spinner("Analyzing with Gemini..."):
+                analysis = get_deep_analysis_for_trade(st.session_state.selected_trade, st.session_state.user)
+            st.markdown(f"<div class='entry-box'>{analysis}</div>", unsafe_allow_html=True)
+            if st.button("Close Analysis"):
+                st.session_state.selected_trade = None
+                st.rerun()
 
     elif app_mode == "Trader Chat":
         st.title("💬 Global Trader Room")
