@@ -160,71 +160,66 @@ if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analy
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 
 # Cache for live prices (to avoid rate limits)
-if "_live_price_cache" not in st.session_state:
-    st.session_state._live_price_cache = {}
-    st.session_state._cache_time = {}
+if "price_cache" not in st.session_state:
+    st.session_state.price_cache = {}  # symbol -> (price, timestamp)
 
 # ==================== HELPER FUNCTIONS ====================
-def get_yf_symbol(symbol):
-    """Convert display symbol to yfinance symbol (e.g., BTC-USDT -> BTC-USD)"""
-    if symbol.endswith("-USDT"):
-        return symbol.replace("-USDT", "-USD")
-    return symbol
+def get_yf_symbol(clean_pair):
+    """
+    Convert a clean pair string (as stored in sheet) to yfinance symbol.
+    Examples:
+        EURUSD -> EURUSD=X
+        XAUUSD -> XAUUSD=X
+        BTCUSDT -> BTC-USD
+    """
+    # If it's a known metal
+    if clean_pair in ["XAUUSD", "XAGUSD", "XPTUSD", "XPDUSD"]:
+        return clean_pair + "=X"
+    # If it ends with USDT (crypto)
+    if clean_pair.endswith("USDT"):
+        # BTCUSDT -> BTC-USD
+        base = clean_pair[:-4]  # remove USDT
+        return base + "-USD"
+    # Otherwise assume forex or index, add =X
+    return clean_pair + "=X"
 
-def get_live_price(symbol):
-    """Fetch current live price using appropriate API based on symbol type"""
+def get_live_price(clean_pair):
+    """
+    Fetch current live price using yfinance with caching.
+    clean_pair is the pair string as stored in the sheet (e.g., EURUSD, BTCUSDT, XAUUSD).
+    """
     current_time = time.time()
-    
-    # Check cache (1 minute)
-    if symbol in st.session_state._cache_time:
-        if current_time - st.session_state._cache_time[symbol] < 60:
-            return st.session_state._live_price_cache[symbol]
-    
-    # For crypto pairs (ending with USDT or USD)
-    if symbol.endswith("-USDT") or symbol.endswith("USDT") or (symbol.endswith("-USD") and "=X" not in symbol):
-        # Use Binance API
-        try:
-            # Convert to Binance format (remove - and use uppercase)
-            binance_symbol = symbol.replace("-", "").replace("USDT", "USDT").upper()
-            # If it ends with USD but not USDT (like BTC-USD), use BTCUSDT
-            if binance_symbol.endswith("USD") and not binance_symbol.endswith("USDT"):
-                binance_symbol = binance_symbol.replace("USD", "USDT")
-            
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_symbol}"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                price = float(data['price'])
-                st.session_state._live_price_cache[symbol] = price
-                st.session_state._cache_time[symbol] = current_time
-                return price
-        except Exception as e:
-            print(f"Binance API error for {symbol}: {e}")
-    
-    # For other symbols (Forex, Metals), use yfinance
+    cache_duration = 60  # seconds
+
+    # Check cache
+    if clean_pair in st.session_state.price_cache:
+        price, timestamp = st.session_state.price_cache[clean_pair]
+        if current_time - timestamp < cache_duration:
+            return price
+
+    # Convert to yfinance symbol
+    yf_sym = get_yf_symbol(clean_pair)
+
     try:
-        ticker = yf.Ticker(get_yf_symbol(symbol))
-        # Try to get latest price from 1-minute data
+        ticker = yf.Ticker(yf_sym)
+        # Try to get latest price from 1-minute data (fast)
         hist = ticker.history(period="1d", interval="1m")
         if not hist.empty:
             price = float(hist['Close'].iloc[-1])
-            st.session_state._live_price_cache[symbol] = price
-            st.session_state._cache_time[symbol] = current_time
+            st.session_state.price_cache[clean_pair] = (price, current_time)
             return price
         # Fallback to fast_info
         if hasattr(ticker, 'fast_info') and ticker.fast_info:
             price = ticker.fast_info['lastPrice']
-            st.session_state._live_price_cache[symbol] = price
-            st.session_state._cache_time[symbol] = current_time
+            st.session_state.price_cache[clean_pair] = (price, current_time)
             return price
         # Fallback to regularMarketPrice from info
         price = ticker.info.get('regularMarketPrice', None)
         if price:
-            st.session_state._live_price_cache[symbol] = price
-            st.session_state._cache_time[symbol] = current_time
+            st.session_state.price_cache[clean_pair] = (price, current_time)
         return price
     except Exception as e:
-        print(f"yfinance error for {symbol}: {e}")
+        print(f"Error fetching price for {clean_pair} via {yf_sym}: {e}")
         return None
 
 # --- Google Sheets Functions (User DB) ---
@@ -333,17 +328,8 @@ def check_and_update_trades(username):
         for idx, record in enumerate(records):
             if record.get('User') == username and record.get('Status') == 'Active':
                 # Get current live price
-                pair = record['Pair']
-                # Construct original symbol for live price
-                if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                    if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                        orig_sym = pair + "=X"
-                    else:
-                        orig_sym = pair + "-USDT"
-                else:
-                    orig_sym = pair
-                
-                live = get_live_price(orig_sym)
+                pair = record['Pair']  # This is clean pair (e.g., EURUSD, BTCUSDT)
+                live = get_live_price(pair)
                 if live is None:
                     continue
                 
@@ -1515,14 +1501,7 @@ else:
                     
                     # Get live price for display
                     pair = trade['Pair']
-                    if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                        if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-                            orig_sym = pair + "=X"
-                        else:
-                            orig_sym = pair + "-USDT"
-                    else:
-                        orig_sym = pair
-                    live = get_live_price(orig_sym)
+                    live = get_live_price(pair)
                     live_display = f"{live:.4f}" if live else "N/A"
                     
                     st.markdown(f"""
