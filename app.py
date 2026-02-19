@@ -247,6 +247,7 @@ if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analy
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 if "selected_market" not in st.session_state: st.session_state.selected_market = "All"
 if "min_accuracy" not in st.session_state: st.session_state.min_accuracy = 40  # default
+if "selected_theory" not in st.session_state: st.session_state.selected_theory = None  # for theory analysis
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -1124,6 +1125,41 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     return "Deep analysis failed.", "Error"
 
+# ==================== THEORY ANALYSIS FUNCTION ====================
+def generate_theory_analysis(theory_key, sigs, pair, tf, price):
+    """Generate a detailed explanation for a selected theory."""
+    desc, direction = sigs.get(theory_key, ("N/A", "neutral"))
+    analysis = f"**{theory_key} Analysis for {pair} ({tf})**\n\n"
+    analysis += f"**Signal:** {desc}\n"
+    analysis += f"**Direction:** {direction.upper()}\n"
+    analysis += f"**Current Price:** {price:.5f}\n\n"
+    
+    # Additional details based on theory
+    if theory_key == "TREND":
+        analysis += "The trend is determined by comparing current price to 50 and 200-period moving averages. A bullish trend indicates price above both MAs, bearish below both, neutral otherwise."
+    elif theory_key == "SMC":
+        analysis += "Smart Money Concepts: Break of Structure (BOS) indicates a potential shift in market structure. Bullish BOS occurs when price breaks above recent highs, bearish when breaks below recent lows."
+    elif theory_key == "ELLIOTT":
+        analysis += "Elliott Wave analysis suggests the market moves in 5-wave impulsive patterns followed by 3-wave corrective patterns. Current wave count is based on price position within the recent range."
+    elif theory_key == "LIQ":
+        analysis += "Liquidity analysis: Sweeping of highs or lows indicates potential reversal zones. Bullish liquidity grab occurs when price takes out recent lows, bearish when taking out recent highs."
+    elif theory_key == "PATT":
+        analysis += "Candlestick patterns: Bullish engulfing, bearish engulfing, etc. These patterns indicate potential reversals."
+    elif theory_key == "ICT":
+        analysis += "ICT Fair Value Gap (FVG): A three-candle pattern where the middle candle's wick leaves a gap. Bullish FVG when low of current > high of two bars ago, bearish when high of current < low of two bars ago."
+    elif theory_key == "VOLATILITY":
+        analysis += "Bollinger Bands: Overextended conditions suggest mean reversion. Oversold (below lower band) is bullish, overbought (above upper band) is bearish."
+    elif theory_key == "RSI":
+        analysis += "Relative Strength Index: Overbought (>70) suggests bearish reversal, oversold (<30) suggests bullish reversal."
+    elif theory_key == "FIB":
+        analysis += "Fibonacci levels: Golden zone (0.5-0.618) often acts as support/resistance. Price near these levels may bounce."
+    elif theory_key == "RETAIL":
+        analysis += "Retail sentiment: Based on RSI, extreme readings indicate retail crowding and potential contrarian moves."
+    else:
+        analysis += "Analysis based on the selected theory."
+    
+    return analysis
+
 # ==================== UPDATED SCAN FUNCTION (filter > min_accuracy AND exclude tracked trades) ====================
 def scan_market(assets_list, active_trades=None, min_accuracy=40):
     """
@@ -1402,26 +1438,99 @@ else:
             else: 
                 st.markdown(f"<div class='notif-container notif-wait'>📡 Neutral Market (Accuracy {abs(conf_score)}%)</div>", unsafe_allow_html=True)
 
-            # --- SIGNAL GRID ---
+            # --- SIGNAL GRID (with clickable info buttons) ---
             r1c1, r1c2, r1c3 = st.columns(3)
-            r1c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
-            r1c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
-            r1c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
+            with r1c1:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_TREND", help="Analyze this theory"):
+                        st.session_state.selected_theory = "TREND"
+                        st.rerun()
+            with r1c2:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_SMC", help="Analyze this theory"):
+                        st.session_state.selected_theory = "SMC"
+                        st.rerun()
+            with r1c3:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_ELLIOTT", help="Analyze this theory"):
+                        st.session_state.selected_theory = "ELLIOTT"
+                        st.rerun()
             
             r2c1, r2c2, r2c3 = st.columns(3)
-            r2c1.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>{sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
-            r2c2.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>{sigs['PATT'][0]}</div>", unsafe_allow_html=True)
-            r2c3.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
+            with r2c1:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>{sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_LIQ", help="Analyze this theory"):
+                        st.session_state.selected_theory = "LIQ"
+                        st.rerun()
+            with r2c2:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>{sigs['PATT'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_PATT", help="Analyze this theory"):
+                        st.session_state.selected_theory = "PATT"
+                        st.rerun()
+            with r2c3:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_ICT", help="Analyze this theory"):
+                        st.session_state.selected_theory = "ICT"
+                        st.rerun()
             
             r3c1, r3c2, r3c3 = st.columns(3)
-            r3c1.markdown(f"<div class='sig-box {sigs['RSI'][1]}'>{sigs['RSI'][0]}</div>", unsafe_allow_html=True)
-            r3c2.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
-            r3c3.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>{sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
+            with r3c1:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['RSI'][1]}'>{sigs['RSI'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_RSI", help="Analyze this theory"):
+                        st.session_state.selected_theory = "RSI"
+                        st.rerun()
+            with r3c2:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_FIB", help="Analyze this theory"):
+                        st.session_state.selected_theory = "FIB"
+                        st.rerun()
+            with r3c3:
+                sub1, sub2 = st.columns([4,1])
+                with sub1:
+                    st.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>{sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
+                with sub2:
+                    if st.button("ℹ️", key="info_RETAIL", help="Analyze this theory"):
+                        st.session_state.selected_theory = "RETAIL"
+                        st.rerun()
             
-            # --- CHART ---
-            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+            # --- CHART OR THEORY ANALYSIS ---
+            if st.session_state.selected_theory:
+                st.markdown("### 📊 Theory Analysis")
+                st.markdown(f"**Selected Theory:** {st.session_state.selected_theory}")
+                analysis = generate_theory_analysis(st.session_state.selected_theory, sigs, pair.replace("=X", "").replace("-USD", "").replace("-USDT", ""), tf, curr_p)
+                st.markdown(f"<div class='entry-box'>{analysis}</div>", unsafe_allow_html=True)
+                if st.button("← Back to Chart"):
+                    st.session_state.selected_theory = None
+                    st.rerun()
+            else:
+                # Show chart only when no theory selected
+                fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+                fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
+                st.plotly_chart(fig, use_container_width=True)
 
             st.markdown(f"### 🎯 Hybrid AI Signal Card")
             parsed = st.session_state.ai_parsed_data
