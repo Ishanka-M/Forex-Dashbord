@@ -778,8 +778,9 @@ def calculate_advanced_signals(df, tf):
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence
 
-# --- 5. INFINITE ALGORITHMIC ENGINE ---
-def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
+# --- 5. INFINITE ALGORITHMIC ENGINE (IMPROVED SL/TP using recent swing levels) ---
+# IMPROVED: Added recent_high and recent_low parameters to refine SL/TP based on structure
+def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, recent_high=None, recent_low=None):
     if sigs is None: return "Insufficient Data for Analysis"
     
     confidence = sigs['SK'][0]
@@ -790,23 +791,71 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         trade_mode = "SCALPING (වේගවත්)"
         sl_mult = 1.2
         tp_mult = 2.0
+        # IMPROVED: Use fewer candles for recent levels in scalping
+        lookback = 10
     else:
         trade_mode = "SWING (දිගු කාලීන)"
         sl_mult = 1.5
         tp_mult = 3.5
+        lookback = 20
 
     action = "WAIT"
     status_sinhala = "ප්‍රවේශම් වන්න. වෙළඳපල අවිනිශ්චිතයි."
     sl, tp = 0, 0
     
+    # IMPROVED: Use recent swing levels if available to set more accurate SL/TP
     if signal_dir == "bull":
         action = "BUY"
         status_sinhala = "වෙළඳපල ගැනුම්කරුවන් අත. (Market is Bullish)"
-        sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
+        
+        # Calculate SL based on recent low (if available)
+        if recent_low is not None:
+            # Place SL just below recent low with a small buffer
+            sl_candidate = recent_low - (atr * 0.2)
+            # Ensure SL is not too close to entry (minimum distance = 1.0 * ATR)
+            min_sl_distance = atr * 1.0
+            if (curr_p - sl_candidate) < min_sl_distance:
+                sl = curr_p - min_sl_distance
+            else:
+                sl = sl_candidate
+        else:
+            sl = curr_p - (atr * sl_mult)
+        
+        # Calculate TP based on risk-reward (2:1 or higher depending on confidence)
+        sl_distance = curr_p - sl
+        # IMPROVED: Adjust TP multiplier based on confidence
+        conf_value = abs(float(confidence.split('%')[0].split(':')[-1].strip())) if 'CONFIDENCE:' in confidence else 50
+        if conf_value > 70:
+            rr_ratio = 3.0
+        elif conf_value > 50:
+            rr_ratio = 2.5
+        else:
+            rr_ratio = 2.0
+        tp = curr_p + (sl_distance * rr_ratio)
+        
     elif signal_dir == "bear":
         action = "SELL"
         status_sinhala = "වෙළඳපල විකුණුම්කරුවන් අත. (Market is Bearish)"
-        sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
+        
+        if recent_high is not None:
+            sl_candidate = recent_high + (atr * 0.2)
+            min_sl_distance = atr * 1.0
+            if (sl_candidate - curr_p) < min_sl_distance:
+                sl = curr_p + min_sl_distance
+            else:
+                sl = sl_candidate
+        else:
+            sl = curr_p + (atr * sl_mult)
+        
+        sl_distance = sl - curr_p
+        conf_value = abs(float(confidence.split('%')[0].split(':')[-1].strip())) if 'CONFIDENCE:' in confidence else 50
+        if conf_value > 70:
+            rr_ratio = 3.0
+        elif conf_value > 50:
+            rr_ratio = 2.5
+        else:
+            rr_ratio = 2.0
+        tp = curr_p - (sl_distance * rr_ratio)
 
     analysis_text = f"""
     ♾️ **INFINITE ALGO ENGINE V16.0**
@@ -829,7 +878,8 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, recent_high=None, recent_low=None):
     if sigs is None: return "Error: Insufficient Signal Data", "System Error"
     
-    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
+    # IMPROVED: Pass recent_high and recent_low to infinite_algorithmic_engine
+    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf, recent_high, recent_low)
     
     current_usage = user_info.get("UsageCount", 0)
     max_limit = user_info.get("HybridLimit", 10)
@@ -1086,15 +1136,47 @@ def scan_market(assets_list, active_trades=None):
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
-                    # Calculate entry, SL, TP based on direction and ATR
+                    
+                    # IMPROVED: Compute recent swing levels from df_sw
+                    recent_high = df_sw['High'].tail(20).max()
+                    recent_low = df_sw['Low'].tail(20).min()
+                    
+                    # IMPROVED: Calculate entry, SL, TP using the new logic
                     if direction == "BUY":
                         entry = curr_price
-                        sl = entry - (atr_sw * 1.5)   # swing SL multiplier
-                        tp = entry + (atr_sw * 3.5)   # swing TP multiplier
-                    else:
+                        # SL just below recent low with buffer, min distance = ATR
+                        sl_candidate = recent_low - (atr_sw * 0.2)
+                        min_sl_distance = atr_sw * 1.0
+                        if (entry - sl_candidate) < min_sl_distance:
+                            sl = entry - min_sl_distance
+                        else:
+                            sl = sl_candidate
+                        # TP with risk-reward based on confidence
+                        sl_distance = entry - sl
+                        # Use confidence to determine RR ratio
+                        if abs(conf_sw) > 70:
+                            rr = 3.0
+                        elif abs(conf_sw) > 50:
+                            rr = 2.5
+                        else:
+                            rr = 2.0
+                        tp = entry + (sl_distance * rr)
+                    else:  # SELL
                         entry = curr_price
-                        sl = entry + (atr_sw * 1.5)
-                        tp = entry - (atr_sw * 3.5)
+                        sl_candidate = recent_high + (atr_sw * 0.2)
+                        min_sl_distance = atr_sw * 1.0
+                        if (sl_candidate - entry) < min_sl_distance:
+                            sl = entry + min_sl_distance
+                        else:
+                            sl = sl_candidate
+                        sl_distance = sl - entry
+                        if abs(conf_sw) > 70:
+                            rr = 3.0
+                        elif abs(conf_sw) > 50:
+                            rr = 2.5
+                        else:
+                            rr = 2.0
+                        tp = entry - (sl_distance * rr)
                     
                     trade_candidate = {
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
@@ -1109,7 +1191,9 @@ def scan_market(assets_list, active_trades=None):
                         continue  # skip this trade
                     
                     swing_list.append(trade_candidate)
-        except: pass
+        except Exception as e:
+            print(f"Error scanning {symbol}: {e}")
+            pass
         
     # --- SCALP SCAN (15M) ---
     for symbol in assets_list:
@@ -1124,14 +1208,43 @@ def scan_market(assets_list, active_trades=None):
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     curr_price = df_sc['Close'].iloc[-1]
+                    
+                    # IMPROVED: For scalp, use shorter lookback (10 candles)
+                    recent_high = df_sc['High'].tail(10).max()
+                    recent_low = df_sc['Low'].tail(10).min()
+                    
                     if direction == "BUY":
                         entry = curr_price
-                        sl = entry - (atr_sc * 1.2)   # scalp SL multiplier
-                        tp = entry + (atr_sc * 2.0)   # scalp TP multiplier
+                        sl_candidate = recent_low - (atr_sc * 0.2)
+                        min_sl_distance = atr_sc * 1.0
+                        if (entry - sl_candidate) < min_sl_distance:
+                            sl = entry - min_sl_distance
+                        else:
+                            sl = sl_candidate
+                        sl_distance = entry - sl
+                        if abs(conf_sc) > 70:
+                            rr = 2.5  # scalp usually smaller RR
+                        elif abs(conf_sc) > 50:
+                            rr = 2.0
+                        else:
+                            rr = 1.5
+                        tp = entry + (sl_distance * rr)
                     else:
                         entry = curr_price
-                        sl = entry + (atr_sc * 1.2)
-                        tp = entry - (atr_sc * 2.0)
+                        sl_candidate = recent_high + (atr_sc * 0.2)
+                        min_sl_distance = atr_sc * 1.0
+                        if (sl_candidate - entry) < min_sl_distance:
+                            sl = entry + min_sl_distance
+                        else:
+                            sl = sl_candidate
+                        sl_distance = sl - entry
+                        if abs(conf_sc) > 70:
+                            rr = 2.5
+                        elif abs(conf_sc) > 50:
+                            rr = 2.0
+                        else:
+                            rr = 1.5
+                        tp = entry - (sl_distance * rr)
                     
                     trade_candidate = {
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
@@ -1145,7 +1258,9 @@ def scan_market(assets_list, active_trades=None):
                         continue
                     
                     scalp_list.append(trade_candidate)
-        except: pass
+        except Exception as e:
+            print(f"Error scanning {symbol}: {e}")
+            pass
         
     return {"swing": swing_list, "scalp": scalp_list}
 
@@ -1383,9 +1498,14 @@ else:
                 
                 # Use live price for analysis
                 live_price = get_live_price(pair) or curr_p
-                # Compute recent swing levels from df (last 20 candles)
-                recent_high = df['High'].tail(20).max()
-                recent_low = df['Low'].tail(20).min()
+                # Compute recent swing levels from df (last 20 candles for swing, but we'll use same df)
+                # For terminal, we can compute based on timeframe: if tf is scalp, use shorter lookback
+                if tf in ["1m","5m","15m"]:
+                    lookback = 10
+                else:
+                    lookback = 20
+                recent_high = df['High'].tail(lookback).max()
+                recent_low = df['Low'].tail(lookback).min()
                 result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf, recent_high=recent_high, recent_low=recent_low)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
