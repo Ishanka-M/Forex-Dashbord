@@ -19,6 +19,11 @@ st.set_page_config(page_title="Infinite Algo Terminal v26.0", layout="wide", pag
 
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    /* Professional font stack */
+    * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+    
     /* --- ANIMATIONS & GLOBAL STYLES --- */
     @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); } }
@@ -1564,11 +1569,21 @@ else:
                         st.session_state.deep_forecast_chart = None
                         st.rerun()
                 with col4:
-                    if st.button("📌 Track", key=f"swing_track_{idx}"):
-                        if save_trade_to_ongoing(sig, user_info['Username']):
-                            st.success("Trade saved to Ongoing Trades!")
-                            time.sleep(1)
-                            st.rerun()
+                    # Replace simple Track button with popover for adjustable capture
+                    with st.popover("📌 Track"):
+                        st.markdown(f"Adjust trade parameters for {sig['pair']}")
+                        new_entry = st.number_input("Entry", value=float(sig['entry']), format="%.5f", key=f"entry_swing_{idx}")
+                        new_sl = st.number_input("Stop Loss", value=float(sig['sl']), format="%.5f", key=f"sl_swing_{idx}")
+                        new_tp = st.number_input("Take Profit", value=float(sig['tp']), format="%.5f", key=f"tp_swing_{idx}")
+                        if st.button("Confirm Track", key=f"confirm_swing_{idx}"):
+                            adjusted_trade = sig.copy()
+                            adjusted_trade['entry'] = new_entry
+                            adjusted_trade['sl'] = new_sl
+                            adjusted_trade['tp'] = new_tp
+                            if save_trade_to_ongoing(adjusted_trade, user_info['Username']):
+                                st.success("Trade saved to Ongoing Trades!")
+                                time.sleep(1)
+                                st.rerun()
         else:
             st.info("No Swing setups found.")
         
@@ -1605,11 +1620,20 @@ else:
                         st.session_state.deep_forecast_chart = None
                         st.rerun()
                 with col4:
-                    if st.button("📌 Track", key=f"scalp_track_{idx}"):
-                        if save_trade_to_ongoing(sig, user_info['Username']):
-                            st.success("Trade saved to Ongoing Trades!")
-                            time.sleep(1)
-                            st.rerun()
+                    with st.popover("📌 Track"):
+                        st.markdown(f"Adjust trade parameters for {sig['pair']}")
+                        new_entry = st.number_input("Entry", value=float(sig['entry']), format="%.5f", key=f"entry_scalp_{idx}")
+                        new_sl = st.number_input("Stop Loss", value=float(sig['sl']), format="%.5f", key=f"sl_scalp_{idx}")
+                        new_tp = st.number_input("Take Profit", value=float(sig['tp']), format="%.5f", key=f"tp_scalp_{idx}")
+                        if st.button("Confirm Track", key=f"confirm_scalp_{idx}"):
+                            adjusted_trade = sig.copy()
+                            adjusted_trade['entry'] = new_entry
+                            adjusted_trade['sl'] = new_sl
+                            adjusted_trade['tp'] = new_tp
+                            if save_trade_to_ongoing(adjusted_trade, user_info['Username']):
+                                st.success("Trade saved to Ongoing Trades!")
+                                time.sleep(1)
+                                st.rerun()
         else:
             st.info("No Scalp setups found.")
         
@@ -1695,40 +1719,21 @@ else:
                     live = get_live_price(pair)
                     live_display = f"{live:.4f}" if live else "N/A"
                     
-                    # Calculate progress towards TP or SL
+                    # Calculate progress towards entry (how close current price is to entry)
                     progress_value = 0.0
-                    progress_text = ""
+                    progress_text = "Approach to Entry"
                     try:
                         entry = float(trade['Entry'])
                         sl = float(trade['SL'])
                         tp = float(trade['TP'])
                         if live is not None:
-                            if trade['Direction'] == "BUY":
-                                if live >= entry:
-                                    # Profit zone: progress towards TP
-                                    total = tp - entry
-                                    if total > 0:
-                                        progress_value = min((live - entry) / total, 1.0)
-                                    progress_text = "TP Progress"
-                                else:
-                                    # Loss zone: progress towards SL
-                                    total = entry - sl
-                                    if total > 0:
-                                        progress_value = min((entry - live) / total, 1.0)
-                                    progress_text = "SL Progress"
-                            else:  # SELL
-                                if live <= entry:
-                                    # Profit zone (price down)
-                                    total = entry - tp
-                                    if total > 0:
-                                        progress_value = min((entry - live) / total, 1.0)
-                                    progress_text = "TP Progress"
-                                else:
-                                    # Loss zone (price up)
-                                    total = sl - entry
-                                    if total > 0:
-                                        progress_value = min((live - entry) / total, 1.0)
-                                    progress_text = "SL Progress"
+                            # Use the larger of (entry-sl) and (tp-entry) as the range for normalization
+                            range_to_sl = abs(entry - sl)
+                            range_to_tp = abs(tp - entry)
+                            max_range = max(range_to_sl, range_to_tp) if max(range_to_sl, range_to_tp) > 0 else 1.0
+                            # Progress = 1 - (distance from live to entry) / max_range, capped 0-1
+                            distance = abs(live - entry)
+                            progress_value = max(0.0, min(1.0, 1.0 - (distance / max_range)))
                     except:
                         pass
                     
