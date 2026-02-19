@@ -171,6 +171,62 @@ st.markdown("""
         margin-bottom: 20px;
         border-left: 5px solid #00d4ff;
     }
+    
+    /* --- ADDITIONAL PROFESSIONAL TOUCHES --- */
+    .main-title {
+        text-align: center;
+        background: linear-gradient(135deg, #0a1f2e, #1e3c3f);
+        padding: 20px;
+        border-radius: 15px;
+        margin-bottom: 25px;
+        border: 1px solid #00d4ff;
+        box-shadow: 0 0 30px rgba(0,212,255,0.2);
+    }
+    .main-title h1 {
+        color: #00d4ff;
+        font-weight: 700;
+        letter-spacing: 2px;
+        margin: 0;
+    }
+    .main-title p {
+        color: #ccc;
+        margin: 5px 0 0;
+    }
+    .footer {
+        text-align: center;
+        margin-top: 40px;
+        padding: 15px;
+        background: #0e0e0e;
+        border-radius: 10px;
+        font-size: 12px;
+        color: #666;
+        border-top: 1px solid #333;
+    }
+    div.stSlider > div[data-baseweb="slider"] {
+        padding-top: 1rem;
+    }
+    .stSlider label {
+        color: #00d4ff !important;
+        font-weight: 600;
+    }
+    .stSelectbox label {
+        color: #00d4ff !important;
+        font-weight: 600;
+    }
+    .stRadio label {
+        color: #00d4ff !important;
+    }
+    .stCheckbox label {
+        color: #00d4ff !important;
+    }
+    .css-1v0mbdj.etr89bj1 {
+        background: #1e1e1e;
+        border-radius: 10px;
+        padding: 10px;
+    }
+    hr {
+        border-color: #333;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -185,6 +241,7 @@ if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysi
 if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analysis_provider = None
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 if "selected_market" not in st.session_state: st.session_state.selected_market = "All"
+if "min_accuracy" not in st.session_state: st.session_state.min_accuracy = 40  # default
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -1062,10 +1119,10 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     return "Deep analysis failed.", "Error"
 
-# ==================== UPDATED SCAN FUNCTION (filter >40% AND exclude tracked trades) ====================
-def scan_market(assets_list, active_trades=None):
+# ==================== UPDATED SCAN FUNCTION (filter > min_accuracy AND exclude tracked trades) ====================
+def scan_market(assets_list, active_trades=None, min_accuracy=40):
     """
-    Scan market for swing and scalp setups with >40% confidence.
+    Scan market for swing and scalp setups with confidence > min_accuracy.
     If active_trades list is provided, exclude any trades that are already being tracked.
     """
     swing_list = []
@@ -1079,8 +1136,8 @@ def scan_market(assets_list, active_trades=None):
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
-                # Filter: > 40% Accuracy (changed from 25)
-                if abs(conf_sw) > 40: 
+                # Filter: > min_accuracy
+                if abs(conf_sw) > min_accuracy: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
@@ -1117,8 +1174,8 @@ def scan_market(assets_list, active_trades=None):
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
                 sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m")
                 
-                # Filter: > 40% Accuracy
-                if abs(conf_sc) > 40: 
+                # Filter: > min_accuracy
+                if abs(conf_sc) > min_accuracy: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     curr_price = df_sc['Close'].iloc[-1]
@@ -1258,7 +1315,7 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE AI EDITION TERMINAL v26.0</h1>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v26.0</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -1303,7 +1360,8 @@ else:
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
         pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", "").replace("-USDT", ""))
-        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=4)
+        # Default timeframe changed to 15m (index 2)
+        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=2)
 
         news_items = get_market_news(pair)
         news_impact = calculate_news_impact(news_items)
@@ -1439,17 +1497,28 @@ else:
         
         st.info(f"Selected markets: **{market_choice}** ({len(scan_assets)} assets)")
         
+        # Add accuracy level slider
+        min_acc = st.slider(
+            "Minimum Accuracy (%)",
+            min_value=0,
+            max_value=100,
+            value=st.session_state.min_accuracy,
+            step=5,
+            help="Set the minimum confidence level for scan results. Higher values yield fewer but stronger signals."
+        )
+        st.session_state.min_accuracy = min_acc
+        
         col1, col2 = st.columns([1,5])
         with col1:
             if st.button("🚀 Start Scan", type="primary", use_container_width=True):
-                with st.spinner(f"Scanning {market_choice} for High Probability Setups (>40%)..."):
+                with st.spinner(f"Scanning {market_choice} for High Probability Setups (>{min_acc}%)..."):
                     # Load active trades for this user to exclude them from scan results
                     active_trades = load_user_trades(user_info['Username'], status='Active')
-                    results = scan_market(scan_assets, active_trades)
+                    results = scan_market(scan_assets, active_trades, min_accuracy=min_acc)
                     st.session_state.scan_results = results
                     
                     if not results['swing'] and not results['scalp']:
-                        st.warning("No signals found above 40% accuracy.")
+                        st.warning(f"No signals found above {min_acc}% accuracy.")
                     else:
                         st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
         
@@ -1732,6 +1801,10 @@ else:
                             st.rerun()
             else: st.error("Database Connection Failed")
         else: st.error("Access Denied.")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v26.0 | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
 
     if auto_refresh:
         time.sleep(60)
