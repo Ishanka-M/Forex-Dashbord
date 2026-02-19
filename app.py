@@ -4,6 +4,7 @@ import pandas as pd
 import puter  # Puter AI for Fallback
 import google.generativeai as genai # Gemini AI
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
@@ -247,7 +248,7 @@ if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analy
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
 if "selected_market" not in st.session_state: st.session_state.selected_market = "All"
 if "min_accuracy" not in st.session_state: st.session_state.min_accuracy = 40  # default
-if "selected_theory" not in st.session_state: st.session_state.selected_theory = None  # for theory analysis
+if "selected_theory" not in st.session_state: st.session_state.selected_theory = None  # for theory chart
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -1125,40 +1126,175 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     return "Deep analysis failed.", "Error"
 
-# ==================== THEORY ANALYSIS FUNCTION ====================
-def generate_theory_analysis(theory_key, sigs, pair, tf, price):
-    """Generate a detailed explanation for a selected theory."""
-    desc, direction = sigs.get(theory_key, ("N/A", "neutral"))
-    analysis = f"**{theory_key} Analysis for {pair} ({tf})**\n\n"
-    analysis += f"**Signal:** {desc}\n"
-    analysis += f"**Direction:** {direction.upper()}\n"
-    analysis += f"**Current Price:** {price:.5f}\n\n"
-    
-    # Additional details based on theory
-    if theory_key == "TREND":
-        analysis += "The trend is determined by comparing current price to 50 and 200-period moving averages. A bullish trend indicates price above both MAs, bearish below both, neutral otherwise."
-    elif theory_key == "SMC":
-        analysis += "Smart Money Concepts: Break of Structure (BOS) indicates a potential shift in market structure. Bullish BOS occurs when price breaks above recent highs, bearish when breaks below recent lows."
-    elif theory_key == "ELLIOTT":
-        analysis += "Elliott Wave analysis suggests the market moves in 5-wave impulsive patterns followed by 3-wave corrective patterns. Current wave count is based on price position within the recent range."
-    elif theory_key == "LIQ":
-        analysis += "Liquidity analysis: Sweeping of highs or lows indicates potential reversal zones. Bullish liquidity grab occurs when price takes out recent lows, bearish when taking out recent highs."
-    elif theory_key == "PATT":
-        analysis += "Candlestick patterns: Bullish engulfing, bearish engulfing, etc. These patterns indicate potential reversals."
-    elif theory_key == "ICT":
-        analysis += "ICT Fair Value Gap (FVG): A three-candle pattern where the middle candle's wick leaves a gap. Bullish FVG when low of current > high of two bars ago, bearish when high of current < low of two bars ago."
-    elif theory_key == "VOLATILITY":
-        analysis += "Bollinger Bands: Overextended conditions suggest mean reversion. Oversold (below lower band) is bullish, overbought (above upper band) is bearish."
-    elif theory_key == "RSI":
-        analysis += "Relative Strength Index: Overbought (>70) suggests bearish reversal, oversold (<30) suggests bullish reversal."
-    elif theory_key == "FIB":
-        analysis += "Fibonacci levels: Golden zone (0.5-0.618) often acts as support/resistance. Price near these levels may bounce."
-    elif theory_key == "RETAIL":
-        analysis += "Retail sentiment: Based on RSI, extreme readings indicate retail crowding and potential contrarian moves."
+# ==================== THEORY CHART FUNCTION ====================
+def create_theory_chart(df, signals, theory_key, pair_name, tf):
+    """
+    Create a chart highlighting the selected theory.
+    Returns a plotly figure.
+    """
+    # Create subplots: main candlestick and possibly RSI subplot
+    if theory_key == "RSI":
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                            vertical_spacing=0.05, row_heights=[0.7, 0.3])
     else:
-        analysis += "Analysis based on the selected theory."
+        fig = make_subplots(rows=1, cols=1)
     
-    return analysis
+    # Main candlestick
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        name='Price'
+    ), row=1, col=1)
+    
+    # Add theory-specific overlays
+    if theory_key == "TREND":
+        # Moving averages
+        ma50 = df['Close'].rolling(50).mean()
+        ma200 = df['Close'].rolling(200).mean() if len(df) > 200 else None
+        fig.add_trace(go.Scatter(x=df.index, y=ma50, line=dict(color='orange', width=2), name='MA50'), row=1, col=1)
+        if ma200 is not None:
+            fig.add_trace(go.Scatter(x=df.index, y=ma200, line=dict(color='blue', width=2), name='MA200'), row=1, col=1)
+    
+    elif theory_key == "SMC":
+        # Recent swing highs/lows (last 20 bars)
+        highs = df['High'].rolling(window=10).max()
+        lows = df['Low'].rolling(window=10).min()
+        fig.add_trace(go.Scatter(x=df.index, y=highs, line=dict(color='green', width=1, dash='dot'), name='Swing Highs'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=lows, line=dict(color='red', width=1, dash='dot'), name='Swing Lows'), row=1, col=1)
+        # Mark break of structure if occurred
+        last_high = highs.iloc[-2]
+        last_low = lows.iloc[-2]
+        if df['Close'].iloc[-1] > last_high:
+            fig.add_annotation(x=df.index[-1], y=df['High'].iloc[-1], text="BOS Up", showarrow=True, arrowhead=2)
+        elif df['Close'].iloc[-1] < last_low:
+            fig.add_annotation(x=df.index[-1], y=df['Low'].iloc[-1], text="BOS Down", showarrow=True, arrowhead=2)
+    
+    elif theory_key == "LIQ":
+        # Recent highs/lows for liquidity
+        recent_high = df['High'].iloc[-20:].max()
+        recent_low = df['Low'].iloc[-20:].min()
+        fig.add_hline(y=recent_high, line_dash="dash", line_color="red", annotation_text="Recent High", row=1, col=1)
+        fig.add_hline(y=recent_low, line_dash="dash", line_color="green", annotation_text="Recent Low", row=1, col=1)
+    
+    elif theory_key == "PATT":
+        # Highlight engulfing patterns
+        for i in range(1, len(df)):
+            if i < 2: continue
+            if (df['Close'].iloc[i] > df['Open'].iloc[i] and 
+                df['Close'].iloc[i] > df['Open'].iloc[i-1] and 
+                df['Open'].iloc[i] < df['Close'].iloc[i-1]):
+                fig.add_vrect(x0=df.index[i-1], x1=df.index[i], 
+                              fillcolor="green", opacity=0.2, line_width=0, row=1, col=1)
+            elif (df['Close'].iloc[i] < df['Open'].iloc[i] and 
+                  df['Close'].iloc[i] < df['Open'].iloc[i-1] and 
+                  df['Open'].iloc[i] > df['Close'].iloc[i-1]):
+                fig.add_vrect(x0=df.index[i-1], x1=df.index[i], 
+                              fillcolor="red", opacity=0.2, line_width=0, row=1, col=1)
+    
+    elif theory_key == "ICT":
+        # Fair Value Gaps (simplified: show last gap if exists)
+        for i in range(2, len(df)):
+            if df['Low'].iloc[i] > df['High'].iloc[i-2]:
+                fig.add_hline(y=df['High'].iloc[i-2], line_dash="dot", line_color="blue", 
+                              annotation_text="FVG Bottom", row=1, col=1)
+                fig.add_hline(y=df['Low'].iloc[i], line_dash="dot", line_color="blue", 
+                              annotation_text="FVG Top", row=1, col=1)
+                break
+            elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
+                fig.add_hline(y=df['Low'].iloc[i-2], line_dash="dot", line_color="blue", 
+                              annotation_text="FVG Top", row=1, col=1)
+                fig.add_hline(y=df['High'].iloc[i], line_dash="dot", line_color="blue", 
+                              annotation_text="FVG Bottom", row=1, col=1)
+                break
+    
+    elif theory_key == "VOLATILITY":
+        # Bollinger Bands
+        sma20 = df['Close'].rolling(20).mean()
+        std20 = df['Close'].rolling(20).std()
+        upper = sma20 + 2*std20
+        lower = sma20 - 2*std20
+        fig.add_trace(go.Scatter(x=df.index, y=upper, line=dict(color='gray', width=1, dash='dash'), name='Upper BB'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=lower, line=dict(color='gray', width=1, dash='dash'), name='Lower BB'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=sma20, line=dict(color='white', width=1), name='MA20'), row=1, col=1)
+    
+    elif theory_key == "RSI":
+        # RSI in subplot
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, line=dict(color='purple', width=2), name='RSI'), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+        fig.update_yaxes(title_text="RSI", row=2, col=1)
+    
+    elif theory_key == "FIB":
+        # Fibonacci retracement from last major swing
+        # Use last 50 bars high/low
+        swing_high = df['High'].iloc[-50:].max()
+        swing_low = df['Low'].iloc[-50:].min()
+        diff = swing_high - swing_low
+        levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
+        for level in levels:
+            price = swing_high - level * diff
+            fig.add_hline(y=price, line_dash="dot", line_color="yellow", 
+                          annotation_text=f"{level*100:.1f}%", row=1, col=1)
+    
+    elif theory_key == "RETAIL":
+        # Show overbought/oversold zones
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        if rsi.iloc[-1] > 70:
+            fig.add_hrect(y0=df['Low'].min(), y1=df['High'].max(), 
+                          fillcolor="red", opacity=0.1, line_width=0, annotation_text="Overbought", row=1, col=1)
+        elif rsi.iloc[-1] < 30:
+            fig.add_hrect(y0=df['Low'].min(), y1=df['High'].max(), 
+                          fillcolor="green", opacity=0.1, line_width=0, annotation_text="Oversold", row=1, col=1)
+    
+    elif theory_key == "ELLIOTT":
+        # Simple Elliott wave labeling based on position in range
+        last_50 = df['Close'].tail(50)
+        min50 = last_50.min()
+        max50 = last_50.max()
+        current = df['Close'].iloc[-1]
+        pos = (current - min50) / (max50 - min50) if max50 > min50 else 0.5
+        wave_label = ""
+        if signals and 'TREND' in signals:
+            trend_dir = signals['TREND'][1]
+            if trend_dir == "bull":
+                if pos > 0.8:
+                    wave_label = "Wave 5 (potential top)"
+                elif pos > 0.4:
+                    wave_label = "Wave 3 (impulse)"
+                else:
+                    wave_label = "Wave 1 (start)"
+            else:
+                if pos < 0.2:
+                    wave_label = "Wave C (drop)"
+                elif pos < 0.6:
+                    wave_label = "Wave A (correction)"
+                else:
+                    wave_label = "Wave B (rally)"
+        fig.add_annotation(x=df.index[-1], y=current, text=wave_label, 
+                          showarrow=True, arrowhead=2, ax=0, ay=-40)
+    
+    # Layout adjustments
+    fig.update_layout(
+        title=f"{pair_name} - {theory_key} Analysis ({tf})",
+        template="plotly_dark",
+        height=500,
+        margin=dict(l=0, r=0, t=40, b=0),
+        xaxis_rangeslider_visible=False
+    )
+    
+    return fig
 
 # ==================== UPDATED SCAN FUNCTION (filter > min_accuracy AND exclude tracked trades) ====================
 def scan_market(assets_list, active_trades=None, min_accuracy=40):
@@ -1517,17 +1653,17 @@ else:
                         st.session_state.selected_theory = "RETAIL"
                         st.rerun()
             
-            # --- CHART OR THEORY ANALYSIS ---
+            # --- CHART OR THEORY CHART ---
             if st.session_state.selected_theory:
-                st.markdown("### 📊 Theory Analysis")
-                st.markdown(f"**Selected Theory:** {st.session_state.selected_theory}")
-                analysis = generate_theory_analysis(st.session_state.selected_theory, sigs, pair.replace("=X", "").replace("-USD", "").replace("-USDT", ""), tf, curr_p)
-                st.markdown(f"<div class='entry-box'>{analysis}</div>", unsafe_allow_html=True)
-                if st.button("← Back to Chart"):
+                # Show theory chart
+                theory_fig = create_theory_chart(df, sigs, st.session_state.selected_theory, 
+                                                  pair.replace("=X", "").replace("-USD", "").replace("-USDT", ""), tf)
+                st.plotly_chart(theory_fig, use_container_width=True)
+                if st.button("← Back to Main Chart"):
                     st.session_state.selected_theory = None
                     st.rerun()
             else:
-                # Show chart only when no theory selected
+                # Normal candlestick chart
                 fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
                 fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
                 st.plotly_chart(fig, use_container_width=True)
