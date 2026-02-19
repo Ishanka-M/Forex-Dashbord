@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS) ---
-st.set_page_config(page_title="Infinite Hybrid Trading Terminal V26.1", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite System v16.0 (Pro Max)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -778,9 +778,8 @@ def calculate_advanced_signals(df, tf):
     atr = (df['High']-df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence
 
-# --- 5. INFINITE ALGORITHMIC ENGINE (IMPROVED SL/TP using recent swing levels) ---
-# IMPROVED: Added recent_high and recent_low parameters to refine SL/TP based on structure
-def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, recent_high=None, recent_low=None):
+# --- 5. INFINITE ALGORITHMIC ENGINE ---
+def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     if sigs is None: return "Insufficient Data for Analysis"
     
     confidence = sigs['SK'][0]
@@ -791,71 +790,23 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, recent_
         trade_mode = "SCALPING (වේගවත්)"
         sl_mult = 1.2
         tp_mult = 2.0
-        # IMPROVED: Use fewer candles for recent levels in scalping
-        lookback = 10
     else:
         trade_mode = "SWING (දිගු කාලීන)"
         sl_mult = 1.5
         tp_mult = 3.5
-        lookback = 20
 
     action = "WAIT"
     status_sinhala = "ප්‍රවේශම් වන්න. වෙළඳපල අවිනිශ්චිතයි."
     sl, tp = 0, 0
     
-    # IMPROVED: Use recent swing levels if available to set more accurate SL/TP
     if signal_dir == "bull":
         action = "BUY"
         status_sinhala = "වෙළඳපල ගැනුම්කරුවන් අත. (Market is Bullish)"
-        
-        # Calculate SL based on recent low (if available)
-        if recent_low is not None:
-            # Place SL just below recent low with a small buffer
-            sl_candidate = recent_low - (atr * 0.2)
-            # Ensure SL is not too close to entry (minimum distance = 1.0 * ATR)
-            min_sl_distance = atr * 1.0
-            if (curr_p - sl_candidate) < min_sl_distance:
-                sl = curr_p - min_sl_distance
-            else:
-                sl = sl_candidate
-        else:
-            sl = curr_p - (atr * sl_mult)
-        
-        # Calculate TP based on risk-reward (2:1 or higher depending on confidence)
-        sl_distance = curr_p - sl
-        # IMPROVED: Adjust TP multiplier based on confidence
-        conf_value = abs(float(confidence.split('%')[0].split(':')[-1].strip())) if 'CONFIDENCE:' in confidence else 50
-        if conf_value > 70:
-            rr_ratio = 3.0
-        elif conf_value > 50:
-            rr_ratio = 2.5
-        else:
-            rr_ratio = 2.0
-        tp = curr_p + (sl_distance * rr_ratio)
-        
+        sl, tp = curr_p - (atr * sl_mult), curr_p + (atr * tp_mult)
     elif signal_dir == "bear":
         action = "SELL"
         status_sinhala = "වෙළඳපල විකුණුම්කරුවන් අත. (Market is Bearish)"
-        
-        if recent_high is not None:
-            sl_candidate = recent_high + (atr * 0.2)
-            min_sl_distance = atr * 1.0
-            if (sl_candidate - curr_p) < min_sl_distance:
-                sl = curr_p + min_sl_distance
-            else:
-                sl = sl_candidate
-        else:
-            sl = curr_p + (atr * sl_mult)
-        
-        sl_distance = sl - curr_p
-        conf_value = abs(float(confidence.split('%')[0].split(':')[-1].strip())) if 'CONFIDENCE:' in confidence else 50
-        if conf_value > 70:
-            rr_ratio = 3.0
-        elif conf_value > 50:
-            rr_ratio = 2.5
-        else:
-            rr_ratio = 2.0
-        tp = curr_p - (sl_distance * rr_ratio)
+        sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
 
     analysis_text = f"""
     ♾️ **INFINITE ALGO ENGINE V16.0**
@@ -875,11 +826,10 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, recent_
     return analysis_text
 
 # --- 6. HYBRID AI ENGINE (VERIFICATION LOGIC) ---
-def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, recent_high=None, recent_low=None):
+def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if sigs is None: return "Error: Insufficient Signal Data", "System Error"
     
-    # IMPROVED: Pass recent_high and recent_low to infinite_algorithmic_engine
-    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf, recent_high, recent_low)
+    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
     current_usage = user_info.get("UsageCount", 0)
     max_limit = user_info.get("HybridLimit", 10)
@@ -889,16 +839,6 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, 
 
     # Format news for AI
     news_str = "\n".join([f"- {n['title']}" for n in news_items])
-
-    # Include recent high/low if available
-    swing_info = ""
-    if recent_high is not None and recent_low is not None:
-        swing_info = f"""
-    **Recent Swing Levels (last 20 candles):**
-    - Highest High: {recent_high:.5f}
-    - Lowest Low: {recent_low:.5f}
-    Consider these levels for placing logical Stop Loss and Take Profit.
-    """
 
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
@@ -913,13 +853,12 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, 
     
     **Recent News Headlines:**
     {news_str}
-    {swing_info}
     
     **Task:**
     1. VERIFY the Algo Signal against the News. If news is highly negative but signal is Buy, WARN the user.
     2. Use SMC, Fibonacci, and Liquidity concepts to confirm the best entry.
     3. Output the explanation in SINHALA language (Technical terms in English).
-    4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance. If swing levels are provided, use them to refine SL and TP (e.g., place SL just below the recent low for a buy, or just above the recent high for a sell).
+    4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance.
     5. Additionally, provide a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
     
     **FINAL OUTPUT FORMAT (STRICT):**
@@ -987,7 +926,7 @@ def parse_ai_response(text):
     return data
 
 # ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
-def get_deep_hybrid_analysis(trade, user_info, recent_high=None, recent_low=None):
+def get_deep_hybrid_analysis(trade, user_info):
     """Run deep analysis using Gemini + Puter (hybrid engine) for a scanner trade"""
     pair = trade['pair']
     # Construct original symbol for news and data
@@ -1010,15 +949,6 @@ def get_deep_hybrid_analysis(trade, user_info, recent_high=None, recent_low=None
     
     # Determine timeframe display
     tf_display = trade['tf']
-
-    # Include recent high/low if available
-    swing_info = ""
-    if recent_high is not None and recent_low is not None:
-        swing_info = f"""
-    **Recent Swing Levels (last 20 candles):**
-    - Highest High: {recent_high:.5f}
-    - Lowest Low: {recent_low:.5f}
-    """
     
     # Prompt for deep analysis
     prompt = f"""
@@ -1036,13 +966,12 @@ def get_deep_hybrid_analysis(trade, user_info, recent_high=None, recent_low=None
     
     **Recent News Headlines:**
     {news_str}
-    {swing_info}
     
     **Task:**
     1. Evaluate the risk-reward ratio of this trade.
     2. Check if the current price is near entry and if it's a good moment to enter.
     3. Provide a detailed analysis in SINHALA (use English for technical terms).
-    4. Suggest any adjustments to SL/TP based on recent price action and the provided swing levels.
+    4. Suggest any adjustments to SL/TP based on recent price action.
     5. Give a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
     
     **FINAL OUTPUT FORMAT (STRICT):**
@@ -1136,47 +1065,15 @@ def scan_market(assets_list, active_trades=None):
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
-                    
-                    # IMPROVED: Compute recent swing levels from df_sw
-                    recent_high = df_sw['High'].tail(20).max()
-                    recent_low = df_sw['Low'].tail(20).min()
-                    
-                    # IMPROVED: Calculate entry, SL, TP using the new logic
+                    # Calculate entry, SL, TP based on direction and ATR
                     if direction == "BUY":
                         entry = curr_price
-                        # SL just below recent low with buffer, min distance = ATR
-                        sl_candidate = recent_low - (atr_sw * 0.2)
-                        min_sl_distance = atr_sw * 1.0
-                        if (entry - sl_candidate) < min_sl_distance:
-                            sl = entry - min_sl_distance
-                        else:
-                            sl = sl_candidate
-                        # TP with risk-reward based on confidence
-                        sl_distance = entry - sl
-                        # Use confidence to determine RR ratio
-                        if abs(conf_sw) > 70:
-                            rr = 3.0
-                        elif abs(conf_sw) > 50:
-                            rr = 2.5
-                        else:
-                            rr = 2.0
-                        tp = entry + (sl_distance * rr)
-                    else:  # SELL
+                        sl = entry - (atr_sw * 1.5)   # swing SL multiplier
+                        tp = entry + (atr_sw * 3.5)   # swing TP multiplier
+                    else:
                         entry = curr_price
-                        sl_candidate = recent_high + (atr_sw * 0.2)
-                        min_sl_distance = atr_sw * 1.0
-                        if (sl_candidate - entry) < min_sl_distance:
-                            sl = entry + min_sl_distance
-                        else:
-                            sl = sl_candidate
-                        sl_distance = sl - entry
-                        if abs(conf_sw) > 70:
-                            rr = 3.0
-                        elif abs(conf_sw) > 50:
-                            rr = 2.5
-                        else:
-                            rr = 2.0
-                        tp = entry - (sl_distance * rr)
+                        sl = entry + (atr_sw * 1.5)
+                        tp = entry - (atr_sw * 3.5)
                     
                     trade_candidate = {
                         "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
@@ -1191,9 +1088,7 @@ def scan_market(assets_list, active_trades=None):
                         continue  # skip this trade
                     
                     swing_list.append(trade_candidate)
-        except Exception as e:
-            print(f"Error scanning {symbol}: {e}")
-            pass
+        except: pass
         
     # --- SCALP SCAN (15M) ---
     for symbol in assets_list:
@@ -1208,43 +1103,14 @@ def scan_market(assets_list, active_trades=None):
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     curr_price = df_sc['Close'].iloc[-1]
-                    
-                    # IMPROVED: For scalp, use shorter lookback (10 candles)
-                    recent_high = df_sc['High'].tail(10).max()
-                    recent_low = df_sc['Low'].tail(10).min()
-                    
                     if direction == "BUY":
                         entry = curr_price
-                        sl_candidate = recent_low - (atr_sc * 0.2)
-                        min_sl_distance = atr_sc * 1.0
-                        if (entry - sl_candidate) < min_sl_distance:
-                            sl = entry - min_sl_distance
-                        else:
-                            sl = sl_candidate
-                        sl_distance = entry - sl
-                        if abs(conf_sc) > 70:
-                            rr = 2.5  # scalp usually smaller RR
-                        elif abs(conf_sc) > 50:
-                            rr = 2.0
-                        else:
-                            rr = 1.5
-                        tp = entry + (sl_distance * rr)
+                        sl = entry - (atr_sc * 1.2)   # scalp SL multiplier
+                        tp = entry + (atr_sc * 2.0)   # scalp TP multiplier
                     else:
                         entry = curr_price
-                        sl_candidate = recent_high + (atr_sc * 0.2)
-                        min_sl_distance = atr_sc * 1.0
-                        if (sl_candidate - entry) < min_sl_distance:
-                            sl = entry + min_sl_distance
-                        else:
-                            sl = sl_candidate
-                        sl_distance = sl - entry
-                        if abs(conf_sc) > 70:
-                            rr = 2.5
-                        elif abs(conf_sc) > 50:
-                            rr = 2.0
-                        else:
-                            rr = 1.5
-                        tp = entry - (sl_distance * rr)
+                        sl = entry + (atr_sc * 1.2)
+                        tp = entry - (atr_sc * 2.0)
                     
                     trade_candidate = {
                         "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
@@ -1258,9 +1124,7 @@ def scan_market(assets_list, active_trades=None):
                         continue
                     
                     scalp_list.append(trade_candidate)
-        except Exception as e:
-            print(f"Error scanning {symbol}: {e}")
-            pass
+        except: pass
         
     return {"swing": swing_list, "scalp": scalp_list}
 
@@ -1375,7 +1239,7 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE HYBRID TRADING TERMINAL V26.1</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v16.0 | UNLOCKED</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -1498,15 +1362,7 @@ else:
                 
                 # Use live price for analysis
                 live_price = get_live_price(pair) or curr_p
-                # Compute recent swing levels from df (last 20 candles for swing, but we'll use same df)
-                # For terminal, we can compute based on timeframe: if tf is scalp, use shorter lookback
-                if tf in ["1m","5m","15m"]:
-                    lookback = 10
-                else:
-                    lookback = 20
-                recent_high = df['High'].tail(lookback).max()
-                recent_low = df['Low'].tail(lookback).min()
-                result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf, recent_high=recent_high, recent_low=recent_low)
+                result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
@@ -1651,30 +1507,7 @@ else:
             # Run analysis if not already done
             if st.session_state.deep_analysis_result is None:
                 with st.spinner("Running deep analysis with Gemini + Puter..."):
-                    # Fetch historical data to compute recent swing levels
-                    try:
-                        symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
-                        # Determine interval based on tf
-                        tf_display = st.session_state.selected_trade['tf']
-                        if "Swing" in tf_display:
-                            interval = "4h"
-                            period = "3mo"
-                        else:
-                            interval = "15m"
-                            period = "1mo"
-                        
-                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
-                        if not df_hist.empty and len(df_hist) > 20:
-                            if isinstance(df_hist.columns, pd.MultiIndex):
-                                df_hist.columns = df_hist.columns.get_level_values(0)
-                            recent_high = df_hist['High'].tail(20).max()
-                            recent_low = df_hist['Low'].tail(20).min()
-                        else:
-                            recent_high = recent_low = None
-                    except:
-                        recent_high = recent_low = None
-
-                    result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user, recent_high=recent_high, recent_low=recent_low)
+                    result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user)
                     st.session_state.deep_analysis_result = result
                     st.session_state.deep_analysis_provider = provider
                     
@@ -1682,9 +1515,22 @@ else:
                     parsed = parse_ai_response(result)  # reuse the same parser
                     forecast_text = parsed.get('FORECAST', '')
                     
-                    # Fetch historical data for chart (again if needed)
+                    # Fetch historical data for chart
                     try:
-                        if df_hist is not None and not df_hist.empty and len(df_hist) > 10:
+                        symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
+                        # Determine interval based on tf
+                        tf_display = st.session_state.selected_trade['tf']
+                        if "Swing" in tf_display:
+                            interval = "4h"
+                            period = "3mo"  # more data for swing
+                        else:
+                            interval = "15m"
+                            period = "1mo"  # more data for scalp
+                        
+                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
+                        if not df_hist.empty and len(df_hist) > 10:
+                            if isinstance(df_hist.columns, pd.MultiIndex):
+                                df_hist.columns = df_hist.columns.get_level_values(0)
                             chart = create_forecast_chart(
                                 df_hist,
                                 st.session_state.selected_trade['entry'],
