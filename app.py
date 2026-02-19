@@ -14,8 +14,8 @@ import requests
 import xml.etree.ElementTree as ET
 import pytz # For Timezone handling
 
-# --- 1. SETUP & STYLE (UPDATED ANIMATIONS & UI) ---
-st.set_page_config(page_title="♾️ INFINITE AI TERMINAL", layout="wide", page_icon="⚡")
+# --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
+st.set_page_config(page_title="Infinite Algo Terminal v16.0", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -154,19 +154,22 @@ st.markdown("""
         to { opacity: 1; transform: translateY(0); }
     }
     
-    /* --- AI VERIFIED BADGE --- */
-    .ai-verified {
-        display: inline-block;
-        background: linear-gradient(145deg, #00d4ff, #0066ff);
-        color: black;
-        font-weight: bold;
-        font-size: 12px;
-        padding: 4px 8px;
-        border-radius: 20px;
-        margin-left: 10px;
-        border: 1px solid white;
-        box-shadow: 0 0 10px #00d4ff;
-        animation: glow 1.5s infinite;
+    /* --- USER-FRIENDLY IMPROVEMENTS --- */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 10px rgba(0,212,255,0.3);
+    }
+    .scan-header {
+        background: linear-gradient(90deg, #1e3c3f, #0a1f2e);
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        border-left: 5px solid #00d4ff;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -181,6 +184,7 @@ if "selected_trade" not in st.session_state: st.session_state.selected_trade = N
 if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysis_result = None
 if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analysis_provider = None
 if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
+if "selected_market" not in st.session_state: st.session_state.selected_market = "All"
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -898,7 +902,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-1.5-flash')  # Updated model name
+                model = genai.GenerativeModel('gemini-3-flash-preview')  # Updated model name
                 response = model.generate_content(prompt)
                 response_text = response.text
                 provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
@@ -1028,7 +1032,7 @@ def get_deep_hybrid_analysis(trade, user_info):
             for idx, key in enumerate(gemini_keys):
                 try:
                     genai.configure(api_key=key)
-                    model = genai.GenerativeModel('gemini-1.5-flash')
+                    model = genai.GenerativeModel('gemini-3-flash-preview')
                     response = model.generate_content(prompt)
                     response_text = response.text
                     provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
@@ -1058,115 +1062,10 @@ def get_deep_hybrid_analysis(trade, user_info):
     
     return "Deep analysis failed.", "Error"
 
-# ==================== NEW: AI VERIFICATION FOR SCANNER (COMBINE ENGINE) ====================
-# This function can be moved to a separate file "combine_engine.py" for modularity.
-def ai_verify_trade(trade, user_info):
-    """
-    Use hybrid AI to verify if a trade is likely profitable.
-    Returns (is_profitable: bool, verification_message: str, provider: str)
-    """
-    pair = trade['pair']
-    # Construct original symbol for news
-    if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-        if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-            orig_sym = pair + "=X"
-        else:
-            orig_sym = pair + "-USDT"
-    else:
-        orig_sym = pair
-    
-    news_items = get_market_news(orig_sym)
-    news_str = "\n".join([f"- {n['title']}" for n in news_items])
-    
-    live_price = trade.get('live_price', trade['price'])
-    
-    prompt = f"""
-    You are an expert forex and crypto trader. Evaluate the following trade setup and determine if it is likely to be profitable.
-    
-    **Trade Details:**
-    - Asset: {pair}
-    - Timeframe: {trade['tf']}
-    - Direction: {trade['dir']}
-    - Entry Price: {trade['entry']:.5f}
-    - Stop Loss: {trade['sl']:.5f}
-    - Take Profit: {trade['tp']:.5f}
-    - Confidence Score (algo): {trade['conf']}%
-    - Current Live Price: {live_price:.5f}
-    
-    **Recent News Headlines:**
-    {news_str}
-    
-    **Task:**
-    Based on the technical setup and news sentiment, answer with a simple YES or NO: Is this trade likely to hit its take profit before stop loss?
-    Provide a brief one-sentence reason for your answer.
-    
-    **Output Format:**
-    YES/NO: [reason]
-    """
-    
-    gemini_keys = []
-    for i in range(1, 8):
-        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
-        if k: gemini_keys.append(k)
-    
-    response_text = ""
-    provider_name = ""
-    
-    current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
-    if current_usage >= max_limit and user_info["Role"] != "Admin":
-        return False, "Usage limit reached", "Limit Reached"
-    
-    # Try Gemini
-    for idx, key in enumerate(gemini_keys):
-        try:
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            response_text = response.text
-            provider_name = f"Gemini (Key {idx+1})"
-            break
-        except:
-            continue
-    
-    # Fallback to Puter
-    if not response_text:
-        try:
-            puter_resp = puter.ai.chat(prompt)
-            response_text = puter_resp.message.content
-            provider_name = "Puter AI"
-        except:
-            return False, "AI verification failed", "Error"
-    
-    # Update usage
-    new_usage = current_usage + 1
-    user_info["UsageCount"] = new_usage
-    st.session_state.user = user_info
-    if user_info["Username"] != "Admin":
-        update_usage_in_db(user_info["Username"], new_usage)
-    
-    # Parse response
-    is_profitable = False
-    verification_msg = response_text.strip()
-    if response_text.upper().startswith("YES"):
-        is_profitable = True
-    elif response_text.upper().startswith("NO"):
-        is_profitable = False
-    else:
-        # Try to find YES/NO anywhere
-        if "YES" in response_text.upper():
-            is_profitable = True
-        elif "NO" in response_text.upper():
-            is_profitable = False
-        else:
-            is_profitable = False  # default
-    
-    return is_profitable, verification_msg, provider_name
-
-# ==================== UPDATED SCAN FUNCTION (filter >30% AND exclude tracked trades) ====================
+# ==================== UPDATED SCAN FUNCTION (filter >40% AND exclude tracked trades) ====================
 def scan_market(assets_list, active_trades=None):
     """
-    Scan market for swing and scalp setups with >30% confidence.
+    Scan market for swing and scalp setups with >40% confidence.
     If active_trades list is provided, exclude any trades that are already being tracked.
     """
     swing_list = []
@@ -1180,8 +1079,8 @@ def scan_market(assets_list, active_trades=None):
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
                 sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h")
                 
-                # Filter: > 30% Accuracy (changed from 40)
-                if abs(conf_sw) > 30: 
+                # Filter: > 40% Accuracy (changed from 25)
+                if abs(conf_sw) > 40: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
@@ -1218,8 +1117,8 @@ def scan_market(assets_list, active_trades=None):
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
                 sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m")
                 
-                # Filter: > 30% Accuracy
-                if abs(conf_sc) > 30: 
+                # Filter: > 40% Accuracy
+                if abs(conf_sc) > 40: 
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     curr_price = df_sc['Close'].iloc[-1]
@@ -1359,7 +1258,7 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>♾️ INFINITE AI TERMINAL | v17.0</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE ALGO TERMINAL v16.0 | UNLOCKED</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -1520,64 +1419,49 @@ else:
     elif app_mode == "Market Scanner":
         st.title("📡 Global Market Scanner (Multi-Timeframe)")
         
-        # Option to enable AI verification
-        enable_ai_verification = st.checkbox("🤖 Enable AI Verification (slower, uses credits)", value=True, help="If enabled, each candidate trade will be checked by AI and only profitable ones shown.")
+        # Market selection dropdown
+        st.markdown("<div class='scan-header'><h3>🔍 Select Markets to Scan</h3></div>", unsafe_allow_html=True)
+        market_choice = st.selectbox(
+            "Choose market(s) to scan",
+            options=["All", "Forex", "Crypto", "Metals"],
+            index=0,
+            key="market_selector"
+        )
         
-        if st.button("Start Global Scan (All Pairs)", type="primary"):
-            with st.spinner("Scanning markets for High Probability Setups (>30%)..."):
-                all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
-                # Load active trades for this user to exclude them from scan results
-                active_trades = load_user_trades(user_info['Username'], status='Active')
-                results = scan_market(all_scan_assets, active_trades)
-                
-                # If AI verification is enabled, filter results
-                if enable_ai_verification:
-                    verified_swing = []
-                    verified_scalp = []
+        # Store selection in session state to persist
+        st.session_state.selected_market = market_choice
+        
+        # Build asset list based on selection
+        if market_choice == "All":
+            scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
+        else:
+            scan_assets = assets[market_choice]
+        
+        st.info(f"Selected markets: **{market_choice}** ({len(scan_assets)} assets)")
+        
+        col1, col2 = st.columns([1,5])
+        with col1:
+            if st.button("🚀 Start Scan", type="primary", use_container_width=True):
+                with st.spinner(f"Scanning {market_choice} for High Probability Setups (>40%)..."):
+                    # Load active trades for this user to exclude them from scan results
+                    active_trades = load_user_trades(user_info['Username'], status='Active')
+                    results = scan_market(scan_assets, active_trades)
+                    st.session_state.scan_results = results
                     
-                    # Progress bar
-                    total_trades = len(results['swing']) + len(results['scalp'])
-                    if total_trades > 0:
-                        progress_bar = st.progress(0, text="AI Verifying trades...")
-                        status_text = st.empty()
-                        
-                        for i, trade in enumerate(results['swing']):
-                            status_text.text(f"Verifying Swing {i+1}/{len(results['swing'])}: {trade['pair']}")
-                            is_profitable, msg, provider = ai_verify_trade(trade, st.session_state.user)
-                            if is_profitable:
-                                trade['verification_msg'] = msg
-                                trade['verification_provider'] = provider
-                                verified_swing.append(trade)
-                            progress_bar.progress((i+1)/total_trades)
-                        
-                        for i, trade in enumerate(results['scalp']):
-                            status_text.text(f"Verifying Scalp {i+1}/{len(results['scalp'])}: {trade['pair']}")
-                            is_profitable, msg, provider = ai_verify_trade(trade, st.session_state.user)
-                            if is_profitable:
-                                trade['verification_msg'] = msg
-                                trade['verification_provider'] = provider
-                                verified_scalp.append(trade)
-                            progress_bar.progress((len(results['swing'])+i+1)/total_trades)
-                        
-                        progress_bar.empty()
-                        status_text.empty()
-                        
-                        results['swing'] = verified_swing
-                        results['scalp'] = verified_scalp
+                    if not results['swing'] and not results['scalp']:
+                        st.warning("No signals found above 40% accuracy.")
                     else:
-                        st.warning("No trades found to verify.")
-                
-                st.session_state.scan_results = results
-                
-                if not results['swing'] and not results['scalp']:
-                    st.warning("No signals found above 30% accuracy" + (" after AI verification." if enable_ai_verification else "."))
-                else:
-                    st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
+                        st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
+        
+        with col2:
+            if st.button("🗑️ Clear Results", use_container_width=True):
+                st.session_state.scan_results = {"swing": [], "scalp": []}
+                st.rerun()
+        
+        st.markdown("---")
         
         # Display Results with progress bar and deep analysis button and track button
         res = st.session_state.scan_results
-        
-        st.markdown("---")
         
         # --- SWING SECTION ---
         st.subheader("🐢 SWING TRADES (4H)")
@@ -1594,13 +1478,11 @@ else:
                 col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    badge = "<span class='ai-verified'>AI VERIFIED</span>" if 'verification_msg' in sig else ""
                     st.markdown(f"""
                     <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b> {badge}<br>
+                        <b>{sig['pair']} | {sig['dir']}</b><br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%<br>
-                        <small>{sig.get('verification_msg', '')}</small>
+                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
                     </div>
                     """, unsafe_allow_html=True)
                 with col2:
@@ -1637,13 +1519,11 @@ else:
                 col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    badge = "<span class='ai-verified'>AI VERIFIED</span>" if 'verification_msg' in sig else ""
                     st.markdown(f"""
                     <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b> {badge}<br>
+                        <b>{sig['pair']} | {sig['dir']}</b><br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%<br>
-                        <small>{sig.get('verification_msg', '')}</small>
+                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
                     </div>
                     """, unsafe_allow_html=True)
                 with col2:
