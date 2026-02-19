@@ -952,7 +952,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     response_text = ""
     provider_name = ""
 
-    with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
+    with st.status(f"🚀 Infinite AI + ALGO Analyses activating ({tf})...", expanded=True) as status:
         if not gemini_keys: st.error("❌ No Gemini Keys found!")
         
         # Try Gemini First
@@ -1073,7 +1073,7 @@ def get_deep_hybrid_analysis(trade, user_info):
         # If limit reached, return a basic message
         return "Daily limit reached. Please try again tomorrow.", "Limit Reached"
     
-    with st.status(f"🔍 Deep AI Analysis for {pair}...", expanded=True) as status:
+    with st.status(f"🔍 Infinite AI + ALGO Deep Analysis for {pair}...", expanded=True) as status:
         if not gemini_keys:
             st.error("❌ No Gemini Keys found!")
             # Fallback to Puter directly
@@ -1433,9 +1433,9 @@ else:
             forecast_placeholder = st.empty()
             
             if st.button("🚀 Analyze with Gemini + Puter + News", use_container_width=True):
-                # Show animation while loading
+                # Show animation while loading - updated to Infinite AI + ALGO Analyses
                 with forecast_placeholder.container():
-                    st.markdown("<div class='forecast-loading'><span class='loading-icon'>⚡</span> Analyzing with AI... Generating Forecast...</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='forecast-loading'><span class='loading-icon'>⚡</span> Infinite AI + ALGO Analyses in progress...</div>", unsafe_allow_html=True)
                 
                 # Use live price for analysis
                 live_price = get_live_price(pair) or curr_p
@@ -1618,9 +1618,9 @@ else:
             st.markdown("---")
             st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
             
-            # Run analysis if not already done
+            # Run analysis if not already done - updated loading message
             if st.session_state.deep_analysis_result is None:
-                with st.spinner("Running deep analysis with Gemini + Puter..."):
+                with st.spinner("Infinite AI + ALGO Deep Analysis in progress..."):
                     result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user)
                     st.session_state.deep_analysis_result = result
                     st.session_state.deep_analysis_provider = provider
@@ -1695,6 +1695,43 @@ else:
                     live = get_live_price(pair)
                     live_display = f"{live:.4f}" if live else "N/A"
                     
+                    # Calculate progress towards TP or SL
+                    progress_value = 0.0
+                    progress_text = ""
+                    try:
+                        entry = float(trade['Entry'])
+                        sl = float(trade['SL'])
+                        tp = float(trade['TP'])
+                        if live is not None:
+                            if trade['Direction'] == "BUY":
+                                if live >= entry:
+                                    # Profit zone: progress towards TP
+                                    total = tp - entry
+                                    if total > 0:
+                                        progress_value = min((live - entry) / total, 1.0)
+                                    progress_text = "TP Progress"
+                                else:
+                                    # Loss zone: progress towards SL
+                                    total = entry - sl
+                                    if total > 0:
+                                        progress_value = min((entry - live) / total, 1.0)
+                                    progress_text = "SL Progress"
+                            else:  # SELL
+                                if live <= entry:
+                                    # Profit zone (price down)
+                                    total = entry - tp
+                                    if total > 0:
+                                        progress_value = min((entry - live) / total, 1.0)
+                                    progress_text = "TP Progress"
+                                else:
+                                    # Loss zone (price up)
+                                    total = sl - entry
+                                    if total > 0:
+                                        progress_value = min((live - entry) / total, 1.0)
+                                    progress_text = "SL Progress"
+                    except:
+                        pass
+                    
                     col1, col2 = st.columns([5,1])
                     with col1:
                         st.markdown(f"""
@@ -1705,6 +1742,9 @@ else:
                             <small>Tracked since: {trade['Timestamp']}</small>
                         </div>
                         """, unsafe_allow_html=True)
+                        # Add progress bar
+                        if progress_text:
+                            st.progress(progress_value, text=progress_text)
                     with col2:
                         # Delete button
                         if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
