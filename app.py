@@ -4,47 +4,24 @@ import pandas as pd
 import puter  # Puter AI for Fallback
 import google.generativeai as genai # Gemini AI
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime, timedelta
+from datetime import datetime, time as dt_time
 import time
 import re
 import numpy as np
 import requests
 import xml.etree.ElementTree as ET
-import pytz # For Timezone handling
 
-# --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
-st.set_page_config(page_title="Infinite Algo Terminal v26.0", layout="wide", page_icon="⚡")
+# --- 1. SETUP & STYLE ---
+st.set_page_config(page_title="Infinite System v15.0 (Unlocked)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
-    /* Professional font stack */
-    * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
-    
     /* --- ANIMATIONS & GLOBAL STYLES --- */
     @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); } }
     @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(255, 75, 75, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); } }
-    @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    @keyframes shimmer {
-        0% { background-position: -1000px 0; }
-        100% { background-position: 1000px 0; }
-    }
-    @keyframes float {
-        0% { transform: translateY(0px); }
-        50% { transform: translateY(-5px); }
-        100% { transform: translateY(0px); }
-    }
-    @keyframes glow {
-        0% { box-shadow: 0 0 5px #00d4ff; }
-        50% { box-shadow: 0 0 20px #00d4ff; }
-        100% { box-shadow: 0 0 5px #00d4ff; }
-    }
-    .loading-icon { display: inline-block; animation: rotate 2s linear infinite; font-size: 24px; }
     
     .stApp { animation: fadeIn 0.8s ease-out forwards; }
 
@@ -56,8 +33,8 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 20px;
         text-align: center;
-        animation: glow 2s infinite;
     }
+    .high-prob-title { color: #00d4ff; font-size: 24px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
     
     /* --- TEXT COLORS --- */
     .price-up { color: #00ff00; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(0, 255, 0, 0.5); }
@@ -70,17 +47,16 @@ st.markdown("""
         padding: 20px; border-radius: 15px; margin-top: 15px; 
         color: white; backdrop-filter: blur(10px);
         box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
-        transition: transform 0.3s, box-shadow 0.3s;
-        animation: float 4s ease-in-out infinite;
+        transition: transform 0.3s;
     }
-    .entry-box:hover { transform: scale(1.02); box-shadow: 0 0 30px rgba(0, 212, 255, 0.5); }
+    .entry-box:hover { transform: scale(1.01); }
     
     .trade-metric { 
         background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
         border: 1px solid #444; 
         border-radius: 12px; padding: 15px; text-align: center; transition: all 0.3s ease;
     }
-    .trade-metric:hover { transform: translateY(-5px) scale(1.02); box-shadow: 0 10px 20px rgba(0,0,0,0.5); border-color: #00d4ff; }
+    .trade-metric:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(0,0,0,0.5); border-color: #00d4ff; }
     .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
     .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 22px; font-weight: bold; }
     
@@ -89,32 +65,17 @@ st.markdown("""
         background: #1e1e1e;
         padding: 12px; margin-bottom: 10px; 
         border-radius: 8px; transition: all 0.3s ease; border-right: 1px solid #333;
-        animation: fadeIn 0.5s;
-        position: relative;
     }
     .news-card:hover { transform: translateX(5px); background: #252525; box-shadow: -5px 0 10px rgba(0,0,0,0.3); }
     .news-positive { border-left: 5px solid #00ff00; }
     .news-negative { border-left: 5px solid #ff4b4b; }
     .news-neutral { border-left: 5px solid #00d4ff; }
-    .news-time {
-        font-size: 10px;
-        color: #888;
-        position: absolute;
-        bottom: 2px;
-        right: 8px;
-    }
     
     /* --- SIGNAL BOXES --- */
     .sig-box { 
         padding: 12px;
         border-radius: 8px; font-size: 13px; text-align: center; 
         font-weight: bold; border: 1px solid #444; margin-bottom: 8px; box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
-        transition: all 0.3s;
-        animation: fadeIn 0.6s;
-    }
-    .sig-box:hover {
-        transform: scale(1.02);
-        box-shadow: 0 0 15px currentColor;
     }
     .bull { background: linear-gradient(90deg, #004d40, #00695c); color: #00ff00; border-color: #00ff00; }
     .bear { background: linear-gradient(90deg, #4a1414, #7f0000); color: #ff4b4b; border-color: #ff4b4b; }
@@ -125,114 +86,19 @@ st.markdown("""
         padding: 20px;
         border-radius: 12px; margin-bottom: 25px; 
         border-left: 8px solid; background: #121212; font-size: 18px;
-        animation: fadeIn 0.8s;
     }
     .notif-buy { border-color: #00ff00; color: #00ff00; animation: pulse-green 2s infinite; }
     .notif-sell { border-color: #ff4b4b; color: #ff4b4b; animation: pulse-red 2s infinite; }
     .notif-wait { border-color: #555; color: #aaa; }
     
+    /* --- CHAT --- */
+    .chat-msg { padding: 10px; border-radius: 8px; margin-bottom: 8px; background: #2a2a2a; border-left: 3px solid #00d4ff; }
+    .chat-user { font-weight: bold; color: #00d4ff; font-size: 13px; }
+    
     /* --- ADMIN TABLE --- */
     .admin-table { font-size: 14px; width: 100%; border-collapse: collapse; }
     .admin-table th, .admin-table td { border: 1px solid #444; padding: 8px; text-align: left; }
     .admin-table th { background-color: #333; color: #00d4ff; }
-    
-    /* --- FORECAST ANIMATION --- */
-    .forecast-loading {
-        text-align: center;
-        padding: 20px;
-        background: #1e1e1e;
-        border-radius: 10px;
-        border: 1px solid #00d4ff;
-        margin: 10px 0;
-        animation: glow 1.5s infinite;
-    }
-    .forecast-loading span {
-        font-size: 20px;
-        color: #00d4ff;
-    }
-    
-    /* --- NEW SCAN CARD ANIMATION --- */
-    .scan-card {
-        animation: slideInUp 0.5s ease-out;
-    }
-    @keyframes slideInUp {
-        from { opacity: 0; transform: translateY(30px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    
-    /* --- USER-FRIENDLY IMPROVEMENTS --- */
-    .stButton>button {
-        border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.2s;
-    }
-    .stButton>button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 10px rgba(0,212,255,0.3);
-    }
-    .scan-header {
-        background: linear-gradient(90deg, #1e3c3f, #0a1f2e);
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-        border-left: 5px solid #00d4ff;
-    }
-    
-    /* --- ADDITIONAL PROFESSIONAL TOUCHES --- */
-    .main-title {
-        text-align: center;
-        background: linear-gradient(135deg, #0a1f2e, #1e3c3f);
-        padding: 20px;
-        border-radius: 15px;
-        margin-bottom: 25px;
-        border: 1px solid #00d4ff;
-        box-shadow: 0 0 30px rgba(0,212,255,0.2);
-    }
-    .main-title h1 {
-        color: #00d4ff;
-        font-weight: 700;
-        letter-spacing: 2px;
-        margin: 0;
-    }
-    .main-title p {
-        color: #ccc;
-        margin: 5px 0 0;
-    }
-    .footer {
-        text-align: center;
-        margin-top: 40px;
-        padding: 15px;
-        background: #0e0e0e;
-        border-radius: 10px;
-        font-size: 12px;
-        color: #666;
-        border-top: 1px solid #333;
-    }
-    div.stSlider > div[data-baseweb="slider"] {
-        padding-top: 1rem;
-    }
-    .stSlider label {
-        color: #00d4ff !important;
-        font-weight: 600;
-    }
-    .stSelectbox label {
-        color: #00d4ff !important;
-        font-weight: 600;
-    }
-    .stRadio label {
-        color: #00d4ff !important;
-    }
-    .stCheckbox label {
-        color: #00d4ff !important;
-    }
-    .css-1v0mbdj.etr89bj1 {
-        background: #1e1e1e;
-        border-radius: 10px;
-        padding: 10px;
-    }
-    hr {
-        border-color: #333;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -240,91 +106,10 @@ st.markdown("""
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
 if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
+if "chat_history" not in st.session_state: st.session_state.chat_history = []
 if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
-if "forecast_chart" not in st.session_state: st.session_state.forecast_chart = None
-if "selected_trade" not in st.session_state: st.session_state.selected_trade = None
-if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysis_result = None
-if "deep_analysis_provider" not in st.session_state: st.session_state.deep_analysis_provider = None
-if "deep_forecast_chart" not in st.session_state: st.session_state.deep_forecast_chart = None
-if "selected_market" not in st.session_state: st.session_state.selected_market = "All"
-if "min_accuracy" not in st.session_state: st.session_state.min_accuracy = 40  # default
-if "selected_theory" not in st.session_state: st.session_state.selected_theory = None  # for theory chart
 
-# Cache for live prices (to avoid rate limits)
-if "price_cache" not in st.session_state:
-    st.session_state.price_cache = {}  # clean_pair -> (price, timestamp)
-
-# ==================== HELPER FUNCTIONS ====================
-
-def get_yf_symbol(display_symbol):
-    """
-    Convert a display symbol (from assets list) to yfinance symbol.
-    - Forex/Metals: already end with =X, return as is.
-    - Crypto: end with -USDT, replace with -USD.
-    """
-    if display_symbol.endswith("-USDT"):
-        return display_symbol.replace("-USDT", "-USD")
-    return display_symbol  # already has =X for forex/metals
-
-def clean_pair_to_yf_symbol(clean_pair):
-    """
-    Convert a clean pair string (as stored in sheet) to yfinance symbol.
-    Examples:
-        EURUSD -> EURUSD=X
-        XAUUSD -> XAUUSD=X
-        BTCUSDT -> BTC-USD
-    """
-    # If it's a known metal
-    if clean_pair in ["XAUUSD", "XAGUSD", "XPTUSD", "XPDUSD"]:
-        return clean_pair + "=X"
-    # If it ends with USDT (crypto)
-    if clean_pair.endswith("USDT"):
-        # BTCUSDT -> BTC-USD
-        base = clean_pair[:-4]  # remove USDT
-        return base + "-USD"
-    # Otherwise assume forex or index, add =X
-    return clean_pair + "=X"
-
-def get_live_price(clean_pair):
-    """
-    Fetch current live price using yfinance with caching.
-    clean_pair is the pair string as stored in the sheet (e.g., EURUSD, BTCUSDT, XAUUSD).
-    """
-    current_time = time.time()
-    cache_duration = 60  # seconds
-
-    # Check cache
-    if clean_pair in st.session_state.price_cache:
-        price, timestamp = st.session_state.price_cache[clean_pair]
-        if current_time - timestamp < cache_duration:
-            return price
-
-    # Convert to yfinance symbol
-    yf_sym = clean_pair_to_yf_symbol(clean_pair)
-
-    try:
-        ticker = yf.Ticker(yf_sym)
-        # Try to get latest price from 1-minute data (fast)
-        hist = ticker.history(period="1d", interval="1m")
-        if not hist.empty:
-            price = float(hist['Close'].iloc[-1])
-            st.session_state.price_cache[clean_pair] = (price, current_time)
-            return price
-        # Fallback to fast_info
-        if hasattr(ticker, 'fast_info') and ticker.fast_info:
-            price = ticker.fast_info['lastPrice']
-            st.session_state.price_cache[clean_pair] = (price, current_time)
-            return price
-        # Fallback to regularMarketPrice from info
-        price = ticker.info.get('regularMarketPrice', None)
-        if price:
-            st.session_state.price_cache[clean_pair] = (price, current_time)
-        return price
-    except Exception as e:
-        print(f"Error fetching price for {clean_pair} via {yf_sym}: {e}")
-        return None
-
-# --- Google Sheets Functions (User DB) ---
+# --- Helper Functions (DB & Auth) ---
 def get_user_sheet():
     try:
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -335,229 +120,18 @@ def get_user_sheet():
         return sheet, client
     except: return None, None
 
-# --- Google Sheets Functions for Ongoing Trades (Sheet2) ---
-def get_ongoing_sheet():
-    """Get or create the Ongoing Trades worksheet (Sheet2) with proper headers"""
-    try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
-        spreadsheet = client.open("Forex_User_DB")
-        try:
-            sheet = spreadsheet.worksheet("Ongoing_Trades")
-        except gspread.WorksheetNotFound:
-            # Create worksheet with headers
-            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=11)
-            headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes"]
-            sheet.append_row(headers)
-        return sheet, client
-    except Exception as e:
-        st.error(f"Ongoing Trades sheet error: {e}")
-        return None, None
-
-def save_trade_to_ongoing(trade, username):
-    """Save a trade dictionary to Ongoing_Trades sheet with Status='Active'"""
-    sheet, _ = get_ongoing_sheet()
-    if sheet:
-        try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            row = [
-                username,
-                now,
-                trade['pair'],
-                trade['dir'],
-                trade['entry'],
-                trade['sl'],
-                trade['tp'],
-                trade['conf'],
-                "Active",
-                "",
-                ""
-            ]
-            sheet.append_row(row)
-            return True
-        except Exception as e:
-            st.error(f"Error saving trade: {e}")
-            return False
-    return False
-
-def load_user_trades(username, status=None):
-    """Load trades for a user, optionally filtered by status (Active, SL Hit, TP Hit, or None for all).
-       Returns list of dicts each including 'row_num' (sheet row number)."""
-    sheet, _ = get_ongoing_sheet()
-    if sheet:
-        try:
-            records = sheet.get_all_records()
-            user_trades = []
-            for idx, record in enumerate(records):
-                if record.get('User') == username:
-                    if status is None or record.get('Status') == status or (isinstance(status, list) and record.get('Status') in status):
-                        # Add row number (sheet row = idx + 2 because headers are row 1)
-                        record_copy = record.copy()
-                        record_copy['row_num'] = idx + 2
-                        user_trades.append(record_copy)
-            return user_trades
-        except Exception as e:
-            st.error(f"Error loading trades: {e}")
-            return []
-    return []
-
-def update_trade_status_by_row(row_index, new_status, closed_date=""):
-    """Update the status of a trade by row index (0-based from records)"""
-    sheet, _ = get_ongoing_sheet()
-    if sheet:
-        try:
-            headers = sheet.row_values(1)
-            status_col = headers.index("Status") + 1
-            closed_col = headers.index("ClosedDate") + 1
-            sheet.update_cell(row_index + 2, status_col, new_status)
-            if closed_date:
-                sheet.update_cell(row_index + 2, closed_col, closed_date)
-            return True
-        except Exception as e:
-            st.error(f"Error updating trade: {e}")
-            return False
-    return False
-
-def delete_trade_by_row_number(row_number):
-    """Delete a trade row from Ongoing_Trades sheet by its sheet row number (1‑based)."""
-    sheet, _ = get_ongoing_sheet()
-    if sheet:
-        try:
-            # delete_rows expects 1‑based index; it deletes the row at that index
-            sheet.delete_rows(row_number)
-            return True
-        except Exception as e:
-            st.error(f"Error deleting trade: {e}")
-            return False
-    return False
-
-def check_and_update_trades(username):
-    """Check all active trades for this user, update if SL/TP hit, return updated list"""
-    sheet, _ = get_ongoing_sheet()
-    if not sheet:
-        return []
-    
-    try:
-        records = sheet.get_all_records()
-        
-        # Find rows for this user with Active status
-        for idx, record in enumerate(records):
-            if record.get('User') == username and record.get('Status') == 'Active':
-                # Get current live price
-                pair = record['Pair']  # This is clean pair (e.g., EURUSD, BTCUSDT)
-                live = get_live_price(pair)
-                if live is None:
-                    continue
-                
-                # Convert string values to float (remove commas if any)
-                try:
-                    entry_str = str(record['Entry']).replace(',', '')
-                    sl_str = str(record['SL']).replace(',', '')
-                    tp_str = str(record['TP']).replace(',', '')
-                    entry = float(entry_str)
-                    sl = float(sl_str)
-                    tp = float(tp_str)
-                except Exception as e:
-                    st.warning(f"Could not convert values for {pair}: {e}")
-                    continue
-                
-                direction = record['Direction']
-                
-                # Check if SL or TP hit
-                hit = False
-                new_status = ""
-                if direction == "BUY":
-                    if live <= sl:
-                        new_status = "SL Hit"
-                        hit = True
-                    elif live >= tp:
-                        new_status = "TP Hit"
-                        hit = True
-                else:  # SELL
-                    if live >= sl:
-                        new_status = "SL Hit"
-                        hit = True
-                    elif live <= tp:
-                        new_status = "TP Hit"
-                        hit = True
-                
-                if hit:
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    update_trade_status_by_row(idx, new_status, now)
-        
-        # Reload active trades after updates
-        return load_user_trades(username, status='Active')
-    except Exception as e:
-        st.error(f"Error checking trades: {e}")
-        return []
-
-# --- Helper function to check if a scan result is already tracked ---
-def is_trade_tracked(scan_trade, active_trades):
-    """
-    Check if a scan result (dict with pair, dir, entry) exists in active_trades list.
-    Uses approximate entry price matching (within 0.1%).
-    """
-    for active in active_trades:
-        if active['Pair'] != scan_trade['pair']:
-            continue
-        if active['Direction'] != scan_trade['dir']:
-            continue
-        # Compare entry prices with tolerance (0.1% of entry price)
-        try:
-            active_entry = float(active['Entry'])
-            scan_entry = scan_trade['entry']
-            diff_percent = abs(active_entry - scan_entry) / scan_entry
-            if diff_percent < 0.001:  # 0.1% tolerance
-                return True
-        except:
-            pass
-    return False
-
-# --- Existing helper functions (unchanged) ---
-def get_current_date_str():
-    tz = pytz.timezone('Asia/Colombo')
-    return datetime.now(tz).strftime("%Y-%m-%d")
-
 def check_login(username, password):
     if username == "admin" and password == "admin123": 
-        return {"Username": "Admin", "Role": "Admin", "HybridLimit": 9999, "UsageCount": 0, "LastLogin": get_current_date_str()}
-    
+        return {"Username": "Admin", "Role": "Admin", "HybridLimit": 9999, "UsageCount": 0}
     sheet, _ = get_user_sheet()
     if sheet:
         try:
             records = sheet.get_all_records()
             user = next((i for i in records if str(i.get("Username")) == username), None)
-            
             if user and str(user.get("Password")) == password:
-                current_date = get_current_date_str()
-                last_login_date = str(user.get("LastLogin", ""))
-                
-                if last_login_date != current_date:
-                    try:
-                        cell = sheet.find(username)
-                        headers = sheet.row_values(1)
-                        
-                        if "UsageCount" in headers:
-                            sheet.update_cell(cell.row, headers.index("UsageCount") + 1, 0)
-                            user["UsageCount"] = 0
-                        
-                        if "HybridLimit" in headers:
-                            current_limit = int(user.get("HybridLimit", 10))
-                            if current_limit < 9000: 
-                                sheet.update_cell(cell.row, headers.index("HybridLimit") + 1, 10)
-                                user["HybridLimit"] = 10
-                                
-                        if "LastLogin" in headers:
-                            sheet.update_cell(cell.row, headers.index("LastLogin") + 1, current_date)
-                            user["LastLogin"] = current_date
-                        
-                    except Exception as e:
-                        print(f"Daily Reset Error: {e}")
-                
-                if "HybridLimit" not in user: user["HybridLimit"] = 10
-                if "UsageCount" not in user: user["UsageCount"] = 0
-                
+                # Ensure defaults exist
+                if "HybridLimit" not in user or user["HybridLimit"] == "": user["HybridLimit"] = 10
+                if "UsageCount" not in user or user["UsageCount"] == "": user["UsageCount"] = 0
                 return user
         except: return None
     return None
@@ -572,7 +146,9 @@ def update_usage_in_db(username, new_usage):
                 if "UsageCount" in headers:
                     col_idx = headers.index("UsageCount") + 1
                     sheet.update_cell(cell.row, col_idx, new_usage)
+                    return True
         except Exception as e: print(f"DB Update Error: {e}")
+    return False
 
 def update_user_limit_in_db(username, new_limit):
     sheet, _ = get_user_sheet()
@@ -595,7 +171,8 @@ def add_new_user_to_db(username, password, limit):
             cell = sheet.find(username)
             if cell:
                 return False, "User already exists!"
-            sheet.append_row([username, password, "User", limit, 0, get_current_date_str()])
+            # Add user with 0 usage
+            sheet.append_row([username, password, "User", limit, 0])
             return True, f"User {username} created successfully!"
         except Exception as e:
             return False, f"Error creating user: {e}"
@@ -603,85 +180,40 @@ def add_new_user_to_db(username, password, limit):
 
 def get_sentiment_class(title):
     title_lower = title.lower()
-    negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump', 'missed']
-    positive_words = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat', 'positive']
+    negative_words = ['crash', 'drop', 'fall', 'plunge', 'loss', 'down', 'bear', 'weak', 'inflation', 'war', 'crisis', 'retreat', 'slump']
+    positive_words = ['surge', 'rise', 'jump', 'gain', 'bull', 'up', 'strong', 'growth', 'profit', 'record', 'soar', 'rally', 'beat']
     if any(word in title_lower for word in negative_words): return "news-negative"
     elif any(word in title_lower for word in positive_words): return "news-positive"
     else: return "news-neutral"
 
 def get_market_news(symbol):
-    """
-    Fetch market news for a symbol.
-    Returns list of dicts with 'title', 'link', and 'time' (formatted string).
-    """
     news_list = []
-    clean_sym = symbol.replace("=X", "").replace("-USD", "").replace("-USDT", "")
-    tz = pytz.timezone('Asia/Colombo')
-    
-    # Try Google News RSS
+    clean_sym = symbol.replace("=X", "").replace("-USD", "")
     try:
-        url = f"https://news.google.com/rss/search?q={clean_sym}+finance+market&hl=en-US&gl=US&ceid=US:en"
+        url = f"https://news.google.com/rss/search?q={clean_sym}+forex+market&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, timeout=5)
         if response.status_code == 200:
             root = ET.fromstring(response.text)
-            for item in root.findall('.//item')[:4]:
-                title = item.find('title').text
-                link = item.find('link').text
-                pubDate = item.find('pubDate').text if item.find('pubDate') is not None else ""
-                # Parse pubDate to a readable format
-                try:
-                    if pubDate:
-                        # pubDate format: 'Wed, 19 Feb 2025 10:30:00 GMT'
-                        dt = datetime.strptime(pubDate, '%a, %d %b %Y %H:%M:%S %Z')
-                        # Convert to Colombo time
-                        dt_utc = pytz.utc.localize(dt)
-                        dt_colombo = dt_utc.astimezone(tz)
-                        time_str = dt_colombo.strftime('%H:%M %d/%m')
-                    else:
-                        time_str = ""
-                except:
-                    time_str = ""
-                news_list.append({"title": title, "link": link, "time": time_str})
-    except:
-        pass
-    
-    # Fallback to yfinance news if RSS fails
+            for item in root.findall('.//item')[:3]:
+                news_list.append({"title": item.find('title').text, "link": item.find('link').text})
+    except: pass
     if not news_list:
         try:
-            ticker = yf.Ticker(get_yf_symbol(symbol))
+            ticker = yf.Ticker(symbol)
             yf_news = ticker.news
             if yf_news:
-                for item in yf_news[:4]:
-                    title = item.get('title')
-                    link = item.get('link')
-                    # Try to get publish time
-                    pub_time = item.get('providerPublishTime')
-                    if pub_time:
-                        dt_utc = datetime.fromtimestamp(pub_time, tz=pytz.utc)
-                        dt_colombo = dt_utc.astimezone(tz)
-                        time_str = dt_colombo.strftime('%H:%M %d/%m')
-                    else:
-                        time_str = ""
-                    news_list.append({"title": title, "link": link, "time": time_str})
-        except:
-            pass
-    
+                for item in yf_news[:3]:
+                    news_list.append({"title": item.get('title'), "link": item.get('link')})
+        except: pass
     return news_list
 
-def calculate_news_impact(news_list):
-    impact_score = 50
-    high_impact_keywords = ['cpi', 'nfp', 'fomc', 'rate', 'gdp', 'fed', 'war', 'crisis']
-    
-    for news in news_list:
-        title = news['title'].lower()
-        if any(kw in title for kw in high_impact_keywords):
-            impact_score += 10
-            
-        cls = get_sentiment_class(title)
-        if cls == "news-positive": impact_score += 5
-        elif cls == "news-negative": impact_score -= 5
-        
-    return min(max(impact_score, 0), 100)
+def calculate_news_score(news_items):
+    score = 0
+    for news in news_items:
+        s_class = get_sentiment_class(news['title'])
+        if s_class == "news-positive": score += 10
+        elif s_class == "news-negative": score -= 10
+    return max(min(score, 20), -20)
 
 def get_data_period(tf):
     if tf in ["1m", "5m"]: return "5d"
@@ -692,31 +224,25 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
-# --- 4. ADVANCED SIGNAL ENGINE (UPDATED) ---
-def calculate_advanced_signals(df, tf):
+# --- 4. ADVANCED SIGNAL ENGINE ---
+def calculate_advanced_signals(df, tf, news_items=[]):
     if df is None or len(df) < 50: return None, 0, 0
     signals = {}
     c = df['Close'].iloc[-1]
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
     
-    # --- 1. TREND & SUPPORT/RESISTANCE ---
+    # --- 1. TREND (MA & Slope) ---
     ma_50 = df['Close'].rolling(50).mean().iloc[-1]
     ma_200 = df['Close'].rolling(200).mean().iloc[-1] if len(df) > 200 else ma_50
-    trend_dir = "neutral"
-    if c > ma_50 and c > ma_200: trend_dir = "bull"
-    elif c < ma_50 and c < ma_200: trend_dir = "bear"
-    signals['TREND'] = (f"Trend {trend_dir.upper()}", trend_dir)
-
-    # Simple Pivot Calculation for S/R
-    pivot = (df['High'].iloc[-2] + df['Low'].iloc[-2] + df['Close'].iloc[-2]) / 3
-    r1 = (2 * pivot) - df['Low'].iloc[-2]
-    s1 = (2 * pivot) - df['High'].iloc[-2]
+    y_vals = df['Close'].tail(20).values
+    x_vals = np.arange(len(y_vals))
+    slope, intercept = np.polyfit(x_vals, y_vals, 1)
     
-    sr_status = "In Channel"
-    if c >= r1: sr_status = "At Resistance"
-    elif c <= s1: sr_status = "At Support"
-    signals['SR'] = (sr_status, "neutral") # Used for logic
+    trend_dir = "neutral"
+    if c > ma_50 and c > ma_200 and slope > 0: trend_dir = "bull"
+    elif c < ma_50 and c < ma_200 and slope < 0: trend_dir = "bear"
+    signals['TREND'] = (f"Trend {trend_dir.upper()} (Slope {slope:.2f})", trend_dir)
 
     # --- 2. MACD ---
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
@@ -725,7 +251,6 @@ def calculate_advanced_signals(df, tf):
     signal_line = macd.ewm(span=9, adjust=False).mean()
     macd_val = macd.iloc[-1]
     sig_val = signal_line.iloc[-1]
-    
     macd_signal = "neutral"
     if macd_val > sig_val and macd_val > 0: macd_signal = "bull"
     elif macd_val < sig_val and macd_val < 0: macd_signal = "bear"
@@ -733,25 +258,35 @@ def calculate_advanced_signals(df, tf):
     # --- 3. SMC & ICT ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
     smc_signal = "neutral"
-    if c > highs.iloc[-2]: smc_signal = "bull" # Break of Structure (BOS) Up
-    elif c < lows.iloc[-2]: smc_signal = "bear" # BOS Down
-    signals['SMC'] = (f"{smc_signal.upper()} Structure", smc_signal)
+    last_candles = df.tail(5)
+    is_bullish_ob = (last_candles['Close'].iloc[-3] < last_candles['Open'].iloc[-3]) and \
+                    (last_candles['Close'].iloc[-1] > last_candles['High'].iloc[-3])
+    is_bearish_ob = (last_candles['Close'].iloc[-3] > last_candles['Open'].iloc[-3]) and \
+                    (last_candles['Close'].iloc[-1] < last_candles['Low'].iloc[-3])
+
+    if c > highs.iloc[-2] or is_bullish_ob: smc_signal = "bull"
+    elif c < lows.iloc[-2] or is_bearish_ob: smc_signal = "bear"
+    signals['SMC'] = (f"{smc_signal.upper()} Structure/OB", smc_signal)
     
-    # ICT: FVG (Fair Value Gap)
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     ict_signal = "bull" if fvg_bull else ("bear" if fvg_bear else "neutral")
     signals['ICT'] = (f"{ict_signal.upper()} FVG", ict_signal)
 
-    # --- 4. LIQUIDITY ---
+    # --- 4. LIQUIDITY & RETAIL ---
     liq_signal = "neutral"
-    liq_text = "Stable"
-    if l < df['Low'].iloc[-10:-1].min(): 
-        liq_signal = "bull" # Sweep lows -> reversal up
-        liq_text = "Liq Grab (Low)"
-    elif h > df['High'].iloc[-10:-1].max():
-        liq_signal = "bear" # Sweep highs -> reversal down
-        liq_text = "Liq Grab (High)"
+    liq_text = "Holding"
+    recent_low = df['Low'].tail(30).min()
+    recent_high = df['High'].tail(30).max()
+    is_at_support = abs(c - recent_low) < (c * 0.002)
+    is_at_resistance = abs(c - recent_high) < (c * 0.002)
+
+    if l < df['Low'].iloc[-10:-1].min() or is_at_support: 
+        liq_signal = "bull" 
+        liq_text = "Liq Grab / Support"
+    elif h > df['High'].iloc[-10:-1].max() or is_at_resistance:
+        liq_signal = "bear" 
+        liq_text = "Liq Grab / Resist"
     signals['LIQ'] = (liq_text, liq_signal)
     
     # --- 5. PATTERNS ---
@@ -773,43 +308,33 @@ def calculate_advanced_signals(df, tf):
     bb_status = "neutral"
     bb_text = "Normal Vol"
     if c > upper_bb.iloc[-1]: 
-        bb_status = "bear" # Mean reversion
+        bb_status = "bear"
         bb_text = "Overextended"
     elif c < lower_bb.iloc[-1]:
-        bb_status = "bull" # Mean reversion
+        bb_status = "bull"
         bb_text = "Oversold"
     signals['VOLATILITY'] = (bb_text, bb_status)
 
-    # --- 7. RSI & RETAIL SENTIMENT ---
+    # --- 7. RSI ---
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
-    
-    retail_signal = "neutral"
-    if rsi_val > 70: retail_signal = "bear" # Retail is buying heavily (Overbought)
-    elif rsi_val < 30: retail_signal = "bull" # Retail is selling heavily (Oversold)
-    
-    signals['RSI'] = (f"RSI: {int(rsi_val)}", retail_signal)
-    signals['RETAIL'] = ("Retail Selling" if rsi_val < 40 else ("Retail Buying" if rsi_val > 60 else "Balanced"), retail_signal)
+    signals['RSI'] = (f"RSI: {int(rsi_val)}", "neutral")
 
     # --- 8. FIBONACCI ---
     ph_fib = df['High'].rolling(50).max().iloc[-1]
     pl_fib = df['Low'].rolling(50).min().iloc[-1]
     fib_range = ph_fib - pl_fib
     fib_618 = ph_fib - (fib_range * 0.618)
-    fib_50 = ph_fib - (fib_range * 0.5)
+    signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
     
-    fib_sig = "neutral"
-    if abs(c - fib_618) < (c * 0.001): fib_sig = "bull" # Bounce off 0.618
-    elif abs(c - fib_50) < (c * 0.001): fib_sig = "bull"
-    signals['FIB'] = ("Golden Zone" if fib_sig == "bull" else "No Fib Level", fib_sig)
-    
-    # --- 9. ELLIOTT WAVE (Simplified) ---
+    # --- 9. ELLIOTT WAVE ---
     last_50 = df['Close'].tail(50)
     max_50, min_50 = last_50.max(), last_50.min()
     current_pos = (c - min_50) / (max_50 - min_50) if (max_50 - min_50) != 0 else 0.5
+    
     ew_status = "Wave Analysis"
     ew_col = "neutral"
     if trend_dir == "bull":
@@ -822,18 +347,19 @@ def calculate_advanced_signals(df, tf):
         else: ew_status, ew_col = "Wave B (Rally)", "neutral"
     signals['ELLIOTT'] = (ew_status, ew_col)
 
-    # --- 10. CONFIDENCE SCORING & LOGIC ---
+    # --- 10. CONFIDENCE SCORING ---
     confidence = 0
-    
-    # Weightings
+    news_score = calculate_news_score(news_items)
+    confidence += news_score
+
     if trend_dir == "bull": confidence += 20
     elif trend_dir == "bear": confidence -= 20
     
     if macd_signal == "bull": confidence += 10
     elif macd_signal == "bear": confidence -= 10
     
-    if smc_signal == "bull": confidence += 15
-    elif smc_signal == "bear": confidence -= 15
+    if smc_signal == "bull": confidence += 20
+    elif smc_signal == "bear": confidence -= 20
     
     if ict_signal == "bull": confidence += 10
     elif ict_signal == "bear": confidence -= 10
@@ -841,16 +367,13 @@ def calculate_advanced_signals(df, tf):
     if liq_signal == "bull": confidence += 15
     elif liq_signal == "bear": confidence -= 15
     
-    if patt_signal == "bull": confidence += 10
-    elif patt_signal == "bear": confidence -= 10
-    
-    # Retail Sentiment Logic (Contrarian)
-    if retail_signal == "bull": confidence += 10 # Oversold, good for buy
-    elif retail_signal == "bear": confidence -= 10 # Overbought, good for sell
+    if patt_signal == "bull": confidence += 15
+    elif patt_signal == "bear": confidence -= 15
 
-    # Support/Resistance Logic
-    if sr_status == "At Support": confidence += 5
-    elif sr_status == "At Resistance": confidence -= 5
+    sk_conf = 0
+    if rsi_val < 30 and trend_dir == "bull": sk_conf = 10
+    elif rsi_val > 70 and trend_dir == "bear": sk_conf = -10
+    confidence += sk_conf
 
     final_signal = "neutral"
     if confidence > 0: final_signal = "bull"
@@ -871,12 +394,10 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     
     if tf in ["1m", "5m"]:
         trade_mode = "SCALPING (වේගවත්)"
-        sl_mult = 1.2
-        tp_mult = 2.0
+        sl_mult = 1.2; tp_mult = 2.0
     else:
         trade_mode = "SWING (දිගු කාලීන)"
-        sl_mult = 1.5
-        tp_mult = 3.5
+        sl_mult = 1.5; tp_mult = 3.5
 
     action = "WAIT"
     status_sinhala = "ප්‍රවේශම් වන්න. වෙළඳපල අවිනිශ්චිතයි."
@@ -892,7 +413,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
         sl, tp = curr_p + (atr * sl_mult), curr_p - (atr * tp_mult)
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V16.0**
+    ♾️ **INFINITE ALGO ENGINE V15.0 - UNLOCKED**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • Trade Type: {trade_mode}
@@ -908,47 +429,38 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf):
     """
     return analysis_text
 
-# --- 6. HYBRID AI ENGINE (VERIFICATION LOGIC) ---
+# --- 6. HYBRID AI ENGINE & CREDIT MANAGER ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     if sigs is None: return "Error: Insufficient Signal Data", "System Error"
     
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf)
     
-    current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
+    # --- CREDIT CHECK LOGIC ---
+    current_usage = int(user_info.get("UsageCount", 0))
+    max_limit = int(user_info.get("HybridLimit", 10))
     
+    # If limit reached and not Admin
     if current_usage >= max_limit and user_info["Role"] != "Admin":
+        st.error(f"⚠️ Credit Limit Reached! ({current_usage}/{max_limit}) - Contact Admin.")
         return algo_result, "Infinite Algo (Limit Reached)"
 
-    # Format news for AI
-    news_str = "\n".join([f"- {n['title']}" for n in news_items])
-
+    # --- AI PROMPT ---
     prompt = f"""
-    Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
-    Analyze {pair} on {tf} timeframe.
+    Act as a Senior Hedge Fund Trader. Analyze {pair} on {tf} timeframe.
+    The Algorithm calculates a confidence of {sigs['SK'][0]}.
     
-    **Current Technical Signals:**
-    - Trend: {sigs['TREND'][0]}
-    - SMC Structure: {sigs['SMC'][0]}
-    - RSI/Retail: {sigs['RSI'][0]}
-    - Algo Signal: {sigs['SK'][1].upper()} (Confidence: {sigs['SK'][0]})
-    - ICT FVG: {sigs['ICT'][0]}
+    **Infinite Algorithm Output:**
+    {algo_result}
     
-    **Recent News Headlines:**
-    {news_str}
-    
-    **Task:**
-    1. VERIFY the Algo Signal against the News. If news is highly negative but signal is Buy, WARN the user.
-    2. Use SMC, Fibonacci, and Liquidity concepts to confirm the best entry.
-    3. Output the explanation in SINHALA language (Technical terms in English).
-    4. Provide strict ENTRY, SL, TP based on ATR ({atr:.5f}) and Support/Resistance.
-    5. Additionally, provide a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
+    **Instructions:**
+    1. Analyze the trade setup based on current technicals.
+    2. Explain the setup in Sinhala (Technical terms in English).
+    3. Provide ENTRY, SL, TP based on ATR ({atr:.5f}).
     
     **FINAL OUTPUT FORMAT (STRICT):**
-    [Sinhala Verification & Explanation Here]
+    [Detailed Sinhala Explanation]
     
     DATA: ENTRY=xxxxx | SL=xxxxx | TP=xxxxx
-    FORECAST: [Brief forecast description]
     """
 
     gemini_keys = []
@@ -959,22 +471,22 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
     response_text = ""
     provider_name = ""
 
-    with st.status(f"🚀 Infinite AI + ALGO Analyses activating ({tf})...", expanded=True) as status:
+    with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
         if not gemini_keys: st.error("❌ No Gemini Keys found!")
         
-        # Try Gemini First
+        # Try Gemini
         for idx, key in enumerate(gemini_keys):
             try:
                 genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview')  # Updated model name
+                model = genai.GenerativeModel('gemini-2.0-flash-exp') 
                 response = model.generate_content(prompt)
                 response_text = response.text
-                provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
+                provider_name = f"Gemini 2.0 Flash (Key {idx+1}) ⚡"
                 status.update(label=f"✅ Gemini Analysis Complete!", state="complete", expanded=False)
                 break 
             except Exception as e: continue
 
-        # Fallback to Puter if Gemini fails
+        # Fallback to Puter
         if not response_text:
             try:
                 puter_resp = puter.ai.chat(prompt)
@@ -984,515 +496,62 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf):
             except Exception as e_puter:
                 return algo_result, "Infinite Algo (Fallback)"
 
+    # --- UPDATE CREDITS ON SUCCESS ---
     if response_text:
         new_usage = current_usage + 1
         user_info["UsageCount"] = new_usage
-        st.session_state.user = user_info 
+        st.session_state.user = user_info # Update local session
+        
         if user_info["Username"] != "Admin":
-            update_usage_in_db(user_info["Username"], new_usage)
+            update_success = update_usage_in_db(user_info["Username"], new_usage)
+            if update_success:
+                st.toast(f"Credit Used! New Balance: {new_usage}/{max_limit}", icon="💳")
+            
         return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
     
     return algo_result, "Infinite Algo (Default)"
 
 def parse_ai_response(text):
-    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A", "FORECAST": "N/A"}
+    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
     try:
         entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
         if entry_match: data["ENTRY"] = entry_match.group(1)
         if sl_match: data["SL"] = sl_match.group(1)
         if tp_match: data["TP"] = tp_match.group(1)
-        if forecast_match: data["FORECAST"] = forecast_match.group(1).strip()
     except: pass
     return data
 
-# ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
-def get_deep_hybrid_analysis(trade, user_info):
-    """Run deep analysis using Gemini + Puter (hybrid engine) for a scanner trade"""
-    pair = trade['pair']
-    # Construct original symbol for news and data
-    if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-        # Assume forex or metal without suffix
-        if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-            orig_sym = pair + "=X"
-        else:
-            # check if it's crypto (USDT)
-            orig_sym = pair + "-USDT"  # will be converted by get_yf_symbol later
-    else:
-        orig_sym = pair
-    
-    # Fetch news
-    news_items = get_market_news(orig_sym)
-    news_str = "\n".join([f"- {n['title']}" for n in news_items])
-    
-    # Get current live price
-    live_price = trade.get('live_price', trade['price'])
-    
-    # Determine timeframe display
-    tf_display = trade['tf']
-    
-    # Prompt for deep analysis
-    prompt = f"""
-    Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
-    Perform a deep analysis of the following trade setup:
-    
-    **Asset:** {pair}
-    **Timeframe:** {tf_display}
-    **Direction:** {trade['dir']}
-    **Entry:** {trade['entry']:.5f}
-    **Stop Loss:** {trade['sl']:.5f}
-    **Take Profit:** {trade['tp']:.5f}
-    **Confidence:** {trade['conf']}%
-    **Current Live Price:** {live_price:.5f}
-    
-    **Recent News Headlines:**
-    {news_str}
-    
-    **Task:**
-    1. Evaluate the risk-reward ratio of this trade.
-    2. Check if the current price is near entry and if it's a good moment to enter.
-    3. Provide a detailed analysis in SINHALA (use English for technical terms).
-    4. Suggest any adjustments to SL/TP based on recent price action.
-    5. Give a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
-    
-    **FINAL OUTPUT FORMAT (STRICT):**
-    [Sinhala Analysis]
-    
-    RISK:REWARD = x:y
-    FORECAST: [Brief forecast description]
-    """
-    
-    # Use hybrid AI (Gemini + Puter)
-    gemini_keys = []
-    for i in range(1, 8):
-        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
-        if k: gemini_keys.append(k)
-    
-    response_text = ""
-    provider_name = ""
-    
-    # Check usage limit
-    current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
-    if current_usage >= max_limit and user_info["Role"] != "Admin":
-        # If limit reached, return a basic message
-        return "Daily limit reached. Please try again tomorrow.", "Limit Reached"
-    
-    with st.status(f"🔍 Infinite AI + ALGO Deep Analysis for {pair}...", expanded=True) as status:
-        if not gemini_keys:
-            st.error("❌ No Gemini Keys found!")
-            # Fallback to Puter directly
-            try:
-                puter_resp = puter.ai.chat(prompt)
-                response_text = puter_resp.message.content
-                provider_name = "Puter AI (Fallback) 🔵"
-                status.update(label="✅ Deep Analysis Complete (Puter)", state="complete", expanded=False)
-            except:
-                return "Deep analysis failed. Please try again.", "Error"
-        else:
-            # Try Gemini first
-            for idx, key in enumerate(gemini_keys):
-                try:
-                    genai.configure(api_key=key)
-                    model = genai.GenerativeModel('gemini-3-flash-preview')
-                    response = model.generate_content(prompt)
-                    response_text = response.text
-                    provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
-                    status.update(label="✅ Deep Analysis Complete (Gemini)", state="complete", expanded=False)
-                    break
-                except Exception as e:
-                    continue
-            
-            # Fallback to Puter if Gemini fails
-            if not response_text:
-                try:
-                    puter_resp = puter.ai.chat(prompt)
-                    response_text = puter_resp.message.content
-                    provider_name = "Puter AI (Fallback) 🔵"
-                    status.update(label="✅ Deep Analysis Complete (Puter)", state="complete", expanded=False)
-                except Exception as e_puter:
-                    return "Deep analysis failed. Please try again.", "Error"
-    
-    if response_text:
-        # Update usage count
-        new_usage = current_usage + 1
-        user_info["UsageCount"] = new_usage
-        st.session_state.user = user_info
-        if user_info["Username"] != "Admin":
-            update_usage_in_db(user_info["Username"], new_usage)
-        return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}"
-    
-    return "Deep analysis failed.", "Error"
-
-# ==================== THEORY CHART FUNCTION ====================
-def create_theory_chart(df, signals, theory_key, pair_name, tf):
-    """
-    Create a chart highlighting the selected theory.
-    Returns a plotly figure.
-    """
-    # Create subplots: main candlestick and possibly RSI subplot
-    if theory_key == "RSI":
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                            vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    else:
-        fig = make_subplots(rows=1, cols=1)
-    
-    # Main candlestick
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        name='Price'
-    ), row=1, col=1)
-    
-    # Add theory-specific overlays
-    if theory_key == "TREND":
-        # Moving averages
-        ma50 = df['Close'].rolling(50).mean()
-        ma200 = df['Close'].rolling(200).mean() if len(df) > 200 else None
-        fig.add_trace(go.Scatter(x=df.index, y=ma50, line=dict(color='orange', width=2), name='MA50'), row=1, col=1)
-        if ma200 is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=ma200, line=dict(color='blue', width=2), name='MA200'), row=1, col=1)
-    
-    elif theory_key == "SMC":
-        # Recent swing highs/lows (last 20 bars)
-        highs = df['High'].rolling(window=10).max()
-        lows = df['Low'].rolling(window=10).min()
-        fig.add_trace(go.Scatter(x=df.index, y=highs, line=dict(color='green', width=1, dash='dot'), name='Swing Highs'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=lows, line=dict(color='red', width=1, dash='dot'), name='Swing Lows'), row=1, col=1)
-        # Mark break of structure if occurred
-        last_high = highs.iloc[-2]
-        last_low = lows.iloc[-2]
-        if df['Close'].iloc[-1] > last_high:
-            fig.add_annotation(x=df.index[-1], y=df['High'].iloc[-1], text="BOS Up", showarrow=True, arrowhead=2)
-        elif df['Close'].iloc[-1] < last_low:
-            fig.add_annotation(x=df.index[-1], y=df['Low'].iloc[-1], text="BOS Down", showarrow=True, arrowhead=2)
-    
-    elif theory_key == "LIQ":
-        # Recent highs/lows for liquidity
-        recent_high = df['High'].iloc[-20:].max()
-        recent_low = df['Low'].iloc[-20:].min()
-        fig.add_hline(y=recent_high, line_dash="dash", line_color="red", annotation_text="Recent High", row=1, col=1)
-        fig.add_hline(y=recent_low, line_dash="dash", line_color="green", annotation_text="Recent Low", row=1, col=1)
-    
-    elif theory_key == "PATT":
-        # Highlight engulfing patterns
-        for i in range(1, len(df)):
-            if i < 2: continue
-            if (df['Close'].iloc[i] > df['Open'].iloc[i] and 
-                df['Close'].iloc[i] > df['Open'].iloc[i-1] and 
-                df['Open'].iloc[i] < df['Close'].iloc[i-1]):
-                fig.add_vrect(x0=df.index[i-1], x1=df.index[i], 
-                              fillcolor="green", opacity=0.2, line_width=0, row=1, col=1)
-            elif (df['Close'].iloc[i] < df['Open'].iloc[i] and 
-                  df['Close'].iloc[i] < df['Open'].iloc[i-1] and 
-                  df['Open'].iloc[i] > df['Close'].iloc[i-1]):
-                fig.add_vrect(x0=df.index[i-1], x1=df.index[i], 
-                              fillcolor="red", opacity=0.2, line_width=0, row=1, col=1)
-    
-    elif theory_key == "ICT":
-        # Fair Value Gaps (simplified: show last gap if exists)
-        for i in range(2, len(df)):
-            if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-                fig.add_hline(y=df['High'].iloc[i-2], line_dash="dot", line_color="blue", 
-                              annotation_text="FVG Bottom", row=1, col=1)
-                fig.add_hline(y=df['Low'].iloc[i], line_dash="dot", line_color="blue", 
-                              annotation_text="FVG Top", row=1, col=1)
-                break
-            elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
-                fig.add_hline(y=df['Low'].iloc[i-2], line_dash="dot", line_color="blue", 
-                              annotation_text="FVG Top", row=1, col=1)
-                fig.add_hline(y=df['High'].iloc[i], line_dash="dot", line_color="blue", 
-                              annotation_text="FVG Bottom", row=1, col=1)
-                break
-    
-    elif theory_key == "VOLATILITY":
-        # Bollinger Bands
-        sma20 = df['Close'].rolling(20).mean()
-        std20 = df['Close'].rolling(20).std()
-        upper = sma20 + 2*std20
-        lower = sma20 - 2*std20
-        fig.add_trace(go.Scatter(x=df.index, y=upper, line=dict(color='gray', width=1, dash='dash'), name='Upper BB'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=lower, line=dict(color='gray', width=1, dash='dash'), name='Lower BB'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=sma20, line=dict(color='white', width=1), name='MA20'), row=1, col=1)
-    
-    elif theory_key == "RSI":
-        # RSI in subplot
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        fig.add_trace(go.Scatter(x=df.index, y=rsi, line=dict(color='purple', width=2), name='RSI'), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-        fig.update_yaxes(title_text="RSI", row=2, col=1)
-    
-    elif theory_key == "FIB":
-        # Fibonacci retracement from last major swing
-        # Use last 50 bars high/low
-        swing_high = df['High'].iloc[-50:].max()
-        swing_low = df['Low'].iloc[-50:].min()
-        diff = swing_high - swing_low
-        levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
-        for level in levels:
-            price = swing_high - level * diff
-            fig.add_hline(y=price, line_dash="dot", line_color="yellow", 
-                          annotation_text=f"{level*100:.1f}%", row=1, col=1)
-    
-    elif theory_key == "RETAIL":
-        # Show overbought/oversold zones
-        delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        if rsi.iloc[-1] > 70:
-            fig.add_hrect(y0=df['Low'].min(), y1=df['High'].max(), 
-                          fillcolor="red", opacity=0.1, line_width=0, annotation_text="Overbought", row=1, col=1)
-        elif rsi.iloc[-1] < 30:
-            fig.add_hrect(y0=df['Low'].min(), y1=df['High'].max(), 
-                          fillcolor="green", opacity=0.1, line_width=0, annotation_text="Oversold", row=1, col=1)
-    
-    elif theory_key == "ELLIOTT":
-        # Simple Elliott wave labeling based on position in range
-        last_50 = df['Close'].tail(50)
-        min50 = last_50.min()
-        max50 = last_50.max()
-        current = df['Close'].iloc[-1]
-        pos = (current - min50) / (max50 - min50) if max50 > min50 else 0.5
-        wave_label = ""
-        if signals and 'TREND' in signals:
-            trend_dir = signals['TREND'][1]
-            if trend_dir == "bull":
-                if pos > 0.8:
-                    wave_label = "Wave 5 (potential top)"
-                elif pos > 0.4:
-                    wave_label = "Wave 3 (impulse)"
-                else:
-                    wave_label = "Wave 1 (start)"
-            else:
-                if pos < 0.2:
-                    wave_label = "Wave C (drop)"
-                elif pos < 0.6:
-                    wave_label = "Wave A (correction)"
-                else:
-                    wave_label = "Wave B (rally)"
-        fig.add_annotation(x=df.index[-1], y=current, text=wave_label, 
-                          showarrow=True, arrowhead=2, ax=0, ay=-40)
-    
-    # Layout adjustments
-    fig.update_layout(
-        title=f"{pair_name} - {theory_key} Analysis ({tf})",
-        template="plotly_dark",
-        height=500,
-        margin=dict(l=0, r=0, t=40, b=0),
-        xaxis_rangeslider_visible=False
-    )
-    
-    return fig
-
-# ==================== UPDATED SCAN FUNCTION (filter > min_accuracy AND exclude tracked trades) ====================
-def scan_market(assets_list, active_trades=None, min_accuracy=40):
-    """
-    Scan market for swing and scalp setups with confidence > min_accuracy.
-    If active_trades list is provided, exclude any trades that are already being tracked.
-    """
+def scan_market(assets_list):
     swing_list = []
     scalp_list = []
-    
-    # --- SWING SCAN (4H) ---
     for symbol in assets_list:
         try:
-            df_sw = yf.download(get_yf_symbol(symbol), period="6mo", interval="4h", progress=False)
+            # Swing
+            df_sw = yf.download(symbol, period="6mo", interval="4h", progress=False)
             if not df_sw.empty and len(df_sw) > 50:
                 if isinstance(df_sw.columns, pd.MultiIndex): df_sw.columns = df_sw.columns.get_level_values(0)
-                sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h")
-                
-                # Filter: > min_accuracy
-                if abs(conf_sw) > min_accuracy: 
-                    clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
+                sigs_sw, _, conf_sw = calculate_advanced_signals(df_sw, "4h", [])
+                if abs(conf_sw) > 25: 
+                    clean_sym = symbol.replace("=X","").replace("-USD","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
-                    curr_price = df_sw['Close'].iloc[-1]
-                    # Calculate entry, SL, TP based on direction and ATR
-                    if direction == "BUY":
-                        entry = curr_price
-                        sl = entry - (atr_sw * 1.5)   # swing SL multiplier
-                        tp = entry + (atr_sw * 3.5)   # swing TP multiplier
-                    else:
-                        entry = curr_price
-                        sl = entry + (atr_sw * 1.5)
-                        tp = entry - (atr_sw * 3.5)
-                    
-                    trade_candidate = {
-                        "pair": clean_sym, "tf": "4H (Swing)", "dir": direction, 
-                        "conf": abs(conf_sw), "price": curr_price,
-                        "entry": entry, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(clean_sym) or curr_price,  # Use clean_sym for live price
-                        "symbol_orig": symbol
-                    }
-                    
-                    # If active_trades provided, check if this trade is already tracked
-                    if active_trades and is_trade_tracked(trade_candidate, active_trades):
-                        continue  # skip this trade
-                    
-                    swing_list.append(trade_candidate)
-        except: pass
-        
-    # --- SCALP SCAN (15M) ---
-    for symbol in assets_list:
-        try:
-            df_sc = yf.download(get_yf_symbol(symbol), period="1mo", interval="15m", progress=False)
+                    swing_list.append({"pair": clean_sym, "tf": "4H (Swing)", "dir": direction, "conf": abs(conf_sw), "price": df_sw['Close'].iloc[-1]})
+            # Scalp
+            df_sc = yf.download(symbol, period="1mo", interval="15m", progress=False)
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex): df_sc.columns = df_sc.columns.get_level_values(0)
-                sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m")
-                
-                # Filter: > min_accuracy
-                if abs(conf_sc) > min_accuracy: 
-                    clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
+                sigs_sc, _, conf_sc = calculate_advanced_signals(df_sc, "15m", [])
+                if abs(conf_sc) > 25: 
+                    clean_sym = symbol.replace("=X","").replace("-USD","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
-                    curr_price = df_sc['Close'].iloc[-1]
-                    if direction == "BUY":
-                        entry = curr_price
-                        sl = entry - (atr_sc * 1.2)   # scalp SL multiplier
-                        tp = entry + (atr_sc * 2.0)   # scalp TP multiplier
-                    else:
-                        entry = curr_price
-                        sl = entry + (atr_sc * 1.2)
-                        tp = entry - (atr_sc * 2.0)
-                    
-                    trade_candidate = {
-                        "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, 
-                        "conf": abs(conf_sc), "price": curr_price,
-                        "entry": entry, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(clean_sym) or curr_price,
-                        "symbol_orig": symbol
-                    }
-                    
-                    if active_trades and is_trade_tracked(trade_candidate, active_trades):
-                        continue
-                    
-                    scalp_list.append(trade_candidate)
+                    scalp_list.append({"pair": clean_sym, "tf": "15M (Scalp)", "dir": direction, "conf": abs(conf_sc), "price": df_sc['Close'].iloc[-1]})
         except: pass
-        
     return {"swing": swing_list, "scalp": scalp_list}
-
-# --- FORECAST CHART FUNCTION (Entry, SL, TP දැන් පැහැදිලිව පෙන්වයි) ---
-def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
-    """
-    Create a forecast chart with historical candles and projected path.
-    Shows entry, SL, TP levels and a forecast line from entry to TP.
-    """
-    # Use last 30 candles for historical context
-    hist = historical_df.tail(30).copy()
-    
-    # Create future dates with realistic intervals
-    last_date = hist.index[-1]
-    if isinstance(last_date, pd.Timestamp):
-        # Calculate typical interval from historical data
-        if len(hist) > 1:
-            deltas = hist.index.to_series().diff().dropna()
-            median_delta = deltas.median()
-            if pd.isna(median_delta) or median_delta.total_seconds() == 0:
-                # Fallback: approximate from first and last
-                total_seconds = (hist.index[-1] - hist.index[0]).total_seconds()
-                avg_seconds = total_seconds / (len(hist)-1) if len(hist) > 1 else 3600
-                median_delta = timedelta(seconds=avg_seconds)
-        else:
-            median_delta = timedelta(hours=1)
-        
-        # Generate 15 future dates
-        future_dates = [last_date + (i+1)*median_delta for i in range(15)]
-    else:
-        future_dates = list(range(len(hist), len(hist)+15))
-    
-    # Determine direction and target
-    if tp > entry_price:
-        target = tp
-        direction = "bullish"
-    else:
-        target = tp
-        direction = "bearish"
-    
-    # Create forecast prices (smooth transition from entry to target)
-    forecast_prices = np.linspace(entry_price, target, len(future_dates))
-    
-    # Create figure
-    fig = go.Figure()
-    
-    # Candlestick for historical
-    fig.add_trace(go.Candlestick(
-        x=hist.index,
-        open=hist['Open'],
-        high=hist['High'],
-        low=hist['Low'],
-        close=hist['Close'],
-        name='Historical',
-        showlegend=True
-    ))
-    
-    # Forecast line (dashed, with markers)
-    fig.add_trace(go.Scatter(
-        x=future_dates,
-        y=forecast_prices,
-        mode='lines+markers',
-        name=f'Forecast ({direction})',
-        line=dict(color='#00d4ff', width=3, dash='dot'),
-        marker=dict(size=5, color='#00d4ff', symbol='circle')
-    ))
-    
-    # Add horizontal lines for Entry, SL, TP
-    fig.add_hline(y=entry_price, line_dash="dashdot", line_color="#ffff00",
-                  annotation_text="Entry", annotation_position="bottom right")
-    fig.add_hline(y=sl, line_dash="dash", line_color="#ff4b4b",
-                  annotation_text="SL", annotation_position="bottom right")
-    fig.add_hline(y=tp, line_dash="dash", line_color="#00ff00",
-                  annotation_text="TP", annotation_position="top right")
-    
-    # Add forecast text as annotation
-    if forecast_text and forecast_text != 'N/A':
-        # Place annotation near the end of forecast line
-        fig.add_annotation(
-            x=future_dates[-1] if future_dates else hist.index[-1],
-            y=forecast_prices[-1],
-            text=forecast_text,
-            showarrow=True,
-            arrowhead=2,
-            arrowsize=1,
-            arrowwidth=2,
-            arrowcolor="#00d4ff",
-            font=dict(size=12, color="white"),
-            bgcolor="#1e1e1e",
-            bordercolor="#00d4ff",
-            borderwidth=1,
-            borderpad=4,
-            ax=20,
-            ay=-30
-        )
-    
-    fig.update_layout(
-        title=f"AI Forecast & Projection ({direction.capitalize()})",
-        template="plotly_dark",
-        height=400,
-        margin=dict(l=0, r=0, t=40, b=0),
-        xaxis_title="Time",
-        yaxis_title="Price",
-        hovermode="x unified",
-        xaxis=dict(
-            rangeslider=dict(visible=False),
-            type='date' if isinstance(last_date, pd.Timestamp) else 'linear'
-        )
-    )
-    
-    return fig
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v26.0</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4ff; animation: fadeIn 1s;'>⚡ INFINITE SYSTEM v15.0 | UNLOCKED</h1>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -1505,68 +564,62 @@ if not st.session_state.logged_in:
                 else: st.error("Invalid Credentials")
 else:
     user_info = st.session_state.get('user', {})
-    st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Credits: {user_info.get('UsageCount', 0)}/{user_info.get('HybridLimit', 10)}")
     
+    # --- SIDEBAR INFO & CREDIT DISPLAY ---
+    st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
+    st.sidebar.caption(f"Role: {user_info.get('Role', 'User')}")
+    
+    # Credit Progress Bar in Sidebar
+    if user_info.get('Role') != 'Admin':
+        u_count = int(user_info.get('UsageCount', 0))
+        u_limit = int(user_info.get('HybridLimit', 10))
+        st.sidebar.markdown(f"**💳 Credits: {u_count} / {u_limit}**")
+        prog = min(u_count / u_limit, 1.0) if u_limit > 0 else 0
+        st.sidebar.progress(prog)
+        if u_count >= u_limit:
+            st.sidebar.warning("⚠️ Limit Reached!")
+
     auto_refresh = st.sidebar.checkbox("🔄 Auto-Monitor (60s)", value=False)
     
     if st.sidebar.button("Logout"):
         st.session_state.logged_in = False
         st.rerun()
     
-    # Navigation options (removed Trader Chat)
-    nav_options = ["Terminal", "Market Scanner", "Ongoing Trades"]
+    nav_options = ["Terminal", "Market Scanner", "Trader Chat"]
     if user_info.get("Role") == "Admin": nav_options.append("Admin Panel")
     app_mode = st.sidebar.radio("Navigation", nav_options)
     
-    # --- UPDATED ASSETS WITH MORE PAIRS AND USDT CRYPTO ---
     assets = {
-        "Forex": [
-            "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", 
-            "EURJPY=X", "GBPJPY=X", "EURGBP=X", "EURCHF=X", "CADJPY=X", "AUDJPY=X", "NZDJPY=X",
-            "GBPAUD=X", "GBPCAD=X", "EURCAD=X", "AUDCAD=X", "AUDNZD=X", "EURNZD=X"
-        ],
-        "Crypto": [
-            "BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "ADA-USDT", "DOGE-USDT",
-            "MATIC-USDT", "DOT-USDT", "LINK-USDT", "AVAX-USDT", "UNI-USDT", "LTC-USDT", "BCH-USDT"
-        ],
-        "Metals": ["XAUUSD=X", "XAGUSD=X", "XPTUSD=X", "XPDUSD=X"] 
+        "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X"],
+        "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD"],
+        "Metals": ["XAUUSD=X", "XAGUSD=X"] 
     }
 
     if app_mode == "Terminal":
         st.sidebar.divider()
         market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-        pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", "").replace("-USDT", ""))
-        # Default timeframe changed to 15m (index 2)
-        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=2)
+        pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", ""))
+        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=4)
 
         news_items = get_market_news(pair)
-        news_impact = calculate_news_impact(news_items)
-        
-        st.sidebar.markdown("### 📰 Market News")
-        # Show current time next to progress bar
-        tz = pytz.timezone('Asia/Colombo')
-        current_time_str = datetime.now(tz).strftime("%H:%M:%S")
-        st.sidebar.caption(f"Last updated: {current_time_str}")
-        st.sidebar.progress(news_impact)
-        if news_impact > 70: st.sidebar.caption("⚠️ HIGH VOLATILITY EXPECTED")
-        else: st.sidebar.caption("✅ Market Stable")
-        
         for news in news_items:
-            # Display news card with time if available
-            time_display = f"<span class='news-time'>{news['time']}</span>" if news['time'] else ""
-            st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}{time_display}</div>", unsafe_allow_html=True)
+            st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}</div>", unsafe_allow_html=True)
 
-        df = yf.download(get_yf_symbol(pair), period=get_data_period(tf), interval=tf, progress=False)
+        df = yf.download(pair, period=get_data_period(tf), interval=tf, progress=False)
         
         if not df.empty and len(df) > 50:
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             curr_p = float(df['Close'].iloc[-1])
-            st.title(f"{pair.replace('=X', '').replace('-USD', '').replace('-USDT', '')} Terminal - {curr_p:.5f}")
+            st.title(f"{pair.replace('=X', '')} Terminal - {curr_p:.5f}")
             
-            sigs, current_atr, conf_score = calculate_advanced_signals(df, tf)
-            
+            sigs, current_atr, conf_score = calculate_advanced_signals(df, tf, news_items)
             signal_dir = sigs['SK'][1]
+            
+            # --- NOTIFICATIONS ---
+            if abs(conf_score) > 30:
+                msg_type = "Buy" if signal_dir == "bull" else "Sell"
+                st.toast(f"Trade Captured: {msg_type} {pair} ({abs(conf_score)}%)", icon="🔔")
+            
             if signal_dir == "bull": 
                 st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
             elif signal_dir == "bear": 
@@ -1574,527 +627,145 @@ else:
             else: 
                 st.markdown(f"<div class='notif-container notif-wait'>📡 Neutral Market (Accuracy {abs(conf_score)}%)</div>", unsafe_allow_html=True)
 
-            # --- SIGNAL GRID (with clickable info buttons) ---
+            # --- SIGNAL GRID ---
             r1c1, r1c2, r1c3 = st.columns(3)
-            with r1c1:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_TREND", help="Analyze this theory"):
-                        st.session_state.selected_theory = "TREND"
-                        st.rerun()
-            with r1c2:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_SMC", help="Analyze this theory"):
-                        st.session_state.selected_theory = "SMC"
-                        st.rerun()
-            with r1c3:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_ELLIOTT", help="Analyze this theory"):
-                        st.session_state.selected_theory = "ELLIOTT"
-                        st.rerun()
+            r1c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>{sigs['TREND'][0]}</div>", unsafe_allow_html=True)
+            r1c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
+            r1c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
             
             r2c1, r2c2, r2c3 = st.columns(3)
-            with r2c1:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>{sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_LIQ", help="Analyze this theory"):
-                        st.session_state.selected_theory = "LIQ"
-                        st.rerun()
-            with r2c2:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>{sigs['PATT'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_PATT", help="Analyze this theory"):
-                        st.session_state.selected_theory = "PATT"
-                        st.rerun()
-            with r2c3:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_ICT", help="Analyze this theory"):
-                        st.session_state.selected_theory = "ICT"
-                        st.rerun()
+            r2c1.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>{sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
+            r2c2.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>{sigs['PATT'][0]}</div>", unsafe_allow_html=True)
+            r2c3.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
             
-            r3c1, r3c2, r3c3 = st.columns(3)
-            with r3c1:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['RSI'][1]}'>{sigs['RSI'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_RSI", help="Analyze this theory"):
-                        st.session_state.selected_theory = "RSI"
-                        st.rerun()
-            with r3c2:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_FIB", help="Analyze this theory"):
-                        st.session_state.selected_theory = "FIB"
-                        st.rerun()
-            with r3c3:
-                sub1, sub2 = st.columns([4,1])
-                with sub1:
-                    st.markdown(f"<div class='sig-box {sigs['RETAIL'][1]}'>{sigs['RETAIL'][0]}</div>", unsafe_allow_html=True)
-                with sub2:
-                    if st.button("ℹ️", key="info_RETAIL", help="Analyze this theory"):
-                        st.session_state.selected_theory = "RETAIL"
-                        st.rerun()
-            
-            # --- CHART OR THEORY CHART ---
-            if st.session_state.selected_theory:
-                # Show theory chart
-                theory_fig = create_theory_chart(df, sigs, st.session_state.selected_theory, 
-                                                  pair.replace("=X", "").replace("-USD", "").replace("-USDT", ""), tf)
-                st.plotly_chart(theory_fig, use_container_width=True)
-                if st.button("← Back to Main Chart"):
-                    st.session_state.selected_theory = None
-                    st.rerun()
-            else:
-                # Normal candlestick chart
-                fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-                fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
-                st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
+            fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
+            st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown(f"### 🎯 Hybrid AI Signal Card")
+            st.markdown(f"### 🎯 Hybrid AI Analysis")
             parsed = st.session_state.ai_parsed_data
-            
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
             c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
             c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
             
-            st.markdown("---")
-            
-            # --- FORECAST CHART SECTION ---
-            st.markdown("### 🔮 AI Forecast Chart")
-            forecast_placeholder = st.empty()
-            
-            if st.button("🚀 Analyze with Gemini + Puter + News", use_container_width=True):
-                # Show animation while loading - updated to Infinite AI + ALGO Analyses
-                with forecast_placeholder.container():
-                    st.markdown("<div class='forecast-loading'><span class='loading-icon'>⚡</span> Infinite AI + ALGO Analyses in progress...</div>", unsafe_allow_html=True)
-                
-                # Use live price for analysis
-                live_price = get_live_price(pair) or curr_p
-                result, provider = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf)
+            if st.button("🚀 Analyze with Gemini + Puter", use_container_width=True):
+                result, provider = get_hybrid_analysis(pair, {'price': curr_p}, sigs, news_items, current_atr, st.session_state.user, tf)
                 st.session_state.ai_parsed_data = parse_ai_response(result)
                 st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
                 st.session_state.active_provider = provider
-                
-                # Create forecast chart using parsed Entry, SL, TP
-                try:
-                    entry = float(st.session_state.ai_parsed_data['ENTRY']) if st.session_state.ai_parsed_data['ENTRY'] != 'N/A' else live_price
-                    sl = float(st.session_state.ai_parsed_data['SL']) if st.session_state.ai_parsed_data['SL'] != 'N/A' else live_price * 0.99
-                    tp = float(st.session_state.ai_parsed_data['TP']) if st.session_state.ai_parsed_data['TP'] != 'N/A' else live_price * 1.01
-                except:
-                    entry = live_price
-                    sl = live_price * 0.99
-                    tp = live_price * 1.01
-                
-                # Pass entry price instead of current price
-                forecast_fig = create_forecast_chart(df, entry, sl, tp, st.session_state.ai_parsed_data.get('FORECAST', ''))
-                st.session_state.forecast_chart = forecast_fig
-                
-                # Clear placeholder and show chart
-                forecast_placeholder.empty()
                 st.rerun()
 
             if "ai_result" in st.session_state:
                 st.markdown(f"**🤖 Provider:** `{st.session_state.active_provider}`")
                 st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
-                
-                # Show forecast chart if available
-                if st.session_state.forecast_chart is not None:
-                    st.plotly_chart(st.session_state.forecast_chart, use_container_width=True)
-                    if st.session_state.ai_parsed_data.get('FORECAST') != 'N/A':
-                        st.info(f"📈 Forecast: {st.session_state.ai_parsed_data['FORECAST']}")
-        else:
-            st.error("Insufficient data for this pair/timeframe. Please try another.")
 
     elif app_mode == "Market Scanner":
-        st.title("📡 Global Market Scanner (Multi-Timeframe)")
+        st.title("📡 Global Market Scanner")
+        if st.button("Start Global Scan", type="primary"):
+            with st.spinner("Scanning markets..."):
+                all_scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
+                results = scan_market(all_scan_assets)
+                st.session_state.scan_results = results
+                if not results['swing'] and not results['scalp']: st.warning("No signals found.")
+                else: st.success(f"Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
         
-        # Market selection dropdown
-        st.markdown("<div class='scan-header'><h3>🔍 Select Markets to Scan</h3></div>", unsafe_allow_html=True)
-        market_choice = st.selectbox(
-            "Choose market(s) to scan",
-            options=["All", "Forex", "Crypto", "Metals"],
-            index=0,
-            key="market_selector"
-        )
-        
-        # Store selection in session state to persist
-        st.session_state.selected_market = market_choice
-        
-        # Build asset list based on selection
-        if market_choice == "All":
-            scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
-        else:
-            scan_assets = assets[market_choice]
-        
-        st.info(f"Selected markets: **{market_choice}** ({len(scan_assets)} assets)")
-        
-        # Add accuracy level slider
-        min_acc = st.slider(
-            "Minimum Accuracy (%)",
-            min_value=0,
-            max_value=100,
-            value=st.session_state.min_accuracy,
-            step=5,
-            help="Set the minimum confidence level for scan results. Higher values yield fewer but stronger signals."
-        )
-        st.session_state.min_accuracy = min_acc
-        
-        col1, col2 = st.columns([1,5])
-        with col1:
-            if st.button("🚀 Start Scan", type="primary", use_container_width=True):
-                with st.spinner(f"Scanning {market_choice} for High Probability Setups (>{min_acc}%)..."):
-                    # Load active trades for this user to exclude them from scan results
-                    active_trades = load_user_trades(user_info['Username'], status='Active')
-                    results = scan_market(scan_assets, active_trades, min_accuracy=min_acc)
-                    st.session_state.scan_results = results
-                    
-                    if not results['swing'] and not results['scalp']:
-                        st.warning(f"No signals found above {min_acc}% accuracy.")
-                    else:
-                        st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
-        
-        with col2:
-            if st.button("🗑️ Clear Results", use_container_width=True):
-                st.session_state.scan_results = {"swing": [], "scalp": []}
-                st.rerun()
-        
-        st.markdown("---")
-        
-        # Display Results with progress bar and deep analysis button and track button
         res = st.session_state.scan_results
-        
-        # --- SWING SECTION ---
-        st.subheader("🐢 SWING TRADES (4H)")
-        if res['swing']:
-            for idx, sig in enumerate(res['swing']):
-                # Calculate progress towards entry
-                max_diff = abs(sig['entry'] - sig['sl'])
-                if max_diff > 0:
-                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
-                    progress = max(0, min(1, progress))
-                else:
-                    progress = 0
-                
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                with col1:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b><br>
-                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.progress(progress, text="Approach")
-                with col3:
-                    if st.button("🔍 Deep", key=f"swing_deep_{idx}"):
-                        st.session_state.selected_trade = sig
-                        st.session_state.deep_analysis_result = None
-                        st.session_state.deep_analysis_provider = None
-                        st.session_state.deep_forecast_chart = None
-                        st.rerun()
-                with col4:
-                    # Replace simple Track button with popover for adjustable capture
-                    with st.popover("📌 Track"):
-                        st.markdown(f"Adjust trade parameters for {sig['pair']}")
-                        new_entry = st.number_input("Entry", value=float(sig['entry']), format="%.5f", key=f"entry_swing_{idx}")
-                        new_sl = st.number_input("Stop Loss", value=float(sig['sl']), format="%.5f", key=f"sl_swing_{idx}")
-                        new_tp = st.number_input("Take Profit", value=float(sig['tp']), format="%.5f", key=f"tp_swing_{idx}")
-                        if st.button("Confirm Track", key=f"confirm_swing_{idx}"):
-                            adjusted_trade = sig.copy()
-                            adjusted_trade['entry'] = new_entry
-                            adjusted_trade['sl'] = new_sl
-                            adjusted_trade['tp'] = new_tp
-                            if save_trade_to_ongoing(adjusted_trade, user_info['Username']):
-                                st.success("Trade saved to Ongoing Trades!")
-                                time.sleep(1)
-                                st.rerun()
-        else:
-            st.info("No Swing setups found.")
-        
-        st.markdown("---")
-        
-        # --- SCALP SECTION ---
-        st.subheader("🐇 SCALP TRADES (15M)")
-        if res['scalp']:
-            for idx, sig in enumerate(res['scalp']):
-                max_diff = abs(sig['entry'] - sig['sl'])
-                if max_diff > 0:
-                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
-                    progress = max(0, min(1, progress))
-                else:
-                    progress = 0
-                
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                with col1:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b><br>
-                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.progress(progress, text="Approach")
-                with col3:
-                    if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
-                        st.session_state.selected_trade = sig
-                        st.session_state.deep_analysis_result = None
-                        st.session_state.deep_analysis_provider = None
-                        st.session_state.deep_forecast_chart = None
-                        st.rerun()
-                with col4:
-                    with st.popover("📌 Track"):
-                        st.markdown(f"Adjust trade parameters for {sig['pair']}")
-                        new_entry = st.number_input("Entry", value=float(sig['entry']), format="%.5f", key=f"entry_scalp_{idx}")
-                        new_sl = st.number_input("Stop Loss", value=float(sig['sl']), format="%.5f", key=f"sl_scalp_{idx}")
-                        new_tp = st.number_input("Take Profit", value=float(sig['tp']), format="%.5f", key=f"tp_scalp_{idx}")
-                        if st.button("Confirm Track", key=f"confirm_scalp_{idx}"):
-                            adjusted_trade = sig.copy()
-                            adjusted_trade['entry'] = new_entry
-                            adjusted_trade['sl'] = new_sl
-                            adjusted_trade['tp'] = new_tp
-                            if save_trade_to_ongoing(adjusted_trade, user_info['Username']):
-                                st.success("Trade saved to Ongoing Trades!")
-                                time.sleep(1)
-                                st.rerun()
-        else:
-            st.info("No Scalp setups found.")
-        
-        # Show deep analysis result if a trade was selected
-        if st.session_state.selected_trade:
-            st.markdown("---")
-            st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
-            
-            # Run analysis if not already done - updated loading message
-            if st.session_state.deep_analysis_result is None:
-                with st.spinner("Infinite AI + ALGO Deep Analysis in progress..."):
-                    result, provider = get_deep_hybrid_analysis(st.session_state.selected_trade, st.session_state.user)
-                    st.session_state.deep_analysis_result = result
-                    st.session_state.deep_analysis_provider = provider
-                    
-                    # Parse forecast from result
-                    parsed = parse_ai_response(result)  # reuse the same parser
-                    forecast_text = parsed.get('FORECAST', '')
-                    
-                    # Fetch historical data for chart
-                    try:
-                        symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
-                        # Determine interval based on tf
-                        tf_display = st.session_state.selected_trade['tf']
-                        if "Swing" in tf_display:
-                            interval = "4h"
-                            period = "3mo"  # more data for swing
-                        else:
-                            interval = "15m"
-                            period = "1mo"  # more data for scalp
-                        
-                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
-                        if not df_hist.empty and len(df_hist) > 10:
-                            if isinstance(df_hist.columns, pd.MultiIndex):
-                                df_hist.columns = df_hist.columns.get_level_values(0)
-                            chart = create_forecast_chart(
-                                df_hist,
-                                st.session_state.selected_trade['entry'],
-                                st.session_state.selected_trade['sl'],
-                                st.session_state.selected_trade['tp'],
-                                forecast_text
-                            )
-                            st.session_state.deep_forecast_chart = chart
-                        else:
-                            st.warning("Not enough historical data for forecast chart.")
-                    except Exception as e:
-                        st.error(f"Error creating forecast chart: {e}")
-            
-            # Display results
-            st.markdown(f"**🤖 Provider:** `{st.session_state.deep_analysis_provider}`")
-            st.markdown(f"<div class='entry-box'>{st.session_state.deep_analysis_result}</div>", unsafe_allow_html=True)
-            
-            # Show forecast chart if available
-            if st.session_state.deep_forecast_chart is not None:
-                st.plotly_chart(st.session_state.deep_forecast_chart, use_container_width=True)
-            else:
-                st.info("Forecast chart could not be generated.")
-            
-            if st.button("Close Analysis"):
-                st.session_state.selected_trade = None
-                st.session_state.deep_analysis_result = None
-                st.session_state.deep_analysis_provider = None
-                st.session_state.deep_forecast_chart = None
-                st.rerun()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🐢 SWING (4H)")
+            for sig in res['swing']:
+                color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                st.markdown(f"<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'><h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3><p style='margin:0; color:#aaa;'>Acc: {sig['conf']}%</p></div>", unsafe_allow_html=True)
+        with c2:
+            st.subheader("🐇 SCALP (15M)")
+            for sig in res['scalp']:
+                color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                st.markdown(f"<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {color};'><h3 style='margin:0; color:white;'>{sig['pair']} <span style='color:{color}; float:right;'>{sig['dir']}</span></h3><p style='margin:0; color:#aaa;'>Acc: {sig['conf']}%</p></div>", unsafe_allow_html=True)
 
-    elif app_mode == "Ongoing Trades":
-        st.title("📋 Ongoing Trades")
-        
-        # Create tabs
-        tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
-        
-        with tab1:
-            # Check and update active trades (SL/TP hits)
-            active_trades = check_and_update_trades(user_info['Username'])
-            
-            if active_trades:
-                for trade in active_trades:
-                    # Determine color based on direction
-                    color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
-                    
-                    # Get live price for display
-                    pair = trade['Pair']
-                    live = get_live_price(pair)
-                    live_display = f"{live:.4f}" if live else "N/A"
-                    
-                    # Calculate progress towards entry (how close current price is to entry)
-                    progress_value = 0.0
-                    progress_text = "Approach to Entry"
-                    try:
-                        entry = float(trade['Entry'])
-                        sl = float(trade['SL'])
-                        tp = float(trade['TP'])
-                        if live is not None:
-                            # Use the larger of (entry-sl) and (tp-entry) as the range for normalization
-                            range_to_sl = abs(entry - sl)
-                            range_to_tp = abs(tp - entry)
-                            max_range = max(range_to_sl, range_to_tp) if max(range_to_sl, range_to_tp) > 0 else 1.0
-                            # Progress = 1 - (distance from live to entry) / max_range, capped 0-1
-                            distance = abs(live - entry)
-                            progress_value = max(0.0, min(1.0, 1.0 - (distance / max_range)))
-                    except:
-                        pass
-                    
-                    col1, col2 = st.columns([5,1])
-                    with col1:
-                        st.markdown(f"""
-                        <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b><br>
-                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                            Live: {live_display} | Confidence: {trade['Confidence']}%<br>
-                            <small>Tracked since: {trade['Timestamp']}</small>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        # Add progress bar
-                        if progress_text:
-                            st.progress(progress_value, text=progress_text)
-                    with col2:
-                        # Delete button
-                        if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
-                            if delete_trade_by_row_number(trade['row_num']):
-                                st.success("Trade deleted.")
-                                st.rerun()
-            else:
-                st.info("No active ongoing trades.")
-        
-        with tab2:
-            st.subheader("Closed Trades History")
-            # Load closed trades (SL Hit or TP Hit)
-            closed_trades = load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit'])
-            
-            if closed_trades:
-                # Sort by ClosedDate descending (most recent first)
-                closed_trades.sort(key=lambda x: x.get('ClosedDate', ''), reverse=True)
-                
-                for trade in closed_trades:
-                    color = "#ff4b4b" if trade['Status'] == 'SL Hit' else "#00ff00"
-                    col1, col2 = st.columns([5,1])
-                    with col1:
-                        st.markdown(f"""
-                        <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b> - <span style='color:{color};'>{trade['Status']}</span><br>
-                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                            Confidence: {trade['Confidence']}%<br>
-                            <small>Tracked: {trade['Timestamp']} | Closed: {trade.get('ClosedDate', 'N/A')}</small>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    with col2:
-                        # Delete button
-                        if st.button("🗑️ Delete", key=f"del_closed_{trade['row_num']}"):
-                            if delete_trade_by_row_number(trade['row_num']):
-                                st.success("Trade deleted.")
-                                st.rerun()
-            else:
-                st.info("No closed trades found.")
-        
-        # Manual refresh button
-        if st.button("Refresh & Check Status"):
-            st.rerun()
+    elif app_mode == "Trader Chat":
+        st.title("💬 Global Trader Room")
+        for msg in st.session_state.chat_history:
+            st.markdown(f"<div class='chat-msg'><span class='chat-user'>{msg['user']}</span>: {msg['text']}</div>", unsafe_allow_html=True)
+        with st.form("chat_form", clear_on_submit=True):
+            user_msg = st.text_input("Type message...")
+            if st.form_submit_button("Send") and user_msg:
+                st.session_state.chat_history.append({"user": user_info['Username'], "text": user_msg, "time": datetime.now().strftime("%H:%M")})
+                st.rerun()
 
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
-            st.title("🛡️ Admin Center & User Management")
+            st.title("🛡️ Admin Center")
             sheet, _ = get_user_sheet()
             if sheet:
                 all_records = sheet.get_all_records()
-                df_users = pd.DataFrame(all_records)
-                st.dataframe(df_users, use_container_width=True)
                 
-                st.markdown("---")
-                with st.expander("➕ Create New User", expanded=False):
-                    with st.form("create_user_form"):
-                        new_u_name = st.text_input("Username")
-                        new_u_pass = st.text_input("Password")
-                        new_u_limit = st.number_input("Initial Hybrid Limit", value=10, min_value=1)
-                        if st.form_submit_button("Create User"):
-                            if new_u_name and new_u_pass:
-                                success, msg = add_new_user_to_db(new_u_name, new_u_pass, new_u_limit)
-                                if success: 
-                                    st.success(msg)
-                                    time.sleep(1)
-                                    st.rerun()
-                                else: st.error(msg)
-                            else: st.warning("Please fill all fields")
-
-                st.markdown("### ✏️ Manage User Credits")
+                # --- CREDIT DASHBOARD ---
+                st.markdown("### 💳 User Credit Dashboard")
+                dashboard_data = []
+                for r in all_records:
+                    if str(r.get('Username')) != 'Admin':
+                        usage = int(r.get('UsageCount', 0))
+                        limit = int(r.get('HybridLimit', 10))
+                        dashboard_data.append({
+                            "Username": r['Username'],
+                            "Role": r['Role'],
+                            "Usage": usage,
+                            "Limit": limit,
+                            "Remaining": limit - usage,
+                            "Status": "✅ Active" if usage < limit else "🔴 Limit Reached"
+                        })
                 
-                user_list = [r['Username'] for r in all_records if str(r.get('Username')) != 'Admin']
-                target_user = st.selectbox("Select User to Update", user_list)
+                df_dash = pd.DataFrame(dashboard_data)
+                st.dataframe(df_dash, use_container_width=True)
 
-                if target_user:
-                    curr_user_data = next((u for u in all_records if u['Username'] == target_user), {})
-                    st.info(f"User: **{target_user}** | Current Limit: **{curr_user_data.get('HybridLimit', 'N/A')}** | Used: **{curr_user_data.get('UsageCount', 'N/A')}**")
+                c1, c2 = st.columns(2)
+                
+                # --- CREATE USER ---
+                with c1:
+                    with st.expander("➕ Create New User", expanded=True):
+                        with st.form("create_user_form"):
+                            new_u_name = st.text_input("Username")
+                            new_u_pass = st.text_input("Password")
+                            new_u_limit = st.number_input("Initial Credit Limit", value=10, min_value=1)
+                            if st.form_submit_button("Create User"):
+                                if new_u_name and new_u_pass:
+                                    success, msg = add_new_user_to_db(new_u_name, new_u_pass, new_u_limit)
+                                    if success: 
+                                        st.success(msg)
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else: st.error(msg)
+                                else: st.warning("Fill all fields")
+
+                # --- CREDIT MANAGEMENT ---
+                with c2:
+                    st.markdown("### ✏️ Manage Credits")
+                    user_list = [d['Username'] for d in dashboard_data]
+                    target_user = st.selectbox("Select User", user_list)
                     
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.subheader("Update Limit")
-                        new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 10)))
-                        if st.button("💾 Save Limit"):
-                            update_user_limit_in_db(target_user, new_limit_val)
-                            st.success(f"Limit updated to {new_limit_val}")
-                            time.sleep(1)
-                            st.rerun()
-                    with c2:
-                        st.subheader("Reset Usage")
-                        new_usage_val = st.number_input("Set Usage Count", min_value=0, value=0)
-                        if st.button("🔄 Update Usage"):
-                            update_usage_in_db(target_user, new_usage_val)
-                            st.success(f"Usage count set to {new_usage_val}")
-                            time.sleep(1)
-                            st.rerun()
+                    if target_user:
+                        user_dat = next((u for u in dashboard_data if u['Username'] == target_user), None)
+                        st.info(f"Selected: **{target_user}** | Used: **{user_dat['Usage']}** | Limit: **{user_dat['Limit']}**")
+                        
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            new_limit = st.number_input("Set New Limit", min_value=0, value=user_dat['Limit'])
+                            if st.button("💾 Update Limit"):
+                                update_user_limit_in_db(target_user, new_limit)
+                                st.success(f"Limit updated to {new_limit}")
+                                time.sleep(1)
+                                st.rerun()
+                                
+                        with col_b:
+                            reset_val = st.number_input("Set Usage Count", min_value=0, value=0)
+                            if st.button("🔄 Reset Usage"):
+                                update_usage_in_db(target_user, reset_val)
+                                st.success("Usage reset successfully!")
+                                time.sleep(1)
+                                st.rerun()
             else: st.error("Database Connection Failed")
         else: st.error("Access Denied.")
-
-    # Footer
-    st.markdown("---")
-    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v26.0 | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
 
     if auto_refresh:
         time.sleep(60)
