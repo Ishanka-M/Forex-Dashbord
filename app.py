@@ -1074,11 +1074,11 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist):
     **Asset:** {pair}
     **Timeframe:** {tf_display}
     **Direction:** {trade['dir']}
-    **Entry:** {trade['entry']:.5f}
-    **Stop Loss:** {trade['sl']:.5f}
-    **Take Profit:** {trade['tp']:.5f}
+    **Entry:** {trade['entry']}
+    **Stop Loss:** {trade['sl']}
+    **Take Profit:** {trade['tp']}
     **Confidence:** {trade['conf']}%
-    **Current Live Price:** {live_price:.5f}
+    **Current Live Price:** {live_price}
     
     **Recent News Headlines:**
     {news_str}
