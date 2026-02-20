@@ -258,6 +258,26 @@ st.markdown("""
         color: #00d4ff;
         font-weight: 600;
     }
+    
+    /* --- AI BADGE --- */
+    .ai-badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
+        margin-left: 8px;
+    }
+    .ai-approve {
+        background-color: #00ff0022;
+        color: #00ff00;
+        border: 1px solid #00ff00;
+    }
+    .ai-reject {
+        background-color: #ff4b4b22;
+        color: #ff4b4b;
+        border: 1px solid #ff4b4b;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -275,6 +295,7 @@ if "selected_market" not in st.session_state: st.session_state.selected_market =
 if "min_accuracy" not in st.session_state: st.session_state.min_accuracy = 40  # default
 if "last_activity" not in st.session_state: st.session_state.last_activity = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 if "login_time" not in st.session_state: st.session_state.login_time = None
+if "ai_confirmations" not in st.session_state: st.session_state.ai_confirmations = {}  # store AI confirmations for scanner trades
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -1074,11 +1095,11 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist):
     **Asset:** {pair}
     **Timeframe:** {tf_display}
     **Direction:** {trade['dir']}
-    **Entry:** {trade['entry']}
-    **Stop Loss:** {trade['sl']}
-    **Take Profit:** {trade['tp']}
+    **Entry:** {trade['entry']:.5f}
+    **Stop Loss:** {trade['sl']:.5f}
+    **Take Profit:** {trade['tp']:.5f}
     **Confidence:** {trade['conf']}%
-    **Current Live Price:** {live_price}
+    **Current Live Price:** {live_price:.5f}
     
     **Recent News Headlines:**
     {news_str}
@@ -1161,6 +1182,43 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist):
         return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}", confirmation, reason
     
     return "Deep analysis failed.", "Error", None, None
+
+# ==================== QUICK AI CONFIRMATION FOR SCANNER TRADES ====================
+def quick_ai_confirm(trade, user_info):
+    """Run deep analysis and return only confirmation and reason."""
+    # Fetch historical data based on timeframe
+    if "Swing" in trade['tf']:
+        interval = "4h"
+        period = "3mo"
+    else:
+        interval = "15m"
+        period = "1mo"
+    symbol_orig = trade.get('symbol_orig', trade['pair'])
+    try:
+        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
+        if not df_hist.empty and len(df_hist) > 10:
+            if isinstance(df_hist.columns, pd.MultiIndex):
+                df_hist.columns = df_hist.columns.get_level_values(0)
+        else:
+            df_hist = None
+    except:
+        df_hist = None
+    result, provider, confirmation, reason = get_deep_hybrid_analysis(trade, user_info, df_hist)
+    return confirmation, reason
+
+# ==================== SESSION DETECTION ====================
+def get_current_session():
+    """Return the current trading session based on UTC time."""
+    now_utc = datetime.now(pytz.utc)
+    hour = now_utc.hour
+    if 0 <= hour < 8:
+        return "Asia"
+    elif 8 <= hour < 16:
+        return "London"
+    elif 16 <= hour < 24:
+        return "New York"
+    else:
+        return "Other"
 
 # ==================== SCAN FUNCTION WITH ADVANCED SL/TP ====================
 def scan_market(assets_list, active_trades=None, min_accuracy=40):
@@ -1558,6 +1616,9 @@ else:
         
         res = st.session_state.scan_results
         
+        # Helper to get current session
+        current_session = get_current_session()
+        
         # Swing
         st.subheader("🐢 SWING TRADES (4H)")
         if res['swing']:
@@ -1569,12 +1630,18 @@ else:
                 else:
                     progress = 0
                 
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                # Unique key for AI confirmation
+                trade_key = f"{sig['pair']}_{sig['tf']}_{sig['dir']}_{sig['entry']:.5f}"
+                ai_data = st.session_state.ai_confirmations.get(trade_key)
+                
+                # Create columns: trade info (3), progress (1), deep (1), track (1), AI (1)
+                col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                    session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
                     st.markdown(f"""
                     <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b><br>
+                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b><br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
                         Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
                     </div>
@@ -1596,6 +1663,18 @@ else:
                             st.success("Trade saved to Ongoing Trades!")
                             time.sleep(1)
                             st.rerun()
+                with col5:
+                    if ai_data:
+                        conf, reason = ai_data
+                        badge_class = "ai-approve" if conf == "APPROVE" else "ai-reject" if conf == "REJECT" else ""
+                        badge_text = "✅" if conf == "APPROVE" else "❌" if conf == "REJECT" else "🤔"
+                        st.markdown(f"<span class='ai-badge {badge_class}' title='{reason}'>{badge_text} {conf}</span>", unsafe_allow_html=True)
+                    else:
+                        if st.button("🤖 AI", key=f"ai_swing_{idx}"):
+                            with st.spinner("AI Confirming..."):
+                                confirmation, reason = quick_ai_confirm(sig, user_info)
+                                st.session_state.ai_confirmations[trade_key] = (confirmation, reason)
+                            st.rerun()
         else:
             st.info("No Swing setups found.")
         
@@ -1612,12 +1691,16 @@ else:
                 else:
                     progress = 0
                 
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                trade_key = f"{sig['pair']}_{sig['tf']}_{sig['dir']}_{sig['entry']:.5f}"
+                ai_data = st.session_state.ai_confirmations.get(trade_key)
+                
+                col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                    session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
                     st.markdown(f"""
                     <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}</b><br>
+                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b><br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
                         Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
                     </div>
@@ -1638,6 +1721,18 @@ else:
                         if save_trade_to_ongoing(sig, user_info['Username']):
                             st.success("Trade saved to Ongoing Trades!")
                             time.sleep(1)
+                            st.rerun()
+                with col5:
+                    if ai_data:
+                        conf, reason = ai_data
+                        badge_class = "ai-approve" if conf == "APPROVE" else "ai-reject" if conf == "REJECT" else ""
+                        badge_text = "✅" if conf == "APPROVE" else "❌" if conf == "REJECT" else "🤔"
+                        st.markdown(f"<span class='ai-badge {badge_class}' title='{reason}'>{badge_text} {conf}</span>", unsafe_allow_html=True)
+                    else:
+                        if st.button("🤖 AI", key=f"ai_scalp_{idx}"):
+                            with st.spinner("AI Confirming..."):
+                                confirmation, reason = quick_ai_confirm(sig, user_info)
+                                st.session_state.ai_confirmations[trade_key] = (confirmation, reason)
                             st.rerun()
         else:
             st.info("No Scalp setups found.")
