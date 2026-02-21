@@ -1172,10 +1172,10 @@ def parse_ai_response(text):
         pass
     return data
 
-def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
+def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
     """
     Get AI-generated trade setup including entry, SL, TP, confidence, forecast, confirmation,
-    and a short Sinhala summary.
+    and a short Sinhala summary. Now includes multi-timeframe analysis.
     """
     if df_hist is None or df_hist.empty:
         return None
@@ -1189,9 +1189,41 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     
     news_str = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No recent news."
     
+    # --- Multi-Timeframe Analysis ---
+    if progress_callback:
+        progress_callback(0.2, "Performing multi-timeframe analysis...")
+    symbol_orig = clean_pair_to_yf_symbol(pair)
+    timeframes = ["15m", "1h", "4h", "1d"]
+    tf_signals = {}
+    for tf in timeframes:
+        period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+        try:
+            df_tf = yf.download(get_yf_symbol(symbol_orig), period=period_map[tf], interval=tf, progress=False)
+            if not df_tf.empty and len(df_tf) > 50:
+                if isinstance(df_tf.columns, pd.MultiIndex):
+                    df_tf.columns = df_tf.columns.get_level_values(0)
+                sigs, _, conf, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
+                if sigs:
+                    tf_signals[tf] = {
+                        "trend": sigs['TREND'][0],
+                        "signal": sigs['SK'][1].upper(),
+                        "confidence": abs(conf)
+                    }
+        except Exception as e:
+            print(f"Error fetching {tf} data for {pair}: {e}")
+            continue
+    
+    mtf_summary = ""
+    if tf_signals:
+        mtf_summary = "\n**Multi-Timeframe Analysis:**\n"
+        for tf, sig in tf_signals.items():
+            mtf_summary += f"- {tf}: {sig['signal']} (Conf: {sig['confidence']}%), Trend: {sig['trend']}\n"
+    else:
+        mtf_summary = "\n**Multi-Timeframe Analysis:** Insufficient data for other timeframes.\n"
+    
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
-    Analyze {pair} on {tf} timeframe for a potential {direction} trade.
+    Analyze {pair} on {primary_tf} timeframe for a potential {direction} trade.
     
     **Current Market Data:**
     - Current Price: {current_price:.5f}
@@ -1201,9 +1233,9 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     
     **Recent News Headlines:**
     {news_str}
-    
+    {mtf_summary}
     **Task:**
-    1. Determine if a {direction} trade is valid based on technical and fundamental analysis.
+    1. Determine if a {direction} trade is valid based on technical and fundamental analysis, considering the multi-timeframe context.
     2. Provide precise Entry, Stop Loss, and Take Profit levels.
     3. Use concepts like support/resistance, Fibonacci, and recent swings to set logical SL/TP.
     4. Ensure risk-reward ratio is at least 1:2 for scalp, 1:3 for swing.
@@ -1250,7 +1282,7 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     
     trade = {
         "pair": pair,
-        "tf": tf,
+        "tf": primary_tf,
         "dir": direction,
         "entry": float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price,
         "sl": float(parsed["SL"]) if parsed["SL"] != "N/A" else (current_price * 0.99 if direction == "BUY" else current_price * 1.01),
@@ -1258,7 +1290,7 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
         "conf": confidence,
         "price": current_price,
         "live_price": get_live_price(pair) or current_price,
-        "symbol_orig": clean_pair_to_yf_symbol(pair),
+        "symbol_orig": symbol_orig,
         "forecast": parsed["FORECAST"],
         "confirmation": confirmation,
         "reason": reason,
