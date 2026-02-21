@@ -326,6 +326,40 @@ st.markdown("""
         padding: 8px;
         border-bottom: 1px solid #444;
     }
+    
+    /* --- NEW: SYSTEM ANALYSIS ENGINE ANIMATION --- */
+    .system-engine-card {
+        background: linear-gradient(145deg, #0a1f2e, #1e3c3f);
+        border: 2px solid #00d4ff;
+        border-radius: 20px;
+        padding: 25px;
+        margin-bottom: 20px;
+        text-align: center;
+        box-shadow: 0 0 30px rgba(0,212,255,0.3);
+        animation: glow 2s infinite;
+    }
+    .system-engine-card h2 {
+        color: #00d4ff;
+        margin-bottom: 15px;
+        font-weight: 700;
+        letter-spacing: 2px;
+    }
+    .engine-icon {
+        font-size: 60px;
+        animation: rotate 3s linear infinite;
+        display: inline-block;
+        margin-bottom: 15px;
+        color: #00d4ff;
+    }
+    .engine-text {
+        color: white;
+        font-size: 20px;
+        background: rgba(0,0,0,0.3);
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid #00d4ff;
+        backdrop-filter: blur(5px);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -355,6 +389,10 @@ if "news_impact_analysis" not in st.session_state:
     st.session_state.news_impact_analysis = None
 if "news_impact_provider" not in st.session_state:
     st.session_state.news_impact_provider = None
+
+# NEW: Groq rate limiting - store timestamps of calls in last 60 seconds
+if "groq_call_timestamps" not in st.session_state:
+    st.session_state.groq_call_timestamps = []  # list of timestamps
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -969,33 +1007,7 @@ def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
     
     return sl, tp
 
-# ==================== AI FUNCTIONS WITH GROQ + FALLBACK ====================
-
-def call_groq(prompt):
-    """Try Groq API with key rotation using GROQ_KEYS_1 to GROQ_KEYS_4 from secrets."""
-    groq_keys = []
-    for i in range(1, 5):
-        key = st.secrets.get(f"GROQ_KEYS_{i}")
-        if key:
-            groq_keys.append(key)
-    
-    if not groq_keys:
-        return None
-    
-    for key in groq_keys:
-        try:
-            client = groq.Client(api_key=key)
-            completion = client.chat.completions.create(
-                model="deepseek-r1-distill-llama-70b",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            return completion.choices[0].message.content
-        except Exception as e:
-            print(f"Groq key {key[:5]}... failed: {e}")
-            continue
-    return None
+# ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ (RATE LIMITED) + FALLBACK ====================
 
 def call_gemini(prompt):
     """Try Gemini API with key rotation."""
@@ -1019,17 +1031,53 @@ def call_gemini(prompt):
             continue
     return None
 
-def call_ai_with_fallback(prompt):
-    """Try Groq first, then Gemini, then Puter."""
-    # Try Groq
-    response = call_groq(prompt)
-    if response:
-        return response, "Groq (deepseek-r1)"
+def call_groq(prompt):
+    """Try Groq API with key rotation using GROQ_KEYS_1 to GROQ_KEYS_4 from secrets, with rate limiting."""
+    # Rate limiting: allow only 5 calls per minute
+    current_time = time.time()
+    # Clean old timestamps (>60 seconds)
+    st.session_state.groq_call_timestamps = [t for t in st.session_state.groq_call_timestamps if current_time - t < 60]
+    if len(st.session_state.groq_call_timestamps) >= 5:
+        print("Groq rate limit exceeded (5 calls per minute). Skipping Groq.")
+        return None  # rate limit exceeded, skip Groq
     
-    # Try Gemini
+    groq_keys = []
+    for i in range(1, 5):
+        key = st.secrets.get(f"GROQ_KEYS_{i}")
+        if key:
+            groq_keys.append(key)
+    
+    if not groq_keys:
+        return None
+    
+    for key in groq_keys:
+        try:
+            client = groq.Client(api_key=key)
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",  # Updated model
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            # Record successful call timestamp
+            st.session_state.groq_call_timestamps.append(current_time)
+            return completion.choices[0].message.content
+        except Exception as e:
+            print(f"Groq key {key[:5]}... failed: {e}")
+            continue
+    return None
+
+def call_ai_with_fallback(prompt):
+    """Try Gemini first, then Groq (with rate limit), then Puter."""
+    # Try Gemini first
     response = call_gemini(prompt)
     if response:
         return response, "Gemini 1.5 Flash"
+    
+    # Try Groq (subject to rate limit)
+    response = call_groq(prompt)
+    if response:
+        return response, "Groq (llama-3.3-70b-versatile)"
     
     # Fallback to Puter
     try:
@@ -1595,20 +1643,20 @@ def generate_dashboard_forecast(pair_display, tf, user_info):
     except Exception as e:
         return None, str(e), None
 
-# NEW: News impact analysis using AI
+# NEW: News impact analysis using AI (Sinhala output)
 def analyze_news_impact(news_items, user_info):
     """Use AI to determine which currency pairs are affected by the news."""
-    news_titles = "\n".join([f"- {n['title']}" for n in news_items])
+    news_titles = "\n".join([f"- {n['title']} (Time: {n['time']})" for n in news_items])
     prompt = f"""
-    Based on the following recent market news headlines, list the currency pairs (e.g., EUR/USD, GBP/USD, USD/JPY, XAU/USD, BTC/USD) that are likely to be impacted.
-    For each pair, provide a brief reason (in Sinhala) and the expected impact direction (positive or negative).
-    Also include the time of the news if available.
+    Based on the following recent market news headlines (with Colombo times), list the currency pairs (e.g., EUR/USD, GBP/USD, USD/JPY, XAU/USD, BTC/USD) that are likely to be impacted.
+    For each pair, provide a brief reason in SINHALA language and the expected impact direction (positive or negative).
+    Also include the time of the news.
 
     News:
     {news_titles}
 
     Output format (strict):
-    PAIR: [pair] | IMPACT: [positive/negative] | REASON: [Sinhala reason] | TIME: [time if available]
+    PAIR: [pair] | IMPACT: [positive/negative] | REASON: [Sinhala reason] | TIME: [time]
     Repeat for each pair.
     """
     response, provider = call_ai_with_fallback(prompt)
@@ -1682,6 +1730,15 @@ else:
     if app_mode == "Dashboard":
         st.title("📊 Trading Dashboard")
         
+        # NEW: System Analysis Engine Live Animation
+        st.markdown("""
+        <div class='system-engine-card'>
+            <div class='engine-icon'>⚙️</div>
+            <h2>SYSTEM ANALYSIS ENGINE</h2>
+            <div class='engine-text'>🔴 Real-time Analysis Engine Running • Live Market Data • AI Processing</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
         # User details card
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1712,7 +1769,8 @@ else:
                 <p><span class='metric-label'>Current Session:</span> <b>{get_current_session()}</b></p>
                 <p><span class='metric-label'>Active Trades:</span> <b>{len(load_user_trades(user_info['Username'], status='Active'))}</b></p>
                 <p><span class='metric-label'>Closed Today:</span> <b>{len([t for t in load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit']) if t.get('ClosedDate','').startswith(get_current_date_str())])}</b></p>
-                <p><span class='metric-label'>AI Analysis Method:</span> Groq + Gemini Fallback</p>
+                <p><span class='metric-label'>AI Analysis Method:</span> Gemini (Primary) → Groq (Rate Limited) → Puter</p>
+                <p><span class='metric-label'>Groq Rate Limit:</span> 5 calls/min</p>
                 <p><span class='metric-label'>Scanner Accuracy Threshold:</span> {st.session_state.min_accuracy}%</p>
             </div>
             """, unsafe_allow_html=True)
@@ -1761,8 +1819,8 @@ else:
                     st.progress(progress, text="Progress to Target")
                 st.markdown(f"**Sinhala Summary:** {data.get('sinhala_summary', 'N/A')}")
         
-        # NEW: Market News with AI Impact Analysis
-        st.markdown("### 📰 Market News & AI Impact Analysis")
+        # NEW: Market News with AI Impact Analysis (Sinhala)
+        st.markdown("### 📰 Market News & AI Impact Analysis (Sinhala)")
         if st.button("🔄 Refresh News & Analyze Impact"):
             with st.spinner("Fetching news and analyzing impact..."):
                 all_news = []
@@ -1794,7 +1852,7 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
         
-        # Display AI impact analysis
+        # Display AI impact analysis (Sinhala)
         if st.session_state.get("news_impact_analysis"):
             st.subheader("🔍 AI Impact Analysis (Sinhala)")
             st.caption(f"Provider: {st.session_state.news_impact_provider}")
