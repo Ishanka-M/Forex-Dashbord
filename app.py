@@ -1786,6 +1786,7 @@ def create_technical_chart(df, tf):
     return fig
 
 
+
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - FINAL CORRECTED VERSION
 def create_theory_chart(df, tf):
     """Create a simplified chart showing SMC/ICT concepts, liquidity levels, Fibonacci, and Elliott Wave labels."""
@@ -1796,6 +1797,12 @@ def create_theory_chart(df, tf):
                                  open=df['Open'], high=df['High'],
                                  low=df['Low'], close=df['Close'],
                                  name='Price', showlegend=False))
+
+    # Convert index to numeric timestamps (milliseconds) for vrect
+    if isinstance(df.index, pd.DatetimeIndex):
+        ts = {idx: idx.timestamp() * 1000 for idx in df.index}
+    else:
+        ts = {idx: i for i, idx in enumerate(df.index)}  # fallback to integer positions
 
     # Identify swing highs and lows using a simple peak/trough detection with a window of 5 candles
     window = 5
@@ -1849,14 +1856,13 @@ def create_theory_chart(df, tf):
                                    font=dict(color='cyan', size=12))
 
     # Fair Value Gaps (ICT) - simplified: highlight gaps between candles
-    # Convert Timestamps to strings for vrect x0/x1 to avoid arithmetic issues
     for i in range(1, len(df)-1):
         if df['Low'].iloc[i] > df['High'].iloc[i+1]:  # bullish gap
-            fig.add_vrect(x0=df.index[i].isoformat(), x1=df.index[i+1].isoformat(), 
+            fig.add_vrect(x0=ts[df.index[i]], x1=ts[df.index[i+1]], 
                           fillcolor="green", opacity=0.1, line_width=0,
                           annotation_text="FVG", annotation_position="top")
         elif df['High'].iloc[i] < df['Low'].iloc[i+1]:  # bearish gap
-            fig.add_vrect(x0=df.index[i].isoformat(), x1=df.index[i+1].isoformat(), 
+            fig.add_vrect(x0=ts[df.index[i]], x1=ts[df.index[i+1]], 
                           fillcolor="red", opacity=0.1, line_width=0,
                           annotation_text="FVG", annotation_position="bottom")
 
@@ -1864,12 +1870,12 @@ def create_theory_chart(df, tf):
     for i in range(2, len(df)):
         # Bullish OB: previous candle bearish, current strong bullish
         if df['Close'].iloc[i-2] < df['Open'].iloc[i-2] and df['Close'].iloc[i] > df['Open'].iloc[i] and df['Close'].iloc[i] > df['High'].iloc[i-2]:
-            fig.add_vrect(x0=df.index[i-2].isoformat(), x1=df.index[i-1].isoformat(), 
+            fig.add_vrect(x0=ts[df.index[i-2]], x1=ts[df.index[i-1]], 
                           fillcolor="blue", opacity=0.2, line_width=0,
                           annotation_text="OB", annotation_position="top")
         # Bearish OB
         if df['Close'].iloc[i-2] > df['Open'].iloc[i-2] and df['Close'].iloc[i] < df['Open'].iloc[i] and df['Close'].iloc[i] < df['Low'].iloc[i-2]:
-            fig.add_vrect(x0=df.index[i-2].isoformat(), x1=df.index[i-1].isoformat(), 
+            fig.add_vrect(x0=ts[df.index[i-2]], x1=ts[df.index[i-1]], 
                           fillcolor="orange", opacity=0.2, line_width=0,
                           annotation_text="OB", annotation_position="bottom")
 
