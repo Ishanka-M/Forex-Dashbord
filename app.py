@@ -14,49 +14,31 @@ import re
 import numpy as np
 import requests
 import xml.etree.ElementTree as ET
-import pytz  # For Timezone handling
-import streamlit as st
-import time
+import pytz  # For Timezone import streamlit as st
+from streamlit_lottie import st_lottie
+import requests
 
-# UI එක Clean කරන CSS එක (කලින් දුන්න එකමයි)
-hide_style = """
-    <style>
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
-    #MainMenu {visibility: hidden;}
-    div[data-testid="stStatusWidget"] {visibility: hidden;} /* Standard icon එක hide කරයි */
-    
-    /* Custom Loading Spinner එක */
-    .loader {
-      border: 4px solid #f3f3f3;
-      border-top: 4px solid #3498db;
-      border-radius: 50%;
-      width: 40px;
-      height: 40px;
-      animation: spin 1s linear infinite;
-      margin: auto;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-    </style>
-"""
-st.markdown(hide_style, unsafe_allow_html=True)
+def load_lottieurl(url):
+    r = requests.get(url)
+    if r.status_code != 200:
+        return None
+    return r.json()
 
-# Custom Loading function එකක්
-def custom_spinner():
-    return st.markdown('<div class="loader"></div>', unsafe_allow_html=True)
+# උදාහරණ ඇනිමේෂන් එකක්
+lottie_loading = load_lottieurl("https://assets5.lottiefiles.com/packages/lf20_t9gkkhz4.json")
 
-st.title("Custom Animation System")
+st.title("System Pro with Lottie")
 
-if st.button('Data Load කරන්න'):
-    # පරණ spinner එක වෙනුවට මේක පාවිච්චි කරන්න
-    with st.empty():
-        custom_spinner()
-        # මෙතන තමයි ඔයාගේ API call එක හෝ logic එක වෙන්නේ
-        time.sleep(3) # Load වෙන බව පෙන්වීමට උදාහරණයක්
-        st.success("වැඩේ ඉවරයි!")
+# දත්ත Load වන විට ඇනිමේෂන් එක පෙන්වීම
+with st.spinner("Processing..."):
+    st_lottie(lottie_loading, height=200, key="loader")
+    # මෙතන ඔයාගේ API code එක දාන්න
+    import time
+    time.sleep(3)
+
+st.write("Data Loaded!")
+
+
 
 # ඔයාගේ API Connection එක මෙතන තියෙන්න ඕනේ
 # API_KEY = st.secrets["MY_API_KEY"] 
