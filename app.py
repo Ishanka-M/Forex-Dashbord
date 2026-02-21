@@ -972,17 +972,21 @@ def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
 # ==================== AI FUNCTIONS WITH GROQ + FALLBACK ====================
 
 def call_groq(prompt):
-    """Try Groq API with key rotation using GROQ_KEYS from secrets."""
-    groq_keys_str = st.secrets.get("GROQ_KEYS", "")
-    if not groq_keys_str:
+    """Try Groq API with key rotation using GROQ_KEYS_1 to GROQ_KEYS_4 from secrets."""
+    groq_keys = []
+    for i in range(1, 5):
+        key = st.secrets.get(f"GROQ_KEYS_{i}")
+        if key:
+            groq_keys.append(key)
+    
+    if not groq_keys:
         return None
-    groq_keys = [k.strip() for k in groq_keys_str.split(",") if k.strip()]
     
     for key in groq_keys:
         try:
             client = groq.Client(api_key=key)
             completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="deepseek-r1-distill-llama-70b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=1000
