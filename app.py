@@ -1786,6 +1786,9 @@ def create_technical_chart(df, tf):
     return fig
 
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave)
+# ... (all previous code remains the same until the create_theory_chart function)
+
+# NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - CORRECTED VERSION
 def create_theory_chart(df, tf):
     """Create a simplified chart showing SMC/ICT concepts, liquidity levels, Fibonacci, and Elliott Wave labels."""
     fig = go.Figure()
@@ -1796,21 +1799,25 @@ def create_theory_chart(df, tf):
                                  low=df['Low'], close=df['Close'],
                                  name='Price', showlegend=False))
 
-    # Identify swing highs and lows (simplified)
-    # Find local maxima/minima using a rolling window
-    window = 10
-    df['SwingHigh'] = df['High'].rolling(window, center=True).max()
-    df['SwingLow'] = df['Low'].rolling(window, center=True).min()
-    swing_highs = df[df['High'] == df['SwingHigh']]
-    swing_lows = df[df['Low'] == df['SwingLow']]
+    # Identify swing highs and lows using a simple peak/trough detection with a window of 5 candles
+    window = 5
+    swing_highs = []
+    swing_lows = []
+    for i in range(window, len(df)-window):
+        if df['High'].iloc[i] == max(df['High'].iloc[i-window:i+window+1]):
+            swing_highs.append((df.index[i], df['High'].iloc[i]))
+        if df['Low'].iloc[i] == min(df['Low'].iloc[i-window:i+window+1]):
+            swing_lows.append((df.index[i], df['Low'].iloc[i]))
 
     # Plot swing points as markers
-    fig.add_trace(go.Scatter(x=swing_highs.index, y=swing_highs['High'],
-                              mode='markers', marker=dict(color='red', size=5, symbol='triangle-down'),
-                              name='Swing High', showlegend=True))
-    fig.add_trace(go.Scatter(x=swing_lows.index, y=swing_lows['Low'],
-                              mode='markers', marker=dict(color='green', size=5, symbol='triangle-up'),
-                              name='Swing Low', showlegend=True))
+    if swing_highs:
+        fig.add_trace(go.Scatter(x=[x[0] for x in swing_highs], y=[x[1] for x in swing_highs],
+                                  mode='markers', marker=dict(color='red', size=5, symbol='triangle-down'),
+                                  name='Swing High', showlegend=True))
+    if swing_lows:
+        fig.add_trace(go.Scatter(x=[x[0] for x in swing_lows], y=[x[1] for x in swing_lows],
+                                  mode='markers', marker=dict(color='green', size=5, symbol='triangle-up'),
+                                  name='Swing Low', showlegend=True))
 
     # Liquidity levels: horizontal lines at recent highs/lows (last 20 periods)
     recent_high = float(df['High'].tail(20).max())
@@ -1828,19 +1835,14 @@ def create_theory_chart(df, tf):
             fig.add_hline(y=price, line_dash="dash", line_color="purple", opacity=0.3,
                           annotation_text=f"Fib {level*100:.1f}%", annotation_position="right")
 
-    # Elliott Wave: simple labeling of last few swings (simplified)
-    # Identify last few alternating peaks and troughs
-    highs = swing_highs.head(5).sort_index()
-    lows = swing_lows.head(5).sort_index()
-    # Merge and sort all swings
-    swings = pd.concat([highs[['High']].rename(columns={'High':'price'}),
-                        lows[['Low']].rename(columns={'Low':'price'})]).sort_index()
-    # Label alternating starting from most recent trend direction
+    # Elliott Wave: simple labeling using the detected swing points (alternating)
+    swings = sorted(swing_highs + swing_lows, key=lambda x: x[0])
     if len(swings) > 3:
         labels = ['1', '2', '3', '4', '5']
-        for i, (idx, row) in enumerate(swings.tail(5).iterrows()):
+        # Determine trend direction from last few swings
+        for i, (idx, price) in enumerate(swings[-5:]):
             if i < len(labels):
-                fig.add_annotation(x=idx, y=row['price'], text=labels[i],
+                fig.add_annotation(x=idx, y=price, text=labels[i],
                                    showarrow=True, arrowhead=1, ax=0, ay=-20 if i%2==0 else 20,
                                    font=dict(color='cyan', size=12))
 
@@ -1875,6 +1877,8 @@ def create_theory_chart(df, tf):
                       yaxis_title="Price",
                       hovermode="x unified")
     return fig
+
+# ... (rest of the code remains identical, including the main application section where create_theory_chart is called)
 
 # ==================== DASHBOARD FUNCTIONS ====================
 def get_major_prices():
