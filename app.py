@@ -1037,7 +1037,7 @@ def call_gemini(prompt):
     for idx, key in enumerate(gemini_keys):
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-3-flash-preview')
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
@@ -1086,7 +1086,7 @@ def call_ai_with_fallback(prompt):
     # Try Gemini first
     response = call_gemini(prompt)
     if response:
-        return response, "Gemini 1.5 Flash"
+        return response, "Gemini 3.0"
     
     # Try Groq (subject to rate limit)
     response = call_groq(prompt)
