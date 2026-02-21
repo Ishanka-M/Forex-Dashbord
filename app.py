@@ -1076,7 +1076,7 @@ def call_gemini(prompt):
     key = gemini_keys[key_idx]
     try:
         genai.configure(api_key=key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-3-flash-preview')
         response = model.generate_content(prompt)
         # Record timestamp for this key
         st.session_state.gemini_key_timestamps[key_idx].append(time.time())
@@ -1150,7 +1150,7 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
             progress_callback(1.0, "Gemini response received")
         # Increment total API requests counter
         st.session_state.total_api_requests += 1
-        return response, "Gemini 1.5 Flash"
+        return response, "Gemini 3.0 Flash"
     
     if progress_callback:
         progress_callback(0.4, "Gemini failed, trying Groq...")
