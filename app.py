@@ -1672,10 +1672,10 @@ def create_technical_chart(df, tf):
     df['RSI'] = 100 - (100 / (1 + rs))
     
     # Support/Resistance (last 20 days high/low)
-    recent_high = df['High'].tail(20).max()
-    recent_low = df['Low'].tail(20).min()
+    recent_high = float(df['High'].tail(20).max())
+    recent_low = float(df['Low'].tail(20).min())
     
-    # Fibonacci levels from last swing high/low (simplified: use recent_high and recent_low)
+    # Fibonacci levels from last swing high/low
     fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
     fib_prices = [recent_low + (recent_high - recent_low) * level for level in fib_levels]
     
@@ -1696,12 +1696,46 @@ def create_technical_chart(df, tf):
     # Bollinger Bands
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], line=dict(color='gray', width=1, dash='dash'), name='BB Upper'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], line=dict(color='gray', width=1, dash='dash'), name='BB Lower'), row=1, col=1)
-    # Support/Resistance lines
-    fig.add_hline(y=recent_high, line_dash="dot", line_color="red", annotation_text="Resistance", row=1, col=1)
-    fig.add_hline(y=recent_low, line_dash="dot", line_color="green", annotation_text="Support", row=1, col=1)
+    
+    # Support/Resistance lines using add_shape (more robust)
+    fig.add_shape(
+        type="line",
+        x0=df.index[0], x1=df.index[-1],
+        y0=recent_high, y1=recent_high,
+        line=dict(color="red", width=1, dash="dot"),
+        row=1, col=1
+    )
+    fig.add_shape(
+        type="line",
+        x0=df.index[0], x1=df.index[-1],
+        y0=recent_low, y1=recent_low,
+        line=dict(color="green", width=1, dash="dot"),
+        row=1, col=1
+    )
+    # Add annotation manually (optional)
+    fig.add_annotation(
+        x=df.index[-1], y=recent_high,
+        text="Resistance", showarrow=False,
+        xshift=10, yshift=10,
+        font=dict(color="red"), row=1, col=1
+    )
+    fig.add_annotation(
+        x=df.index[-1], y=recent_low,
+        text="Support", showarrow=False,
+        xshift=10, yshift=-10,
+        font=dict(color="green"), row=1, col=1
+    )
+    
     # Fibonacci levels
     for price in fib_prices:
-        fig.add_hline(y=price, line_dash="dot", line_color="purple", opacity=0.3, row=1, col=1)
+        fig.add_shape(
+            type="line",
+            x0=df.index[0], x1=df.index[-1],
+            y0=price, y1=price,
+            line=dict(color="purple", width=0.5, dash="dot"),
+            opacity=0.3,
+            row=1, col=1
+        )
     
     # MACD
     fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue'), name='MACD'), row=2, col=1)
@@ -1710,8 +1744,10 @@ def create_technical_chart(df, tf):
     
     # RSI
     fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple'), name='RSI'), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.add_shape(type="line", x0=df.index[0], x1=df.index[-1], y0=70, y1=70,
+                  line=dict(color="red", dash="dash"), row=3, col=1)
+    fig.add_shape(type="line", x0=df.index[0], x1=df.index[-1], y0=30, y1=30,
+                  line=dict(color="green", dash="dash"), row=3, col=1)
     
     # Volume
     colors = ['red' if close < open else 'green' for close, open in zip(df['Close'], df['Open'])]
