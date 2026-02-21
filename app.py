@@ -2,7 +2,8 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import puter  # Puter AI for Fallback
-import google.generativeai as genai # Gemini AI
+import google.generativeai as genai  # Gemini AI
+import groq  # Groq AI
 import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
@@ -12,10 +13,10 @@ import re
 import numpy as np
 import requests
 import xml.etree.ElementTree as ET
-import pytz # For Timezone handling
+import pytz  # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
-st.set_page_config(page_title="Infinite Algo Terminal v26.0 (Advanced Risk)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite Algo Terminal v27.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -278,6 +279,53 @@ st.markdown("""
         color: #ff4b4b;
         border: 1px solid #ff4b4b;
     }
+    
+    /* --- DASHBOARD CARDS --- */
+    .dashboard-card {
+        background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
+        border-radius: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid #444;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+        transition: all 0.3s ease;
+    }
+    .dashboard-card:hover {
+        transform: translateY(-5px);
+        border-color: #00d4ff;
+        box-shadow: 0 15px 30px rgba(0,212,255,0.2);
+    }
+    .dashboard-card h3 {
+        color: #00d4ff;
+        margin-top: 0;
+        border-bottom: 1px solid #333;
+        padding-bottom: 10px;
+    }
+    .metric-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: #fff;
+    }
+    .metric-label {
+        color: #aaa;
+        font-size: 14px;
+    }
+    
+    /* --- LIVE PRICE TABLE --- */
+    .live-price-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .live-price-table th {
+        background-color: #333;
+        color: #00d4ff;
+        padding: 8px;
+        text-align: left;
+    }
+    .live-price-table td {
+        padding: 8px;
+        border-bottom: 1px solid #444;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -296,6 +344,7 @@ if "min_accuracy" not in st.session_state: st.session_state.min_accuracy = 40  #
 if "last_activity" not in st.session_state: st.session_state.last_activity = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 if "login_time" not in st.session_state: st.session_state.login_time = None
 if "ai_confirmations" not in st.session_state: st.session_state.ai_confirmations = {}  # store AI confirmations for scanner trades
+if "tracked_trades" not in st.session_state: st.session_state.tracked_trades = set()  # store IDs of auto-tracked trades
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -307,6 +356,9 @@ def get_yf_symbol(display_symbol):
     """Convert display symbol to yfinance symbol."""
     if display_symbol.endswith("-USDT"):
         return display_symbol.replace("-USDT", "-USD")
+    # Metals
+    if display_symbol in ["XAUUSD", "XAGUSD", "XPTUSD", "XPDUSD"]:
+        return display_symbol + "=X"
     return display_symbol
 
 def clean_pair_to_yf_symbol(clean_pair):
@@ -532,16 +584,16 @@ def check_login(username, password):
                             sheet.update_cell(cell.row, headers.index("UsageCount") + 1, 0)
                             user["UsageCount"] = 0
                         if "HybridLimit" in headers:
-                            current_limit = int(user.get("HybridLimit", 10))
+                            current_limit = int(user.get("HybridLimit", 30))
                             if current_limit < 9000:
-                                sheet.update_cell(cell.row, headers.index("HybridLimit") + 1, 10)
-                                user["HybridLimit"] = 10
+                                sheet.update_cell(cell.row, headers.index("HybridLimit") + 1, 30)
+                                user["HybridLimit"] = 30
                         if "LastLogin" in headers:
                             sheet.update_cell(cell.row, headers.index("LastLogin") + 1, current_date)
                             user["LastLogin"] = current_date
                     except Exception as e:
                         print(f"Daily Reset Error: {e}")
-                if "HybridLimit" not in user: user["HybridLimit"] = 10
+                if "HybridLimit" not in user: user["HybridLimit"] = 30
                 if "UsageCount" not in user: user["UsageCount"] = 0
                 return user
         except: return None
@@ -873,7 +925,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence
 
-# --- 5. RISK-OPTIMIZED SL/TP CALCULATION ---
+# --- 5. RISK-OPTIMIZED SL/TP CALCULATION (now only used as fallback) ---
 def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
     """
     Calculate SL and TP using ATR and recent swing levels to minimize risk.
@@ -907,6 +959,174 @@ def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
     
     return sl, tp
 
+# ==================== AI FUNCTIONS WITH GROQ + FALLBACK ====================
+
+def call_groq(prompt):
+    """Try Groq API with key rotation."""
+    groq_keys = []
+    for i in range(1, 5):
+        key = st.secrets.get(f"GROQ_API_KEY_{i}")
+        if key:
+            groq_keys.append(key)
+    
+    if not groq_keys:
+        return None
+    
+    for key in groq_keys:
+        try:
+            client = groq.Client(api_key=key)
+            completion = client.chat.completions.create(
+                model="deepseek-r1-distill-llama-70b",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            print(f"Groq key {key[:5]}... failed: {e}")
+            continue
+    return None
+
+def call_gemini(prompt):
+    """Try Gemini API with key rotation."""
+    gemini_keys = []
+    for i in range(1, 8):
+        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
+        if k:
+            gemini_keys.append(k)
+    
+    if not gemini_keys:
+        return None
+    
+    for idx, key in enumerate(gemini_keys):
+        try:
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            print(f"Gemini key {idx+1} failed: {e}")
+            continue
+    return None
+
+def call_ai_with_fallback(prompt):
+    """Try Groq first, then Gemini, then Puter."""
+    # Try Groq
+    response = call_groq(prompt)
+    if response:
+        return response, "Groq (deepseek-r1)"
+    
+    # Try Gemini
+    response = call_gemini(prompt)
+    if response:
+        return response, "Gemini 1.5 Flash"
+    
+    # Fallback to Puter
+    try:
+        puter_resp = puter.ai.chat(prompt)
+        return puter_resp.message.content, "Puter AI (Fallback)"
+    except:
+        return None, "All AI providers failed"
+
+def parse_ai_response(text):
+    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A", "FORECAST": "N/A"}
+    try:
+        entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
+        if entry_match:
+            data["ENTRY"] = entry_match.group(1)
+        if sl_match:
+            data["SL"] = sl_match.group(1)
+        if tp_match:
+            data["TP"] = tp_match.group(1)
+        if forecast_match:
+            data["FORECAST"] = forecast_match.group(1).strip()
+    except:
+        pass
+    return data
+
+def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, user_info):
+    """
+    Get AI-generated trade setup including entry, SL, TP, confidence, forecast, confirmation.
+    """
+    if df_hist is None or df_hist.empty:
+        return None
+    
+    # Calculate some basic stats for prompt
+    high_52w = df_hist['High'].tail(252).max() if len(df_hist) > 252 else df_hist['High'].max()
+    low_52w = df_hist['Low'].tail(252).min() if len(df_hist) > 252 else df_hist['Low'].min()
+    atr = (df_hist['High'] - df_hist['Low']).rolling(14).mean().iloc[-1]
+    
+    news_str = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No recent news."
+    
+    prompt = f"""
+    Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
+    Analyze {pair} on {tf} timeframe for a potential {direction} trade.
+    
+    **Current Market Data:**
+    - Current Price: {current_price:.5f}
+    - 52-Week High: {high_52w:.5f}
+    - 52-Week Low: {low_52w:.5f}
+    - ATR (14): {atr:.5f}
+    
+    **Recent News Headlines:**
+    {news_str}
+    
+    **Task:**
+    1. Determine if a {direction} trade is valid based on technical and fundamental analysis.
+    2. Provide precise Entry, Stop Loss, and Take Profit levels.
+    3. Use concepts like support/resistance, Fibonacci, and recent swings to set logical SL/TP.
+    4. Ensure risk-reward ratio is at least 1:2 for scalp, 1:3 for swing.
+    5. Provide a confidence percentage (0-100%).
+    6. Give a short-term price forecast (next 5-10 candles).
+    7. Finally, give a CONFIRMATION decision: APPROVE or REJECT the trade setup with a brief reason.
+    
+    **FINAL OUTPUT FORMAT (STRICT):**
+    CONFIDENCE: XX%
+    ENTRY: xxxxx
+    SL: xxxxx
+    TP: xxxxx
+    FORECAST: [Brief forecast description]
+    CONFIRMATION: APPROVE/REJECT
+    REASON: [Short reason]
+    """
+    
+    response, provider = call_ai_with_fallback(prompt)
+    if not response:
+        return None
+    
+    parsed = parse_ai_response(response)
+    
+    # Extract confidence
+    conf_match = re.search(r"CONFIDENCE\s*[:=]\s*(\d+)", response, re.IGNORECASE)
+    confidence = int(conf_match.group(1)) if conf_match else 50
+    
+    # Extract confirmation and reason
+    confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", response, re.IGNORECASE)
+    reason_match = re.search(r"REASON\s*:\s*(.+)", response, re.IGNORECASE)
+    confirmation = confirm_match.group(1).upper() if confirm_match else "N/A"
+    reason = reason_match.group(1).strip() if reason_match else ""
+    
+    trade = {
+        "pair": pair,
+        "tf": tf,
+        "dir": direction,
+        "entry": float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price,
+        "sl": float(parsed["SL"]) if parsed["SL"] != "N/A" else (current_price * 0.99 if direction == "BUY" else current_price * 1.01),
+        "tp": float(parsed["TP"]) if parsed["TP"] != "N/A" else (current_price * 1.01 if direction == "BUY" else current_price * 0.99),
+        "conf": confidence,
+        "price": current_price,
+        "live_price": get_live_price(pair) or current_price,
+        "symbol_orig": clean_pair_to_yf_symbol(pair),
+        "forecast": parsed["FORECAST"],
+        "confirmation": confirmation,
+        "reason": reason,
+        "provider": provider
+    }
+    return trade
+
 # --- 6. INFINITE ALGORITHMIC ENGINE (UPDATED WITH RISK-OPTIMIZED SL/TP) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     if sigs is None:
@@ -937,7 +1157,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
         sl, tp = calculate_risk_optimized_sl_tp(df, "SELL", curr_p, atr, tf_type)
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V26.0 (ADVANCED RISK)**
+    ♾️ **INFINITE ALGO ENGINE V27.0 (AI-POWERED SCANNER)**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • Trade Type: {trade_mode}
@@ -953,7 +1173,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     """
     return analysis_text
 
-# --- 7. HYBRID AI ENGINE WITH CONFIRMATION ---
+# --- 7. HYBRID AI ENGINE WITH CONFIRMATION (uses new AI call) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, df):
     if sigs is None:
         return "Error: Insufficient Signal Data", "System Error", None, None
@@ -961,14 +1181,13 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, 
     algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf, df)
     
     current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
+    max_limit = user_info.get("HybridLimit", 30)
     
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return algo_result, "Infinite Algo (Limit Reached)", None, None
 
     news_str = "\n".join([f"- {n['title']}" for n in news_items])
 
-    # Prompt now asks for explicit confirmation and reason
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
     Analyze {pair} on {tf} timeframe.
@@ -1000,89 +1219,31 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, 
     REASON: [Short reason in English or Sinhala]
     """
 
-    gemini_keys = []
-    for i in range(1, 8):
-        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
-        if k:
-            gemini_keys.append(k)
-        
-    response_text = ""
-    provider_name = ""
-
-    with st.status(f"🚀 Infinite AI Activating ({tf})...", expanded=True) as status:
-        if not gemini_keys:
-            st.error("❌ No Gemini Keys found!")
-        
-        for idx, key in enumerate(gemini_keys):
-            try:
-                genai.configure(api_key=key)
-                model = genai.GenerativeModel('gemini-3-flash-preview')
-                response = model.generate_content(prompt)
-                response_text = response.text
-                provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
-                status.update(label=f"✅ Gemini Analysis Complete!", state="complete", expanded=False)
-                break
-            except Exception as e:
-                continue
-
-        if not response_text:
-            try:
-                puter_resp = puter.ai.chat(prompt)
-                response_text = puter_resp.message.content
-                provider_name = "Puter AI (Fallback) 🔵"
-                status.update(label="✅ Puter Analysis Complete!", state="complete", expanded=False)
-            except Exception as e_puter:
-                return algo_result, "Infinite Algo (Fallback)", None, None
-
-    if response_text:
+    response, provider = call_ai_with_fallback(prompt)
+    
+    if response:
         new_usage = current_usage + 1
         user_info["UsageCount"] = new_usage
         st.session_state.user = user_info
         if user_info["Username"] != "Admin":
             update_usage_in_db(user_info["Username"], new_usage)
 
-        # Parse confirmation and reason
-        confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", response_text, re.IGNORECASE)
-        reason_match = re.search(r"REASON\s*:\s*(.+)", response_text, re.IGNORECASE)
+        confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", response, re.IGNORECASE)
+        reason_match = re.search(r"REASON\s*:\s*(.+)", response, re.IGNORECASE)
         confirmation = confirm_match.group(1).upper() if confirm_match else "N/A"
         reason = reason_match.group(1).strip() if reason_match else ""
 
-        return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}", confirmation, reason
-
-    return algo_result, "Infinite Algo (Default)", None, None
-
-def parse_ai_response(text):
-    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A", "FORECAST": "N/A"}
-    try:
-        entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
-        if entry_match:
-            data["ENTRY"] = entry_match.group(1)
-        if sl_match:
-            data["SL"] = sl_match.group(1)
-        if tp_match:
-            data["TP"] = tp_match.group(1)
-        if forecast_match:
-            data["FORECAST"] = forecast_match.group(1).strip()
-    except:
-        pass
-    return data
+        return response, f"{provider} | Used: {new_usage}/{max_limit}", confirmation, reason
+    else:
+        return algo_result, "Infinite Algo (Default)", None, None
 
 # ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
 def get_deep_hybrid_analysis(trade, user_info, df_hist):
     """Run deep analysis with confirmation for scanner trade."""
     pair = trade['pair']
-    if "=X" not in pair and "-USDT" not in pair and pair not in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-        if pair in ["XAUUSD","XAGUSD","XPTUSD","XPDUSD"]:
-            orig_sym = pair + "=X"
-        else:
-            orig_sym = pair + "-USDT"
-    else:
-        orig_sym = pair
+    symbol_orig = trade.get('symbol_orig', clean_pair_to_yf_symbol(pair))
     
-    news_items = get_market_news(orig_sym)
+    news_items = get_market_news(symbol_orig)
     news_str = "\n".join([f"- {n['title']}" for n in news_items])
     
     live_price = trade.get('live_price', trade['price'])
@@ -1121,90 +1282,28 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist):
     REASON: [Short reason]
     """
     
-    gemini_keys = []
-    for i in range(1, 8):
-        k = st.secrets.get(f"GEMINI_API_KEY_{i}")
-        if k:
-            gemini_keys.append(k)
-    
-    response_text = ""
-    provider_name = ""
-    
     current_usage = user_info.get("UsageCount", 0)
-    max_limit = user_info.get("HybridLimit", 10)
+    max_limit = user_info.get("HybridLimit", 30)
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return "Daily limit reached. Please try again tomorrow.", "Limit Reached", None, None
     
-    with st.status(f"🔍 Deep AI Analysis for {pair}...", expanded=True) as status:
-        if not gemini_keys:
-            st.error("❌ No Gemini Keys found!")
-            try:
-                puter_resp = puter.ai.chat(prompt)
-                response_text = puter_resp.message.content
-                provider_name = "Puter AI (Fallback) 🔵"
-                status.update(label="✅ Deep Analysis Complete (Puter)", state="complete", expanded=False)
-            except:
-                return "Deep analysis failed. Please try again.", "Error", None, None
-        else:
-            for idx, key in enumerate(gemini_keys):
-                try:
-                    genai.configure(api_key=key)
-                    model = genai.GenerativeModel('gemini-3-flash-preview')
-                    response = model.generate_content(prompt)
-                    response_text = response.text
-                    provider_name = f"Gemini 1.5 Flash (Key {idx+1}) ⚡"
-                    status.update(label="✅ Deep Analysis Complete (Gemini)", state="complete", expanded=False)
-                    break
-                except Exception as e:
-                    continue
-            
-            if not response_text:
-                try:
-                    puter_resp = puter.ai.chat(prompt)
-                    response_text = puter_resp.message.content
-                    provider_name = "Puter AI (Fallback) 🔵"
-                    status.update(label="✅ Deep Analysis Complete (Puter)", state="complete", expanded=False)
-                except Exception as e_puter:
-                    return "Deep analysis failed. Please try again.", "Error", None, None
+    response, provider = call_ai_with_fallback(prompt)
     
-    if response_text:
+    if response:
         new_usage = current_usage + 1
         user_info["UsageCount"] = new_usage
         st.session_state.user = user_info
         if user_info["Username"] != "Admin":
             update_usage_in_db(user_info["Username"], new_usage)
 
-        confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", response_text, re.IGNORECASE)
-        reason_match = re.search(r"REASON\s*:\s*(.+)", response_text, re.IGNORECASE)
+        confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", response, re.IGNORECASE)
+        reason_match = re.search(r"REASON\s*:\s*(.+)", response, re.IGNORECASE)
         confirmation = confirm_match.group(1).upper() if confirm_match else "N/A"
         reason = reason_match.group(1).strip() if reason_match else ""
 
-        return response_text, f"{provider_name} | Used: {new_usage}/{max_limit}", confirmation, reason
-    
-    return "Deep analysis failed.", "Error", None, None
-
-# ==================== QUICK AI CONFIRMATION FOR SCANNER TRADES ====================
-def quick_ai_confirm(trade, user_info):
-    """Run deep analysis and return only confirmation and reason."""
-    # Fetch historical data based on timeframe
-    if "Swing" in trade['tf']:
-        interval = "4h"
-        period = "3mo"
+        return response, f"{provider} | Used: {new_usage}/{max_limit}", confirmation, reason
     else:
-        interval = "15m"
-        period = "1mo"
-    symbol_orig = trade.get('symbol_orig', trade['pair'])
-    try:
-        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
-        if not df_hist.empty and len(df_hist) > 10:
-            if isinstance(df_hist.columns, pd.MultiIndex):
-                df_hist.columns = df_hist.columns.get_level_values(0)
-        else:
-            df_hist = None
-    except:
-        df_hist = None
-    result, provider, confirmation, reason = get_deep_hybrid_analysis(trade, user_info, df_hist)
-    return confirmation, reason
+        return "Deep analysis failed.", "Error", None, None
 
 # ==================== SESSION DETECTION ====================
 def get_current_session():
@@ -1220,78 +1319,80 @@ def get_current_session():
     else:
         return "Other"
 
-# ==================== SCAN FUNCTION WITH ADVANCED SL/TP ====================
-def scan_market(assets_list, active_trades=None, min_accuracy=40):
+# ==================== SCAN FUNCTION WITH AI ANALYSIS ====================
+def scan_market_with_ai(assets_list, user_info, min_accuracy=40):
     """
-    Scan market for swing and scalp setups using risk-optimized SL/TP.
+    Scan market for swing and scalp setups using AI analysis for each candidate.
+    Automatically saves trades to Ongoing Trades if approved by AI.
     """
     swing_list = []
     scalp_list = []
     
+    # Progress bars
+    swing_progress = st.progress(0, text="Scanning Swing (4H)...")
+    scalp_progress = st.progress(0, text="Scanning Scalp (15M)...")
+    
     # Swing scan (4H)
-    for symbol in assets_list:
+    total_swing = len(assets_list)
+    for idx, symbol in enumerate(assets_list):
+        swing_progress.progress((idx+1)/total_swing, text=f"Scanning {symbol} for Swing...")
         try:
             df_sw = yf.download(get_yf_symbol(symbol), period="6mo", interval="4h", progress=False)
             if not df_sw.empty and len(df_sw) > 50:
                 if isinstance(df_sw.columns, pd.MultiIndex):
                     df_sw.columns = df_sw.columns.get_level_values(0)
-                # For scanner, we don't fetch news (speed), use old weights but no news
+                # Use algorithmic signals to get direction and confidence quickly
                 sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h", news_items=None)
-                
                 if abs(conf_sw) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
                     curr_price = df_sw['Close'].iloc[-1]
-                    # Use risk-optimized SL/TP
-                    tf_type = 'swing'
-                    sl, tp = calculate_risk_optimized_sl_tp(df_sw, direction, curr_price, atr_sw, tf_type)
                     
-                    trade_candidate = {
-                        "pair": clean_sym, "tf": "4H (Swing)", "dir": direction,
-                        "conf": abs(conf_sw), "price": curr_price,
-                        "entry": curr_price, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(clean_sym) or curr_price,
-                        "symbol_orig": symbol
-                    }
-                    
-                    if active_trades and is_trade_tracked(trade_candidate, active_trades):
-                        continue
-                    
-                    swing_list.append(trade_candidate)
-        except:
-            pass
-        
+                    # Get AI analysis for this candidate
+                    news_items = get_market_news(symbol)
+                    ai_trade = get_ai_trade_setup(clean_sym, "4H (Swing)", direction, curr_price, df_sw, news_items, user_info)
+                    if ai_trade and ai_trade['confirmation'] == "APPROVE":
+                        # Auto-save to ongoing trades if not already tracked
+                        trade_id = f"{clean_sym}_4H_{direction}_{ai_trade['entry']:.5f}"
+                        if trade_id not in st.session_state.tracked_trades:
+                            if save_trade_to_ongoing(ai_trade, user_info['Username']):
+                                st.session_state.tracked_trades.add(trade_id)
+                        swing_list.append(ai_trade)
+        except Exception as e:
+            print(f"Error scanning {symbol} for swing: {e}")
+            continue
+    
+    swing_progress.empty()
+    
     # Scalp scan (15M)
-    for symbol in assets_list:
+    total_scalp = len(assets_list)
+    for idx, symbol in enumerate(assets_list):
+        scalp_progress.progress((idx+1)/total_scalp, text=f"Scanning {symbol} for Scalp...")
         try:
             df_sc = yf.download(get_yf_symbol(symbol), period="1mo", interval="15m", progress=False)
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex):
                     df_sc.columns = df_sc.columns.get_level_values(0)
                 sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m", news_items=None)
-                
                 if abs(conf_sc) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
                     curr_price = df_sc['Close'].iloc[-1]
-                    tf_type = 'scalp'
-                    sl, tp = calculate_risk_optimized_sl_tp(df_sc, direction, curr_price, atr_sc, tf_type)
                     
-                    trade_candidate = {
-                        "pair": clean_sym, "tf": "15M (Scalp)", "dir": direction,
-                        "conf": abs(conf_sc), "price": curr_price,
-                        "entry": curr_price, "sl": sl, "tp": tp,
-                        "live_price": get_live_price(clean_sym) or curr_price,
-                        "symbol_orig": symbol
-                    }
-                    
-                    if active_trades and is_trade_tracked(trade_candidate, active_trades):
-                        continue
-                    
-                    scalp_list.append(trade_candidate)
-        except:
-            pass
-        
+                    news_items = get_market_news(symbol)
+                    ai_trade = get_ai_trade_setup(clean_sym, "15M (Scalp)", direction, curr_price, df_sc, news_items, user_info)
+                    if ai_trade and ai_trade['confirmation'] == "APPROVE":
+                        trade_id = f"{clean_sym}_15M_{direction}_{ai_trade['entry']:.5f}"
+                        if trade_id not in st.session_state.tracked_trades:
+                            if save_trade_to_ongoing(ai_trade, user_info['Username']):
+                                st.session_state.tracked_trades.add(trade_id)
+                        scalp_list.append(ai_trade)
+        except Exception as e:
+            print(f"Error scanning {symbol} for scalp: {e}")
+            continue
+    
+    scalp_progress.empty()
+    
     return {"swing": swing_list, "scalp": scalp_list}
 
 # --- FORECAST CHART FUNCTION (unchanged) ---
@@ -1380,9 +1481,26 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
     )
     return fig
 
+# ==================== DASHBOARD FUNCTIONS ====================
+def get_major_prices():
+    """Get live prices for major forex, crypto, and metals."""
+    majors = {
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "USD/JPY": "USDJPY=X",
+        "BTC/USD": "BTC-USD",
+        "ETH/USD": "ETH-USD",
+        "XAU/USD": "XAUUSD=X"
+    }
+    prices = {}
+    for name, sym in majors.items():
+        price = get_live_price(sym.replace("=X","").replace("-USD","").replace("-USDT",""))
+        prices[name] = price if price else "N/A"
+    return prices
+
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v26.0 (Advanced Risk)</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v27.0 (AI-Powered Scanner)</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -1401,9 +1519,12 @@ else:
     # Update last activity timestamp on each interaction
     st.session_state.last_activity = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Check and update ongoing trades automatically
+    check_and_update_trades(user_info['Username'])
+
     # --- SIDEBAR WITH SESSION DASHBOARD ---
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
-    st.sidebar.caption(f"Credits: {user_info.get('UsageCount', 0)}/{user_info.get('HybridLimit', 10)}")
+    st.sidebar.caption(f"Credits: {user_info.get('UsageCount', 0)}/{user_info.get('HybridLimit', 30)}")
     
     # Session dashboard card
     st.sidebar.markdown("---")
@@ -1423,7 +1544,8 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    nav_options = ["Terminal", "Market Scanner", "Ongoing Trades"]
+    # Navigation (Terminal removed)
+    nav_options = ["Dashboard", "Market Scanner", "Ongoing Trades"]
     if user_info.get("Role") == "Admin":
         nav_options.append("Admin Panel")
     app_mode = st.sidebar.radio("Navigation", nav_options)
@@ -1441,132 +1563,61 @@ else:
         "Metals": ["XAUUSD=X", "XAGUSD=X", "XPTUSD=X", "XPDUSD=X"]
     }
 
-    if app_mode == "Terminal":
-        st.sidebar.divider()
-        market = st.sidebar.radio("Market", ["Forex", "Crypto", "Metals"])
-        pair = st.sidebar.selectbox("Select Asset", assets[market], format_func=lambda x: x.replace("=X", "").replace("-USD", "").replace("-USDT", ""))
-        tf = st.sidebar.selectbox("Timeframe", ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"], index=2)
-
-        news_items = get_market_news(pair)
-        news_impact = calculate_news_impact(news_items)
+    if app_mode == "Dashboard":
+        st.title("📊 Trading Dashboard")
         
-        st.sidebar.markdown("### 📰 Market News")
-        tz = pytz.timezone('Asia/Colombo')
-        current_time_str = datetime.now(tz).strftime("%H:%M:%S")
-        st.sidebar.caption(f"Last updated: {current_time_str}")
-        st.sidebar.progress(news_impact)
-        if news_impact > 70:
-            st.sidebar.caption("⚠️ HIGH VOLATILITY EXPECTED")
+        # User details card
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f"""
+            <div class='dashboard-card'>
+                <h3>👤 User Profile</h3>
+                <p><span class='metric-label'>Username:</span> <span class='metric-value'>{user_info['Username']}</span></p>
+                <p><span class='metric-label'>Role:</span> {user_info.get('Role', 'User')}</p>
+                <p><span class='metric-label'>Credits Used:</span> {user_info.get('UsageCount', 0)} / {user_info.get('HybridLimit', 30)}</p>
+                <p><span class='metric-label'>Last Login:</span> {user_info.get('LastLogin', 'N/A')}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            # Live market prices
+            prices = get_major_prices()
+            price_html = "<div class='dashboard-card'><h3>💰 Live Prices</h3><table class='live-price-table'>"
+            for name, price in prices.items():
+                price_html += f"<tr><td>{name}</td><td><b>{price}</b></td></tr>"
+            price_html += "</table></div>"
+            st.markdown(price_html, unsafe_allow_html=True)
+        
+        with col3:
+            # Theory analysis / upcoming signals accuracy
+            st.markdown(f"""
+            <div class='dashboard-card'>
+                <h3>📈 Market Pulse</h3>
+                <p><span class='metric-label'>Current Session:</span> <b>{get_current_session()}</b></p>
+                <p><span class='metric-label'>Active Trades:</span> <b>{len(load_user_trades(user_info['Username'], status='Active'))}</b></p>
+                <p><span class='metric-label'>Closed Today:</span> <b>{len([t for t in load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit']) if t.get('ClosedDate','').startswith(get_current_date_str())])}</b></p>
+                <p><span class='metric-label'>AI Analysis Method:</span> Groq + Gemini Fallback</p>
+                <p><span class='metric-label'>Scanner Accuracy Threshold:</span> {st.session_state.min_accuracy}%</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Recent news or signals preview
+        st.markdown("### 🔥 Recent Scanner Signals")
+        if st.session_state.scan_results['swing'] or st.session_state.scan_results['scalp']:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Swing (4H)**")
+                for t in st.session_state.scan_results['swing'][:3]:
+                    st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Conf: {t['conf']}%)")
+            with col2:
+                st.markdown("**Scalp (15M)**")
+                for t in st.session_state.scan_results['scalp'][:3]:
+                    st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Conf: {t['conf']}%)")
         else:
-            st.sidebar.caption("✅ Market Stable")
-        
-        for news in news_items:
-            time_display = f"<span class='news-time'>{news['time']}</span>" if news['time'] else ""
-            st.sidebar.markdown(f"<div class='news-card {get_sentiment_class(news['title'])}'>{news['title']}{time_display}</div>", unsafe_allow_html=True)
-
-        df = yf.download(get_yf_symbol(pair), period=get_data_period(tf), interval=tf, progress=False)
-        
-        if not df.empty and len(df) > 50:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            curr_p = float(df['Close'].iloc[-1])
-            st.title(f"{pair.replace('=X', '').replace('-USD', '').replace('-USDT', '')} Terminal - {curr_p:.5f}")
-            
-            sigs, current_atr, conf_score = calculate_advanced_signals(df, tf, news_items)  # Pass news
-            
-            signal_dir = sigs['SK'][1]
-            if signal_dir == "bull":
-                st.markdown(f"<div class='notif-container notif-buy'>🔔 <b>BUY SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
-            elif signal_dir == "bear":
-                st.markdown(f"<div class='notif-container notif-sell'>🔔 <b>SELL SIGNAL:</b> Accuracy {abs(conf_score)}%</div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div class='notif-container notif-wait'>📡 Neutral Market (Accuracy {abs(conf_score)}%)</div>", unsafe_allow_html=True)
-
-            # Signal grid
-            r1c1, r1c2, r1c3 = st.columns(3)
-            r1c1.markdown(f"<div class='sig-box {sigs['TREND'][1]}'>TREND: {sigs['TREND'][0]}</div>", unsafe_allow_html=True)
-            r1c2.markdown(f"<div class='sig-box {sigs['SMC'][1]}'>SMC: {sigs['SMC'][0]}</div>", unsafe_allow_html=True)
-            r1c3.markdown(f"<div class='sig-box {sigs['ELLIOTT'][1]}'>WAVE: {sigs['ELLIOTT'][0]}</div>", unsafe_allow_html=True)
-            
-            r2c1, r2c2, r2c3 = st.columns(3)
-            r2c1.markdown(f"<div class='sig-box {sigs['LIQ'][1]}'>{sigs['LIQ'][0]}</div>", unsafe_allow_html=True)
-            r2c2.markdown(f"<div class='sig-box {sigs['PATT'][1]}'>{sigs['PATT'][0]}</div>", unsafe_allow_html=True)
-            r2c3.markdown(f"<div class='sig-box {sigs['ICT'][1]}'>ICT: {sigs['ICT'][0]}</div>", unsafe_allow_html=True)
-            
-            r3c1, r3c2, r3c3 = st.columns(3)
-            r3c1.markdown(f"<div class='sig-box {sigs['RSI'][1]}'>{sigs['RSI'][0]}</div>", unsafe_allow_html=True)
-            r3c2.markdown(f"<div class='sig-box {sigs['FIB'][1]}'>FIB: {sigs['FIB'][0]}</div>", unsafe_allow_html=True)
-            r3c3.markdown(f"<div class='sig-box {sigs['VOLATILITY'][1]}'>{sigs['VOLATILITY'][0]}</div>", unsafe_allow_html=True)
-            
-            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0, r=0, t=20, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.markdown(f"### 🎯 Hybrid AI Signal Card")
-            parsed = st.session_state.ai_parsed_data
-            
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"<div class='trade-metric'><h4>ENTRY</h4><h2 style='color:#00d4ff;'>{parsed['ENTRY']}</h2></div>", unsafe_allow_html=True)
-            c2.markdown(f"<div class='trade-metric'><h4>SL</h4><h2 style='color:#ff4b4b;'>{parsed['SL']}</h2></div>", unsafe_allow_html=True)
-            c3.markdown(f"<div class='trade-metric'><h4>TP</h4><h2 style='color:#00ff00;'>{parsed['TP']}</h2></div>", unsafe_allow_html=True)
-            
-            st.markdown("---")
-            
-            st.markdown("### 🔮 AI Forecast Chart")
-            forecast_placeholder = st.empty()
-            
-            if st.button("🚀 Analyze with Gemini + Puter + News", use_container_width=True):
-                with forecast_placeholder.container():
-                    st.markdown("<div class='forecast-loading'><span class='loading-icon'>⚡</span> Analyzing with AI... Generating Forecast...</div>", unsafe_allow_html=True)
-                
-                live_price = get_live_price(pair) or curr_p
-                # Pass df to infinite_algorithmic_engine for risk-optimized SL/TP
-                result, provider, confirmation, reason = get_hybrid_analysis(pair, {'price': live_price}, sigs, news_items, current_atr, st.session_state.user, tf, df)
-                st.session_state.ai_parsed_data = parse_ai_response(result)
-                st.session_state.ai_result = result.split("DATA:")[0] if "DATA:" in result else result
-                st.session_state.active_provider = provider
-                st.session_state.ai_confirmation = confirmation
-                st.session_state.ai_reason = reason
-                
-                try:
-                    entry = float(st.session_state.ai_parsed_data['ENTRY']) if st.session_state.ai_parsed_data['ENTRY'] != 'N/A' else live_price
-                    sl = float(st.session_state.ai_parsed_data['SL']) if st.session_state.ai_parsed_data['SL'] != 'N/A' else live_price * 0.99
-                    tp = float(st.session_state.ai_parsed_data['TP']) if st.session_state.ai_parsed_data['TP'] != 'N/A' else live_price * 1.01
-                except:
-                    entry = live_price
-                    sl = live_price * 0.99
-                    tp = live_price * 1.01
-                
-                forecast_fig = create_forecast_chart(df, entry, sl, tp, st.session_state.ai_parsed_data.get('FORECAST', ''))
-                st.session_state.forecast_chart = forecast_fig
-                
-                forecast_placeholder.empty()
-                st.rerun()
-
-            if "ai_result" in st.session_state:
-                st.markdown(f"**🤖 Provider:** `{st.session_state.active_provider}`")
-                st.markdown(f"<div class='entry-box'>{st.session_state.ai_result}</div>", unsafe_allow_html=True)
-                
-                # Display AI confirmation card
-                if st.session_state.get("ai_confirmation"):
-                    conf = st.session_state.ai_confirmation
-                    reason = st.session_state.get("ai_reason", "")
-                    if conf == "APPROVE":
-                        st.markdown(f"<div class='confirm-card confirm-approve'><span class='confirm-icon'>✅</span> <b>AI CONFIRMATION: APPROVE</b><br>{reason}</div>", unsafe_allow_html=True)
-                    elif conf == "REJECT":
-                        st.markdown(f"<div class='confirm-card confirm-reject'><span class='confirm-icon'>❌</span> <b>AI CONFIRMATION: REJECT</b><br>{reason}</div>", unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"<div class='confirm-card confirm-neutral'><span class='confirm-icon'>🤔</span> <b>AI CONFIRMATION: {conf}</b><br>{reason}</div>", unsafe_allow_html=True)
-                
-                if st.session_state.forecast_chart is not None:
-                    st.plotly_chart(st.session_state.forecast_chart, use_container_width=True)
-                    if st.session_state.ai_parsed_data.get('FORECAST') != 'N/A':
-                        st.info(f"📈 Forecast: {st.session_state.ai_parsed_data['FORECAST']}")
-        else:
-            st.error("Insufficient data for this pair/timeframe. Please try another.")
+            st.info("No recent scans. Run Market Scanner to see signals.")
 
     elif app_mode == "Market Scanner":
-        st.title("📡 Global Market Scanner (Multi-Timeframe)")
+        st.title("📡 AI-Powered Market Scanner (Auto-Track Enabled)")
         
         st.markdown("<div class='scan-header'><h3>🔍 Select Markets to Scan</h3></div>", unsafe_allow_html=True)
         market_choice = st.selectbox(
@@ -1596,16 +1647,15 @@ else:
         
         col1, col2 = st.columns([1,5])
         with col1:
-            if st.button("🚀 Start Scan", type="primary", use_container_width=True):
-                with st.spinner(f"Scanning {market_choice} for High Probability Setups (>{min_acc}%)..."):
-                    active_trades = load_user_trades(user_info['Username'], status='Active')
-                    results = scan_market(scan_assets, active_trades, min_accuracy=min_acc)
+            if st.button("🚀 Start AI Scan", type="primary", use_container_width=True):
+                with st.spinner(f"AI Scanning {market_choice} for High Probability Setups (>{min_acc}%)..."):
+                    results = scan_market_with_ai(scan_assets, user_info, min_accuracy=min_acc)
                     st.session_state.scan_results = results
                     
                     if not results['swing'] and not results['scalp']:
                         st.warning(f"No signals found above {min_acc}% accuracy.")
                     else:
-                        st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups.")
+                        st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups (auto-tracked).")
         
         with col2:
             if st.button("🗑️ Clear Results", use_container_width=True):
@@ -1620,7 +1670,7 @@ else:
         current_session = get_current_session()
         
         # Swing
-        st.subheader("🐢 SWING TRADES (4H)")
+        st.subheader("🐢 SWING TRADES (4H) - AI Analyzed")
         if res['swing']:
             for idx, sig in enumerate(res['swing']):
                 max_diff = abs(sig['entry'] - sig['sl'])
@@ -1630,20 +1680,19 @@ else:
                 else:
                     progress = 0
                 
-                # Unique key for AI confirmation
-                trade_key = f"{sig['pair']}_{sig['tf']}_{sig['dir']}_{sig['entry']:.5f}"
-                ai_data = st.session_state.ai_confirmations.get(trade_key)
+                # Display AI confirmation badge
+                conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
                 
-                # Create columns: trade info (3), progress (1), deep (1), track (1), AI (1)
-                col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+                col1, col2, col3 = st.columns([4, 1, 1])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
                     st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b><br>
+                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
+                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
+                        Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
+                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small>
                     </div>
                     """, unsafe_allow_html=True)
                 with col2:
@@ -1657,31 +1706,13 @@ else:
                         st.session_state.deep_confirmation = None
                         st.session_state.deep_reason = None
                         st.rerun()
-                with col4:
-                    if st.button("📌 Track", key=f"swing_track_{idx}"):
-                        if save_trade_to_ongoing(sig, user_info['Username']):
-                            st.success("Trade saved to Ongoing Trades!")
-                            time.sleep(1)
-                            st.rerun()
-                with col5:
-                    if ai_data:
-                        conf, reason = ai_data
-                        badge_class = "ai-approve" if conf == "APPROVE" else "ai-reject" if conf == "REJECT" else ""
-                        badge_text = "✅" if conf == "APPROVE" else "❌" if conf == "REJECT" else "🤔"
-                        st.markdown(f"<span class='ai-badge {badge_class}' title='{reason}'>{badge_text} {conf}</span>", unsafe_allow_html=True)
-                    else:
-                        if st.button("🤖 AI", key=f"ai_swing_{idx}"):
-                            with st.spinner("AI Confirming..."):
-                                confirmation, reason = quick_ai_confirm(sig, user_info)
-                                st.session_state.ai_confirmations[trade_key] = (confirmation, reason)
-                            st.rerun()
         else:
             st.info("No Swing setups found.")
         
         st.markdown("---")
         
         # Scalp
-        st.subheader("🐇 SCALP TRADES (15M)")
+        st.subheader("🐇 SCALP TRADES (15M) - AI Analyzed")
         if res['scalp']:
             for idx, sig in enumerate(res['scalp']):
                 max_diff = abs(sig['entry'] - sig['sl'])
@@ -1691,18 +1722,18 @@ else:
                 else:
                     progress = 0
                 
-                trade_key = f"{sig['pair']}_{sig['tf']}_{sig['dir']}_{sig['entry']:.5f}"
-                ai_data = st.session_state.ai_confirmations.get(trade_key)
+                conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
                 
-                col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+                col1, col2, col3 = st.columns([4, 1, 1])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
                     st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color};'>
-                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b><br>
+                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
+                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | Accuracy: {sig['conf']}%
+                        Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
+                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small>
                     </div>
                     """, unsafe_allow_html=True)
                 with col2:
@@ -1716,24 +1747,6 @@ else:
                         st.session_state.deep_confirmation = None
                         st.session_state.deep_reason = None
                         st.rerun()
-                with col4:
-                    if st.button("📌 Track", key=f"scalp_track_{idx}"):
-                        if save_trade_to_ongoing(sig, user_info['Username']):
-                            st.success("Trade saved to Ongoing Trades!")
-                            time.sleep(1)
-                            st.rerun()
-                with col5:
-                    if ai_data:
-                        conf, reason = ai_data
-                        badge_class = "ai-approve" if conf == "APPROVE" else "ai-reject" if conf == "REJECT" else ""
-                        badge_text = "✅" if conf == "APPROVE" else "❌" if conf == "REJECT" else "🤔"
-                        st.markdown(f"<span class='ai-badge {badge_class}' title='{reason}'>{badge_text} {conf}</span>", unsafe_allow_html=True)
-                    else:
-                        if st.button("🤖 AI", key=f"ai_scalp_{idx}"):
-                            with st.spinner("AI Confirming..."):
-                                confirmation, reason = quick_ai_confirm(sig, user_info)
-                                st.session_state.ai_confirmations[trade_key] = (confirmation, reason)
-                            st.rerun()
         else:
             st.info("No Scalp setups found.")
         
@@ -1743,7 +1756,7 @@ else:
             st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
             
             if st.session_state.deep_analysis_result is None:
-                with st.spinner("Running deep analysis with Gemini + Puter..."):
+                with st.spinner("Running deep analysis with AI..."):
                     # Fetch historical data for chart
                     try:
                         symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
@@ -1814,10 +1827,17 @@ else:
     elif app_mode == "Ongoing Trades":
         st.title("📋 Ongoing Trades")
         
+        # Date filter
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
+        with col2:
+            end_date = st.date_input("End Date", value=datetime.now())
+        
         tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
         
         with tab1:
-            active_trades = check_and_update_trades(user_info['Username'])
+            active_trades = load_user_trades(user_info['Username'], status='Active')
             if active_trades:
                 for trade in active_trades:
                     color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
@@ -1846,9 +1866,23 @@ else:
         with tab2:
             st.subheader("Closed Trades History")
             closed_trades = load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit'])
-            if closed_trades:
-                closed_trades.sort(key=lambda x: x.get('ClosedDate', ''), reverse=True)
-                for trade in closed_trades:
+            # Filter by date
+            filtered_trades = []
+            for trade in closed_trades:
+                closed_date_str = trade.get('ClosedDate', '')
+                if closed_date_str:
+                    try:
+                        closed_date = datetime.strptime(closed_date_str, "%Y-%m-%d %H:%M:%S").date()
+                        if start_date <= closed_date <= end_date:
+                            filtered_trades.append(trade)
+                    except:
+                        filtered_trades.append(trade)
+                else:
+                    filtered_trades.append(trade)
+            
+            if filtered_trades:
+                filtered_trades.sort(key=lambda x: x.get('ClosedDate', ''), reverse=True)
+                for trade in filtered_trades:
                     color = "#ff4b4b" if trade['Status'] == 'SL Hit' else "#00ff00"
                     col1, col2 = st.columns([5,1])
                     with col1:
@@ -1866,7 +1900,7 @@ else:
                                 st.success("Trade deleted.")
                                 st.rerun()
             else:
-                st.info("No closed trades found.")
+                st.info("No closed trades found in selected date range.")
         
         if st.button("Refresh & Check Status"):
             st.rerun()
@@ -1885,7 +1919,7 @@ else:
                     with st.form("create_user_form"):
                         new_u_name = st.text_input("Username")
                         new_u_pass = st.text_input("Password")
-                        new_u_limit = st.number_input("Initial Hybrid Limit", value=10, min_value=1)
+                        new_u_limit = st.number_input("Initial Hybrid Limit", value=30, min_value=1)
                         if st.form_submit_button("Create User"):
                             if new_u_name and new_u_pass:
                                 success, msg = add_new_user_to_db(new_u_name, new_u_pass, new_u_limit)
@@ -1910,7 +1944,7 @@ else:
                     c1, c2 = st.columns(2)
                     with c1:
                         st.subheader("Update Limit")
-                        new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 10)))
+                        new_limit_val = st.number_input("New Hybrid Limit", min_value=0, value=int(curr_user_data.get('HybridLimit', 30)))
                         if st.button("💾 Save Limit"):
                             update_user_limit_in_db(target_user, new_limit_val)
                             st.success(f"Limit updated to {new_limit_val}")
@@ -1931,7 +1965,7 @@ else:
 
     # Footer
     st.markdown("---")
-    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v26.0 (Advanced Risk) | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
+    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v27.0 (AI-Powered Scanner) | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
 
     if auto_refresh:
         time.sleep(60)
