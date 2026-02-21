@@ -360,6 +360,11 @@ st.markdown("""
         border: 1px solid #00d4ff;
         backdrop-filter: blur(5px);
     }
+    
+    /* --- SINHALA FONT SUPPORT --- */
+    body {
+        font-family: 'Noto Sans Sinhala', 'Iskoola Pota', 'Arial Unicode MS', sans-serif;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -425,25 +430,34 @@ def get_live_price(clean_pair):
 
     if clean_pair in st.session_state.price_cache:
         price, timestamp = st.session_state.price_cache[clean_pair]
-        if current_time - timestamp < cache_duration:
+        if current_time - timestamp < cache_duration and price is not None:
             return price
 
     yf_sym = clean_pair_to_yf_symbol(clean_pair)
+    price = None
     try:
         ticker = yf.Ticker(yf_sym)
+        # Try 1-minute history
         hist = ticker.history(period="1d", interval="1m")
         if not hist.empty:
             price = float(hist['Close'].iloc[-1])
+        else:
+            # Try fast_info
+            if hasattr(ticker, 'fast_info') and ticker.fast_info:
+                try:
+                    price = ticker.fast_info['lastPrice']
+                except:
+                    pass
+            if price is None:
+                # Try info
+                info = ticker.info
+                price = info.get('regularMarketPrice') or info.get('currentPrice') or info.get('ask')
+        if price is not None:
             st.session_state.price_cache[clean_pair] = (price, current_time)
             return price
-        if hasattr(ticker, 'fast_info') and ticker.fast_info:
-            price = ticker.fast_info['lastPrice']
-            st.session_state.price_cache[clean_pair] = (price, current_time)
-            return price
-        price = ticker.info.get('regularMarketPrice', None)
-        if price:
-            st.session_state.price_cache[clean_pair] = (price, current_time)
-        return price
+        else:
+            # Don't cache None
+            return None
     except Exception as e:
         print(f"Error fetching price for {clean_pair}: {e}")
         return None
@@ -1584,6 +1598,31 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
     )
     return fig
 
+# NEW: Small chart for trade card
+def create_mini_chart(df, entry_price, sl, tp):
+    """Create a small line chart for trade card."""
+    hist = df.tail(20).copy()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=hist.index,
+        y=hist['Close'],
+        mode='lines',
+        line=dict(color='#00d4ff', width=2),
+        name='Price'
+    ))
+    fig.add_hline(y=entry_price, line_dash="dash", line_color="#ffff00", line_width=1)
+    fig.add_hline(y=sl, line_dash="dash", line_color="#ff4b4b", line_width=1)
+    fig.add_hline(y=tp, line_dash="dash", line_color="#00ff00", line_width=1)
+    fig.update_layout(
+        template="plotly_dark",
+        height=100,
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False,
+        xaxis=dict(showticklabels=False, showgrid=False),
+        yaxis=dict(showticklabels=False, showgrid=False)
+    )
+    return fig
+
 # ==================== DASHBOARD FUNCTIONS ====================
 def get_major_prices():
     """Get live prices for major forex, crypto, and metals."""
@@ -1601,23 +1640,36 @@ def get_major_prices():
         prices[name] = price if price else "N/A"
     return prices
 
-# NEW: Dashboard forecast function
-def generate_dashboard_forecast(pair_display, tf, user_info):
+# NEW: Dashboard forecast function with market selector
+def generate_dashboard_forecast(market, pair_display, tf, user_info):
     """Generate forecast chart for selected pair and timeframe."""
-    # Map display name to yfinance symbol
-    pair_map = {
-        "EUR/USD": "EURUSD=X",
-        "GBP/USD": "GBPUSD=X",
-        "USD/JPY": "USDJPY=X",
-        "AUD/USD": "AUDUSD=X",
-        "USD/CAD": "USDCAD=X",
-        "NZD/USD": "NZDUSD=X",
-        "USD/CHF": "USDCHF=X",
-        "BTC/USD": "BTC-USD",
-        "ETH/USD": "ETH-USD",
-        "XAU/USD": "XAUUSD=X",
-        "XAG/USD": "XAGUSD=X"
-    }
+    # Map display name to yfinance symbol based on market
+    pair_map = {}
+    if market == "Forex":
+        pair_map = {
+            "EUR/USD": "EURUSD=X",
+            "GBP/USD": "GBPUSD=X",
+            "USD/JPY": "USDJPY=X",
+            "AUD/USD": "AUDUSD=X",
+            "USD/CAD": "USDCAD=X",
+            "NZD/USD": "NZDUSD=X",
+            "USD/CHF": "USDCHF=X"
+        }
+    elif market == "Crypto":
+        pair_map = {
+            "BTC/USD": "BTC-USD",
+            "ETH/USD": "ETH-USD",
+            "SOL/USD": "SOL-USD",
+            "BNB/USD": "BNB-USD",
+            "XRP/USD": "XRP-USD"
+        }
+    elif market == "Metals":
+        pair_map = {
+            "XAU/USD": "XAUUSD=X",
+            "XAG/USD": "XAGUSD=X",
+            "XPT/USD": "XPTUSD=X",
+            "XPD/USD": "XPDUSD=X"
+        }
     yf_sym = pair_map.get(pair_display, pair_display)
     clean_pair = yf_sym.replace("=X", "").replace("-USD", "").replace("-USDT", "")
     
@@ -1650,6 +1702,21 @@ def generate_dashboard_forecast(pair_display, tf, user_info):
     except Exception as e:
         return None, str(e), None
 
+# NEW: Parse AI impact response into structured data
+def parse_impact_response(text):
+    lines = text.strip().split('\n')
+    data = []
+    for line in lines:
+        match = re.search(r"PAIR:\s*([^\|]+)\s*\|\s*IMPACT:\s*([^\|]+)\s*\|\s*REASON:\s*([^\|]+)\s*\|\s*TIME:\s*(.+)", line, re.IGNORECASE)
+        if match:
+            data.append({
+                "pair": match.group(1).strip(),
+                "impact": match.group(2).strip(),
+                "reason": match.group(3).strip(),
+                "time": match.group(4).strip()
+            })
+    return data
+
 # NEW: News impact analysis using AI (Sinhala output)
 def analyze_news_impact(news_items, user_info):
     """Use AI to determine which currency pairs are affected by the news."""
@@ -1667,7 +1734,9 @@ def analyze_news_impact(news_items, user_info):
     Repeat for each pair.
     """
     response, provider = call_ai_with_fallback(prompt)
-    return response, provider
+    # Parse response into structured data
+    parsed = parse_impact_response(response) if response else []
+    return response, provider, parsed
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
@@ -1691,7 +1760,7 @@ else:
     st.session_state.last_activity = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Check and update ongoing trades automatically
-    check_and_update_trades(user_info['Username'])
+    active_trades = check_and_update_trades(user_info['Username'])
 
     # --- SIDEBAR WITH SESSION DASHBOARD ---
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
@@ -1715,7 +1784,7 @@ else:
         st.session_state.logged_in = False
         st.rerun()
     
-    # Navigation (Terminal removed)
+    # Navigation
     nav_options = ["Dashboard", "Market Scanner", "Ongoing Trades"]
     if user_info.get("Role") == "Admin":
         nav_options.append("Admin Panel")
@@ -1737,7 +1806,7 @@ else:
     if app_mode == "Dashboard":
         st.title("📊 Trading Dashboard")
         
-        # NEW: System Analysis Engine Live Animation
+        # System Analysis Engine Live Animation
         st.markdown("""
         <div class='system-engine-card'>
             <div class='engine-icon'>⚙️</div>
@@ -1769,12 +1838,12 @@ else:
             st.markdown(price_html, unsafe_allow_html=True)
         
         with col3:
-            # Theory analysis / upcoming signals accuracy
+            # Market Pulse
             st.markdown(f"""
             <div class='dashboard-card'>
                 <h3>📈 Market Pulse</h3>
                 <p><span class='metric-label'>Current Session:</span> <b>{get_current_session()}</b></p>
-                <p><span class='metric-label'>Active Trades:</span> <b>{len(load_user_trades(user_info['Username'], status='Active'))}</b></p>
+                <p><span class='metric-label'>Active Trades:</span> <b>{len(active_trades)}</b></p>
                 <p><span class='metric-label'>Closed Today:</span> <b>{len([t for t in load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit']) if t.get('ClosedDate','').startswith(get_current_date_str())])}</b></p>
                 <p><span class='metric-label'>AI Analysis Method:</span> Gemini (Primary) → Groq (Rate Limited) → Puter</p>
                 <p><span class='metric-label'>Groq Rate Limit:</span> 5 calls/min</p>
@@ -1782,27 +1851,58 @@ else:
             </div>
             """, unsafe_allow_html=True)
         
-        # NEW: Theory Card (Currency & Timeframe dropdown + Forecast Chart)
+        # NEW: Trades Near Entry Alert
+        st.markdown("### 🎯 Trades Near Entry")
+        near_entry_trades = []
+        for trade in active_trades:
+            live = get_live_price(trade['Pair'])
+            if live:
+                entry = float(trade['Entry'])
+                diff_pct = abs(live - entry) / entry * 100
+                if diff_pct < 0.5:  # within 0.5% of entry
+                    near_entry_trades.append(trade)
+        if near_entry_trades:
+            for trade in near_entry_trades:
+                color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                st.markdown(f"""
+                <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:5px;'>
+                    <b>{trade['Pair']} | {trade['Direction']}</b> - Live: {live:.4f} (Entry: {trade['Entry']}) 
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No trades are near entry price currently.")
+        
+        # Theory Card - AI Forecast with Market Selector
         st.markdown("### 📈 Theory Card - AI Forecast")
-        col_a, col_b, col_c = st.columns([2,2,1])
+        col_a, col_b, col_c, col_d = st.columns([1,2,2,1])
         with col_a:
-            selected_pair = st.selectbox(
-                "Currency Pair",
-                options=["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "NZD/USD", "USD/CHF", "BTC/USD", "ETH/USD", "XAU/USD", "XAG/USD"],
+            selected_market = st.selectbox(
+                "Market",
+                options=["Forex", "Crypto", "Metals"],
                 index=0
             )
+        # Define pair options based on market
+        if selected_market == "Forex":
+            pair_options = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "NZD/USD", "USD/CHF"]
+        elif selected_market == "Crypto":
+            pair_options = ["BTC/USD", "ETH/USD", "SOL/USD", "BNB/USD", "XRP/USD"]
+        else:
+            pair_options = ["XAU/USD", "XAG/USD", "XPT/USD", "XPD/USD"]
+        
         with col_b:
+            selected_pair = st.selectbox("Currency Pair", options=pair_options, index=0)
+        with col_c:
             selected_tf = st.selectbox(
                 "Timeframe",
                 options=["15m", "1h", "4h", "1d"],
-                index=1  # default 1h
+                index=1
             )
-        with col_c:
+        with col_d:
             generate_btn = st.button("🔮 Generate Forecast", type="primary", use_container_width=True)
         
         if generate_btn:
             with st.spinner("Generating AI forecast..."):
-                chart, provider, trade_data = generate_dashboard_forecast(selected_pair, selected_tf, user_info)
+                chart, provider, trade_data = generate_dashboard_forecast(selected_market, selected_pair, selected_tf, user_info)
                 if chart and trade_data:
                     st.session_state.dashboard_forecast = chart
                     st.session_state.dashboard_forecast_provider = provider
@@ -1812,7 +1912,6 @@ else:
         
         if st.session_state.get("dashboard_forecast") is not None:
             st.plotly_chart(st.session_state.dashboard_forecast, use_container_width=True)
-            # Show provider and progress bar
             data = st.session_state.dashboard_forecast_data
             st.caption(f"🤖 AI Provider: {st.session_state.dashboard_forecast_provider}")
             if data:
@@ -1826,15 +1925,13 @@ else:
                     st.progress(progress, text="Progress to Target")
                 st.markdown(f"**Sinhala Summary:** {data.get('sinhala_summary', 'N/A')}")
         
-        # NEW: Market News with AI Impact Analysis (Sinhala)
+        # Market News with AI Impact Analysis (Sinhala)
         st.markdown("### 📰 Market News & AI Impact Analysis (Sinhala)")
         if st.button("🔄 Refresh News & Analyze Impact"):
             with st.spinner("Fetching news and analyzing impact..."):
                 all_news = []
-                # Fetch news for major symbols
                 for sym in ["EURUSD=X", "GBPUSD=X", "BTC-USD", "XAUUSD=X"]:
                     all_news.extend(get_market_news(sym))
-                # Deduplicate by title
                 seen = set()
                 unique_news = []
                 for n in all_news:
@@ -1842,10 +1939,10 @@ else:
                         seen.add(n['title'])
                         unique_news.append(n)
                 st.session_state.dashboard_news = unique_news
-                # AI analysis
-                impact_result, provider = analyze_news_impact(unique_news, user_info)
+                impact_result, provider, parsed_impacts = analyze_news_impact(unique_news, user_info)
                 st.session_state.news_impact_analysis = impact_result
                 st.session_state.news_impact_provider = provider
+                st.session_state.parsed_impacts = parsed_impacts
         
         # Display news cards
         if st.session_state.get("dashboard_news"):
@@ -1859,9 +1956,18 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
         
-        # Display AI impact analysis (Sinhala)
-        if st.session_state.get("news_impact_analysis"):
+        # Display structured AI impact analysis
+        if st.session_state.get("parsed_impacts"):
             st.subheader("🔍 AI Impact Analysis (Sinhala)")
+            st.caption(f"Provider: {st.session_state.news_impact_provider}")
+            df_impact = pd.DataFrame(st.session_state.parsed_impacts)
+            st.dataframe(df_impact, use_container_width=True)
+            # Overall impact summary
+            pos_count = len([i for i in st.session_state.parsed_impacts if i['impact'].lower() == 'positive'])
+            neg_count = len([i for i in st.session_state.parsed_impacts if i['impact'].lower() == 'negative'])
+            st.markdown(f"**Overall Market Impact:** Positive: {pos_count} | Negative: {neg_count} | Neutral: {len(st.session_state.parsed_impacts)-pos_count-neg_count}")
+        elif st.session_state.get("news_impact_analysis"):
+            st.subheader("🔍 AI Impact Analysis (Raw)")
             st.caption(f"Provider: {st.session_state.news_impact_provider}")
             st.markdown(f"<div class='entry-box'>{st.session_state.news_impact_analysis}</div>", unsafe_allow_html=True)
         
@@ -1944,10 +2050,9 @@ else:
                 else:
                     progress = 0
                 
-                # Display AI confirmation badge
                 conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
                 
-                col1, col2, col3 = st.columns([4, 1, 1])
+                col1, col2, col3, col4 = st.columns([3,1,1,2])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
@@ -1971,6 +2076,16 @@ else:
                         st.session_state.deep_confirmation = None
                         st.session_state.deep_reason = None
                         st.rerun()
+                with col4:
+                    # Fetch historical data for mini chart
+                    try:
+                        symbol_orig = sig.get('symbol_orig', sig['pair'])
+                        df_hist = yf.download(get_yf_symbol(symbol_orig), period="1mo", interval="1h", progress=False)
+                        if not df_hist.empty:
+                            mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
+                            st.plotly_chart(mini_chart, use_container_width=True)
+                    except:
+                        st.write("Chart N/A")
         else:
             st.info("No Swing setups found.")
         
@@ -1989,7 +2104,7 @@ else:
                 
                 conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
                 
-                col1, col2, col3 = st.columns([4, 1, 1])
+                col1, col2, col3, col4 = st.columns([3,1,1,2])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                     session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
@@ -2013,6 +2128,15 @@ else:
                         st.session_state.deep_confirmation = None
                         st.session_state.deep_reason = None
                         st.rerun()
+                with col4:
+                    try:
+                        symbol_orig = sig.get('symbol_orig', sig['pair'])
+                        df_hist = yf.download(get_yf_symbol(symbol_orig), period="1d", interval="15m", progress=False)
+                        if not df_hist.empty:
+                            mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
+                            st.plotly_chart(mini_chart, use_container_width=True)
+                    except:
+                        st.write("Chart N/A")
         else:
             st.info("No Scalp setups found.")
         
@@ -2023,7 +2147,6 @@ else:
             
             if st.session_state.deep_analysis_result is None:
                 with st.spinner("Running deep analysis with AI..."):
-                    # Fetch historical data for chart
                     try:
                         symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
                         if "Swing" in st.session_state.selected_trade['tf']:
@@ -2065,7 +2188,6 @@ else:
             st.markdown(f"**🤖 Provider:** `{st.session_state.deep_analysis_provider}`")
             st.markdown(f"<div class='entry-box'>{st.session_state.deep_analysis_result}</div>", unsafe_allow_html=True)
             
-            # Display confirmation card
             if st.session_state.get("deep_confirmation"):
                 conf = st.session_state.deep_confirmation
                 reason = st.session_state.get("deep_reason", "")
@@ -2103,7 +2225,6 @@ else:
         tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
         
         with tab1:
-            active_trades = load_user_trades(user_info['Username'], status='Active')
             if active_trades:
                 for trade in active_trades:
                     color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
@@ -2132,7 +2253,6 @@ else:
         with tab2:
             st.subheader("Closed Trades History")
             closed_trades = load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit'])
-            # Filter by date
             filtered_trades = []
             for trade in closed_trades:
                 closed_date_str = trade.get('ClosedDate', '')
