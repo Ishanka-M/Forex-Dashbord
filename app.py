@@ -404,14 +404,6 @@ if "theory_chart" not in st.session_state:
 if "total_api_requests" not in st.session_state:
     st.session_state.total_api_requests = 0
 
-# NEW: Gemini rate limiting per key (7 keys)
-if "gemini_key_timestamps" not in st.session_state:
-    st.session_state.gemini_key_timestamps = [[] for _ in range(7)]  # list of lists for keys 0..6 (GEMINI_API_KEY_1..7)
-
-# NEW: Groq rate limiting per key (4 keys)
-if "groq_key_timestamps" not in st.session_state:
-    st.session_state.groq_key_timestamps = [[] for _ in range(4)]   # list of lists for keys 0..3 (GROQ_KEYS_1..4)
-
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
     st.session_state.price_cache = {}  # clean_pair -> (price, timestamp)
@@ -1043,21 +1035,10 @@ def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
     
     return sl, tp
 
-# ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ (RATE LIMITED) + FALLBACK ====================
-
-# Helper: get available Gemini key index based on rate limit (5 per minute per key)
-def get_available_gemini_key():
-    current_time = time.time()
-    for idx, timestamps in enumerate(st.session_state.gemini_key_timestamps):
-        # Keep only timestamps within last 60 seconds
-        valid = [t for t in timestamps if current_time - t < 60]
-        st.session_state.gemini_key_timestamps[idx] = valid
-        if len(valid) < 5:  # less than 5 calls in last minute
-            return idx
-    return None  # all keys are rate limited
+# ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ + PUTER (KEY ROTATION) ====================
 
 def call_gemini(prompt):
-    """Try Gemini API with key rotation and rate limiting per key."""
+    """Try Gemini API with key rotation (7 keys). Returns response text or None."""
     gemini_keys = []
     for i in range(1, 8):
         k = st.secrets.get(f"GEMINI_API_KEY_{i}")
@@ -1067,37 +1048,21 @@ def call_gemini(prompt):
     if not gemini_keys:
         return None
     
-    # Get available key index
-    key_idx = get_available_gemini_key()
-    if key_idx is None:
-        print("All Gemini keys rate limited, skipping Gemini.")
-        return None
-    
-    key = gemini_keys[key_idx]
-    try:
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel('gemini-3-flash-preview')
-        response = model.generate_content(prompt)
-        # Record timestamp for this key
-        st.session_state.gemini_key_timestamps[key_idx].append(time.time())
-        return response.text
-    except Exception as e:
-        print(f"Gemini key {key_idx+1} failed: {e}")
-        # Optionally remove timestamp? If failure, maybe we shouldn't count it.
-        return None
-
-# Helper: get available Groq key index based on rate limit (30 per minute per key)
-def get_available_groq_key():
-    current_time = time.time()
-    for idx, timestamps in enumerate(st.session_state.groq_key_timestamps):
-        valid = [t for t in timestamps if current_time - t < 60]
-        st.session_state.groq_key_timestamps[idx] = valid
-        if len(valid) < 30:  # less than 30 calls in last minute
-            return idx
-    return None
+    # Try each key in order until one succeeds
+    for idx, key in enumerate(gemini_keys):
+        try:
+            genai.configure(api_key=key)
+            model = genai.GenerativeModel('gemini-3-flash-preview')
+            response = model.generate_content(prompt)
+            # Success: return response text
+            return response.text
+        except Exception as e:
+            print(f"Gemini key {idx+1} failed: {e}")
+            continue
+    return None  # all keys failed
 
 def call_groq(prompt):
-    """Try Groq API with key rotation and rate limiting."""
+    """Try Groq API with key rotation (4 keys). Returns response text or None."""
     groq_keys = []
     for i in range(1, 5):
         key = st.secrets.get(f"GROQ_KEYS_{i}")
@@ -1107,28 +1072,23 @@ def call_groq(prompt):
     if not groq_keys:
         return None
     
-    key_idx = get_available_groq_key()
-    if key_idx is None:
-        print("All Groq keys rate limited, skipping Groq.")
-        return None
-    
-    key = groq_keys[key_idx]
-    try:
-        client = groq.Client(api_key=key)
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1000
-        )
-        st.session_state.groq_key_timestamps[key_idx].append(time.time())
-        return completion.choices[0].message.content
-    except Exception as e:
-        print(f"Groq key {key_idx+1} failed: {e}")
-        return None
+    for idx, key in enumerate(groq_keys):
+        try:
+            client = groq.Client(api_key=key)
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=1000
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            print(f"Groq key {idx+1} failed: {e}")
+            continue
+    return None
 
 def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
-    """Try Gemini first, then Groq (with rate limit), then Puter, with credit check."""
+    """Try Gemini first, then Groq (with key rotation), then Puter, with credit check."""
     # Credit check
     if user_info:
         current_usage = user_info.get("UsageCount", 0)
@@ -1154,7 +1114,7 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
     
     if progress_callback:
         progress_callback(0.4, "Gemini failed, trying Groq...")
-    # Try Groq (subject to rate limit)
+    # Try Groq (key rotation)
     response = call_groq(prompt)
     if response:
         if user_info and user_info.get("Role") != "Admin":
@@ -2199,9 +2159,9 @@ else:
                 <p><span class='metric-label'>Current Session:</span> <b>{get_current_session()}</b></p>
                 <p><span class='metric-label'>Active Trades:</span> <b>{len(active_trades)}</b></p>
                 <p><span class='metric-label'>Closed Today:</span> <b>{len([t for t in load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit']) if t.get('ClosedDate','').startswith(get_current_date_str())])}</b></p>
-                <p><span class='metric-label'>AI Analysis Method:</span> Gemini (Primary) → Groq (Rate Limited) → Puter</p>
-                <p><span class='metric-label'>Groq Rate Limit:</span> 30 calls/min per key (4 keys)</p>
-                <p><span class='metric-label'>Gemini Rate Limit:</span> 5 calls/min per key (7 keys)</p>
+                <p><span class='metric-label'>AI Analysis Method:</span> Gemini (Primary) → Groq (Key Rotation) → Puter</p>
+                <p><span class='metric-label'>Gemini Keys:</span> 7 keys (rotated)</p>
+                <p><span class='metric-label'>Groq Keys:</span> 4 keys (rotated)</p>
                 <p><span class='metric-label'>Scanner Accuracy Threshold:</span> {st.session_state.min_accuracy}%</p>
             </div>
             """, unsafe_allow_html=True)
