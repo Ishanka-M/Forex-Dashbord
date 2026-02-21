@@ -16,18 +16,356 @@ import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
 
-# --- Global API Counter (Shared Across Sessions) ---
-@st.cache_resource
-def get_api_counter():
-    """Returns a shared dictionary to count API calls per provider."""
-    return {"gemini": 0, "groq": 0, "puter": 0}
-
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
 st.set_page_config(page_title="Infinite Algo Terminal v27.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    /* ... (all existing styles remain unchanged) ... */
+    /* --- ANIMATIONS & GLOBAL STYLES --- */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(0, 255, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(0, 255, 0, 0); } }
+    @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); } 70% { box-shadow: 0 0 15px 15px rgba(255, 75, 75, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); } }
+    @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    @keyframes shimmer {
+        0% { background-position: -1000px 0; }
+        100% { background-position: 1000px 0; }
+    }
+    @keyframes float {
+        0% { transform: translateY(0px); }
+        50% { transform: translateY(-5px); }
+        100% { transform: translateY(0px); }
+    }
+    @keyframes glow {
+        0% { box-shadow: 0 0 5px #00ff99; }
+        50% { box-shadow: 0 0 20px #00ff99; }
+        100% { box-shadow: 0 0 5px #00ff99; }
+    }
+    .loading-icon { display: inline-block; animation: rotate 2s linear infinite; font-size: 24px; }
+    
+    .stApp { animation: fadeIn 0.8s ease-out forwards; }
+
+    /* --- ALERT PANELS --- */
+    .high-prob-alert {
+        background: linear-gradient(135deg, #1a1a1a, #2d2d2d);
+        border: 2px solid #00ff99;
+        border-radius: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
+        text-align: center;
+        animation: glow 2s infinite;
+    }
+    
+    /* --- TEXT COLORS --- */
+    .price-up { color: #00ff00; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(0, 255, 0, 0.5); }
+    .price-down { color: #ff4b4b; font-size: 26px; font-weight: 800; text-shadow: 0 0 10px rgba(255, 75, 75, 0.5); }
+    
+    /* --- BOXES --- */
+    .entry-box { 
+        background: rgba(0, 255, 153, 0.1);
+        border: 2px solid #00ff99; 
+        padding: 20px; border-radius: 15px; margin-top: 15px; 
+        color: white; backdrop-filter: blur(10px);
+        box-shadow: 0 0 20px rgba(0, 255, 153, 0.2);
+        transition: transform 0.3s, box-shadow 0.3s;
+        animation: float 4s ease-in-out infinite;
+    }
+    .entry-box:hover { transform: scale(1.02); box-shadow: 0 0 30px rgba(0, 255, 153, 0.5); }
+    
+    .trade-metric { 
+        background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
+        border: 1px solid #444; 
+        border-radius: 12px; padding: 15px; text-align: center; transition: all 0.3s ease;
+    }
+    .trade-metric:hover { transform: translateY(-5px) scale(1.02); box-shadow: 0 10px 20px rgba(0,0,0,0.5); border-color: #00ff99; }
+    .trade-metric h4 { margin: 0; color: #aaa; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+    .trade-metric h2 { margin: 5px 0 0 0; color: #fff; font-size: 22px; font-weight: bold; }
+    
+    /* --- NEWS CARDS --- */
+    .news-card { 
+        background: #1e1e1e;
+        padding: 12px; margin-bottom: 10px; 
+        border-radius: 8px; transition: all 0.3s ease; border-right: 1px solid #333;
+        animation: fadeIn 0.5s;
+        position: relative;
+    }
+    .news-card:hover { transform: translateX(5px); background: #252525; box-shadow: -5px 0 10px rgba(0,0,0,0.3); }
+    .news-positive { border-left: 5px solid #00ff00; }
+    .news-negative { border-left: 5px solid #ff4b4b; }
+    .news-neutral { border-left: 5px solid #00ff99; }
+    .news-time {
+        font-size: 10px;
+        color: #888;
+        position: absolute;
+        bottom: 2px;
+        right: 8px;
+    }
+    
+    /* --- SIGNAL BOXES --- */
+    .sig-box { 
+        padding: 12px;
+        border-radius: 8px; font-size: 13px; text-align: center; 
+        font-weight: bold; border: 1px solid #444; margin-bottom: 8px; box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+        transition: all 0.3s;
+        animation: fadeIn 0.6s;
+    }
+    .sig-box:hover {
+        transform: scale(1.02);
+        box-shadow: 0 0 15px currentColor;
+    }
+    .bull { background: linear-gradient(90deg, #004d40, #00695c); color: #00ff00; border-color: #00ff00; }
+    .bear { background: linear-gradient(90deg, #4a1414, #7f0000); color: #ff4b4b; border-color: #ff4b4b; }
+    .neutral { background: #262626; color: #888; }
+
+    /* --- NOTIFICATIONS --- */
+    .notif-container { 
+        padding: 20px;
+        border-radius: 12px; margin-bottom: 25px; 
+        border-left: 8px solid; background: #121212; font-size: 18px;
+        animation: fadeIn 0.8s;
+    }
+    .notif-buy { border-color: #00ff00; color: #00ff00; animation: pulse-green 2s infinite; }
+    .notif-sell { border-color: #ff4b4b; color: #ff4b4b; animation: pulse-red 2s infinite; }
+    .notif-wait { border-color: #555; color: #aaa; }
+    
+    /* --- CONFIRMATION CARD --- */
+    .confirm-card {
+        background: #1e1e1e;
+        border-left: 5px solid;
+        border-radius: 8px;
+        padding: 10px 15px;
+        margin: 10px 0;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .confirm-approve { border-color: #00ff00; }
+    .confirm-reject { border-color: #ff4b4b; }
+    .confirm-icon { font-size: 20px; }
+    
+    /* --- ADMIN TABLE --- */
+    .admin-table { font-size: 14px; width: 100%; border-collapse: collapse; }
+    .admin-table th, .admin-table td { border: 1px solid #444; padding: 8px; text-align: left; }
+    .admin-table th { background-color: #333; color: #00ff99; }
+    
+    /* --- FORECAST ANIMATION --- */
+    .forecast-loading {
+        text-align: center;
+        padding: 20px;
+        background: #1e1e1e;
+        border-radius: 10px;
+        border: 1px solid #00ff99;
+        margin: 10px 0;
+        animation: glow 1.5s infinite;
+    }
+    .forecast-loading span {
+        font-size: 20px;
+        color: #00ff99;
+    }
+    
+    /* --- NEW SCAN CARD ANIMATION --- */
+    .scan-card {
+        animation: slideInUp 0.5s ease-out;
+    }
+    @keyframes slideInUp {
+        from { opacity: 0; transform: translateY(30px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    /* --- USER-FRIENDLY IMPROVEMENTS --- */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 10px rgba(0,255,153,0.3);
+    }
+    .scan-header {
+        background: linear-gradient(90deg, #1e3c3f, #0a1f2e);
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 20px;
+        border-left: 5px solid #00ff99;
+    }
+    
+    /* --- ADDITIONAL PROFESSIONAL TOUCHES --- */
+    .main-title {
+        text-align: center;
+        background: linear-gradient(135deg, #0a1f2e, #1e3c3f);
+        padding: 20px;
+        border-radius: 15px;
+        margin-bottom: 25px;
+        border: 1px solid #00ff99;
+        box-shadow: 0 0 30px rgba(0,255,153,0.2);
+    }
+    .main-title h1 {
+        color: #00ff99;
+        font-weight: 700;
+        letter-spacing: 2px;
+        margin: 0;
+    }
+    .main-title p {
+        color: #ccc;
+        margin: 5px 0 0;
+    }
+    .footer {
+        text-align: center;
+        margin-top: 40px;
+        padding: 15px;
+        background: #0e0e0e;
+        border-radius: 10px;
+        font-size: 12px;
+        color: #666;
+        border-top: 1px solid #333;
+    }
+    div.stSlider > div[data-baseweb="slider"] {
+        padding-top: 1rem;
+    }
+    .stSlider label {
+        color: #00ff99 !important;
+        font-weight: 600;
+    }
+    .stSelectbox label {
+        color: #00ff99 !important;
+        font-weight: 600;
+    }
+    .stRadio label {
+        color: #00ff99 !important;
+    }
+    .stCheckbox label {
+        color: #00ff99 !important;
+    }
+    .css-1v0mbdj.etr89bj1 {
+        background: #1e1e1e;
+        border-radius: 10px;
+        padding: 10px;
+    }
+    hr {
+        border-color: #333;
+    }
+    
+    /* --- SESSION DASHBOARD --- */
+    .session-card {
+        background: #0e0e0e;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 10px;
+        margin-bottom: 15px;
+        font-size: 13px;
+        border-left: 3px solid #00ff99;
+    }
+    .session-card span {
+        color: #00ff99;
+        font-weight: 600;
+    }
+    
+    /* --- AI BADGE --- */
+    .ai-badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
+        margin-left: 8px;
+    }
+    .ai-approve {
+        background-color: #00ff0022;
+        color: #00ff00;
+        border: 1px solid #00ff00;
+    }
+    .ai-reject {
+        background-color: #ff4b4b22;
+        color: #ff4b4b;
+        border: 1px solid #ff4b4b;
+    }
+    
+    /* --- DASHBOARD CARDS --- */
+    .dashboard-card {
+        background: linear-gradient(145deg, #1e1e1e, #2a2a2a);
+        border-radius: 15px;
+        padding: 20px;
+        margin-bottom: 20px;
+        border: 1px solid #444;
+        box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+        transition: all 0.3s ease;
+    }
+    .dashboard-card:hover {
+        transform: translateY(-5px);
+        border-color: #00ff99;
+        box-shadow: 0 15px 30px rgba(0,255,153,0.2);
+    }
+    .dashboard-card h3 {
+        color: #00ff99;
+        margin-top: 0;
+        border-bottom: 1px solid #333;
+        padding-bottom: 10px;
+    }
+    .metric-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: #fff;
+    }
+    .metric-label {
+        color: #aaa;
+        font-size: 14px;
+    }
+    
+    /* --- LIVE PRICE TABLE --- */
+    .live-price-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    .live-price-table th {
+        background-color: #333;
+        color: #00ff99;
+        padding: 8px;
+        text-align: left;
+    }
+    .live-price-table td {
+        padding: 8px;
+        border-bottom: 1px solid #444;
+    }
+    
+    /* --- NEW: SYSTEM ANALYSIS ENGINE ANIMATION --- */
+    .system-engine-card {
+        background: linear-gradient(145deg, #0a1f2e, #1e3c3f);
+        border: 2px solid #00ff99;
+        border-radius: 20px;
+        padding: 25px;
+        margin-bottom: 20px;
+        text-align: center;
+        box-shadow: 0 0 30px rgba(0,255,153,0.3);
+        animation: glow 2s infinite;
+    }
+    .system-engine-card h2 {
+        color: #00ff99;
+        margin-bottom: 15px;
+        font-weight: 700;
+        letter-spacing: 2px;
+    }
+    .engine-icon {
+        font-size: 60px;
+        animation: rotate 3s linear infinite;
+        display: inline-block;
+        margin-bottom: 15px;
+        color: #00ff99;
+    }
+    .engine-text {
+        color: white;
+        font-size: 20px;
+        background: rgba(0,0,0,0.3);
+        padding: 10px;
+        border-radius: 10px;
+        border: 1px solid #00ff99;
+        backdrop-filter: blur(5px);
+    }
+    
+    /* --- SINHALA FONT SUPPORT --- */
+    body {
+        font-family: 'Noto Sans Sinhala', 'Iskoola Pota', 'Arial Unicode MS', sans-serif;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,7 +388,7 @@ if "tracked_trades" not in st.session_state: st.session_state.tracked_trades = s
 
 # NEW: Session state for dashboard forecast and news analysis
 if "dashboard_forecast" not in st.session_state:
-    st.session_state.dashboard_forecast = None  # will store chart and data
+    st.session_state.dashboard_forecast = None
 if "dashboard_forecast_provider" not in st.session_state:
     st.session_state.dashboard_forecast_provider = None
 if "news_impact_analysis" not in st.session_state:
@@ -59,12 +397,20 @@ if "news_impact_provider" not in st.session_state:
     st.session_state.news_impact_provider = None
 if "tech_chart" not in st.session_state:
     st.session_state.tech_chart = None
-if "theory_chart" not in st.session_state:  # NEW: for theory chart
+if "theory_chart" not in st.session_state:
     st.session_state.theory_chart = None
 
-# NEW: Groq rate limiting - store timestamps of calls in last 60 seconds
-if "groq_call_timestamps" not in st.session_state:
-    st.session_state.groq_call_timestamps = []  # list of timestamps
+# NEW: Total API requests counter (for Admin Panel)
+if "total_api_requests" not in st.session_state:
+    st.session_state.total_api_requests = 0
+
+# NEW: Gemini rate limiting per key (7 keys)
+if "gemini_key_timestamps" not in st.session_state:
+    st.session_state.gemini_key_timestamps = [[] for _ in range(7)]  # list of lists for keys 0..6 (GEMINI_API_KEY_1..7)
+
+# NEW: Groq rate limiting per key (4 keys)
+if "groq_key_timestamps" not in st.session_state:
+    st.session_state.groq_key_timestamps = [[] for _ in range(4)]   # list of lists for keys 0..3 (GROQ_KEYS_1..4)
 
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
@@ -312,8 +658,9 @@ def check_login(username, password):
                         if "UsageCount" in headers:
                             sheet.update_cell(cell.row, headers.index("UsageCount") + 1, 0)
                             user["UsageCount"] = 0
-                        # --- MODIFIED: Daily reset sets HybridLimit to 100 (instead of conditional 30) ---
+                        # Set HybridLimit to 100 for new day
                         if "HybridLimit" in headers:
+                            # Reset to 100 (or keep existing if admin wants? but requirement: daily 100)
                             sheet.update_cell(cell.row, headers.index("HybridLimit") + 1, 100)
                             user["HybridLimit"] = 100
                         if "LastLogin" in headers:
@@ -321,7 +668,8 @@ def check_login(username, password):
                             user["LastLogin"] = current_date
                     except Exception as e:
                         print(f"Daily Reset Error: {e}")
-                if "HybridLimit" not in user: user["HybridLimit"] = 100   # default 100
+                # Ensure limit and usage are present
+                if "HybridLimit" not in user: user["HybridLimit"] = 100
                 if "UsageCount" not in user: user["UsageCount"] = 0
                 return user
         except: return None
@@ -360,6 +708,9 @@ def add_new_user_to_db(username, password, limit):
             cell = sheet.find(username)
             if cell:
                 return False, "User already exists!"
+            # Default limit to 100 if not specified
+            if limit is None:
+                limit = 100
             sheet.append_row([username, password, "User", limit, 0, get_current_date_str()])
             return True, f"User {username} created successfully!"
         except Exception as e:
@@ -694,8 +1045,19 @@ def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
 
 # ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ (RATE LIMITED) + FALLBACK ====================
 
+# Helper: get available Gemini key index based on rate limit (5 per minute per key)
+def get_available_gemini_key():
+    current_time = time.time()
+    for idx, timestamps in enumerate(st.session_state.gemini_key_timestamps):
+        # Keep only timestamps within last 60 seconds
+        valid = [t for t in timestamps if current_time - t < 60]
+        st.session_state.gemini_key_timestamps[idx] = valid
+        if len(valid) < 5:  # less than 5 calls in last minute
+            return idx
+    return None  # all keys are rate limited
+
 def call_gemini(prompt):
-    """Try Gemini API with key rotation."""
+    """Try Gemini API with key rotation and rate limiting per key."""
     gemini_keys = []
     for i in range(1, 8):
         k = st.secrets.get(f"GEMINI_API_KEY_{i}")
@@ -705,30 +1067,37 @@ def call_gemini(prompt):
     if not gemini_keys:
         return None
     
-    for idx, key in enumerate(gemini_keys):
-        try:
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            # --- Increment Gemini counter ---
-            counter = get_api_counter()
-            counter["gemini"] += 1
-            return response.text
-        except Exception as e:
-            print(f"Gemini key {idx+1} failed: {e}")
-            continue
+    # Get available key index
+    key_idx = get_available_gemini_key()
+    if key_idx is None:
+        print("All Gemini keys rate limited, skipping Gemini.")
+        return None
+    
+    key = gemini_keys[key_idx]
+    try:
+        genai.configure(api_key=key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        # Record timestamp for this key
+        st.session_state.gemini_key_timestamps[key_idx].append(time.time())
+        return response.text
+    except Exception as e:
+        print(f"Gemini key {key_idx+1} failed: {e}")
+        # Optionally remove timestamp? If failure, maybe we shouldn't count it.
+        return None
+
+# Helper: get available Groq key index based on rate limit (30 per minute per key)
+def get_available_groq_key():
+    current_time = time.time()
+    for idx, timestamps in enumerate(st.session_state.groq_key_timestamps):
+        valid = [t for t in timestamps if current_time - t < 60]
+        st.session_state.groq_key_timestamps[idx] = valid
+        if len(valid) < 30:  # less than 30 calls in last minute
+            return idx
     return None
 
 def call_groq(prompt):
-    """Try Groq API with key rotation using GROQ_KEYS_1 to GROQ_KEYS_4 from secrets, with rate limiting."""
-    # Rate limiting: allow only 5 calls per minute
-    current_time = time.time()
-    # Clean old timestamps (>60 seconds)
-    st.session_state.groq_call_timestamps = [t for t in st.session_state.groq_call_timestamps if current_time - t < 60]
-    if len(st.session_state.groq_call_timestamps) >= 5:
-        print("Groq rate limit exceeded (5 calls per minute). Skipping Groq.")
-        return None  # rate limit exceeded, skip Groq
-    
+    """Try Groq API with key rotation and rate limiting."""
     groq_keys = []
     for i in range(1, 5):
         key = st.secrets.get(f"GROQ_KEYS_{i}")
@@ -738,25 +1107,25 @@ def call_groq(prompt):
     if not groq_keys:
         return None
     
-    for key in groq_keys:
-        try:
-            client = groq.Client(api_key=key)
-            completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=1000
-            )
-            # Record successful call timestamp
-            st.session_state.groq_call_timestamps.append(current_time)
-            # --- Increment Groq counter ---
-            counter = get_api_counter()
-            counter["groq"] += 1
-            return completion.choices[0].message.content
-        except Exception as e:
-            print(f"Groq key {key[:5]}... failed: {e}")
-            continue
-    return None
+    key_idx = get_available_groq_key()
+    if key_idx is None:
+        print("All Groq keys rate limited, skipping Groq.")
+        return None
+    
+    key = groq_keys[key_idx]
+    try:
+        client = groq.Client(api_key=key)
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        st.session_state.groq_key_timestamps[key_idx].append(time.time())
+        return completion.choices[0].message.content
+    except Exception as e:
+        print(f"Groq key {key_idx+1} failed: {e}")
+        return None
 
 def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
     """Try Gemini first, then Groq (with rate limit), then Puter, with credit check."""
@@ -779,6 +1148,8 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
             update_usage_in_db(user_info["Username"], new_usage)
         if progress_callback:
             progress_callback(1.0, "Gemini response received")
+        # Increment total API requests counter
+        st.session_state.total_api_requests += 1
         return response, "Gemini 1.5 Flash"
     
     if progress_callback:
@@ -793,6 +1164,7 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
             update_usage_in_db(user_info["Username"], new_usage)
         if progress_callback:
             progress_callback(1.0, "Groq response received")
+        st.session_state.total_api_requests += 1
         return response, "Groq (llama-3.3-70b-versatile)"
     
     if progress_callback:
@@ -800,9 +1172,6 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
     # Fallback to Puter
     try:
         puter_resp = puter.ai.chat(prompt)
-        # --- Increment Puter counter ---
-        counter = get_api_counter()
-        counter["puter"] += 1
         if user_info and user_info.get("Role") != "Admin":
             new_usage = current_usage + 1
             user_info["UsageCount"] = new_usage
@@ -810,6 +1179,7 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
             update_usage_in_db(user_info["Username"], new_usage)
         if progress_callback:
             progress_callback(1.0, "Puter response received")
+        st.session_state.total_api_requests += 1
         return puter_resp.message.content, "Puter AI (Fallback)"
     except:
         if progress_callback:
@@ -1277,8 +1647,8 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
         y=forecast_prices,
         mode='lines+markers',
         name=f'Forecast ({direction})',
-        line=dict(color='#00d4ff', width=3, dash='dot'),
-        marker=dict(size=5, color='#00d4ff', symbol='circle')
+        line=dict(color='#00ff99', width=3, dash='dot'),
+        marker=dict(size=5, color='#00ff99', symbol='circle')
     ))
     fig.add_hline(y=entry_price, line_dash="dashdot", line_color="#ffff00",
                   annotation_text="Entry", annotation_position="bottom right")
@@ -1296,10 +1666,10 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
             arrowhead=2,
             arrowsize=1,
             arrowwidth=2,
-            arrowcolor="#00d4ff",
+            arrowcolor="#00ff99",
             font=dict(size=12, color="white"),
             bgcolor="#1e1e1e",
-            bordercolor="#00d4ff",
+            bordercolor="#00ff99",
             borderwidth=1,
             borderpad=4,
             ax=20,
@@ -1330,7 +1700,7 @@ def create_mini_chart(df, entry_price, sl, tp):
         x=hist.index,
         y=hist['Close'],
         mode='lines',
-        line=dict(color='#00d4ff', width=2),
+        line=dict(color='#00ff99', width=2),
         name='Price'
     ))
     fig.add_hline(y=entry_price, line_dash="dash", line_color="#ffff00", line_width=1)
@@ -1454,6 +1824,8 @@ def create_technical_chart(df, tf):
     fig.update_layout(height=800, template='plotly_dark', showlegend=False)
     fig.update_xaxes(rangeslider_visible=False)
     return fig
+
+
 
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - FINAL CORRECTED VERSION
 def create_theory_chart(df, tf):
@@ -1828,7 +2200,8 @@ else:
                 <p><span class='metric-label'>Active Trades:</span> <b>{len(active_trades)}</b></p>
                 <p><span class='metric-label'>Closed Today:</span> <b>{len([t for t in load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit']) if t.get('ClosedDate','').startswith(get_current_date_str())])}</b></p>
                 <p><span class='metric-label'>AI Analysis Method:</span> Gemini (Primary) → Groq (Rate Limited) → Puter</p>
-                <p><span class='metric-label'>Groq Rate Limit:</span> 5 calls/min</p>
+                <p><span class='metric-label'>Groq Rate Limit:</span> 30 calls/min per key (4 keys)</p>
+                <p><span class='metric-label'>Gemini Rate Limit:</span> 5 calls/min per key (7 keys)</p>
                 <p><span class='metric-label'>Scanner Accuracy Threshold:</span> {st.session_state.min_accuracy}%</p>
             </div>
             """, unsafe_allow_html=True)
@@ -2067,7 +2440,7 @@ else:
                 col1, col2, col3, col4 = st.columns([3,1,1,2])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
+                    session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
                     st.markdown(f"""
                     <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
                         <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
@@ -2119,7 +2492,7 @@ else:
                 col1, col2, col3, col4 = st.columns([3,1,1,2])
                 with col1:
                     color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    session_tag = f"<span style='color:#00d4ff; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
+                    session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
                     st.markdown(f"""
                     <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
                         <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
@@ -2306,6 +2679,10 @@ else:
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
             st.title("🛡️ Admin Center & User Management")
+            
+            # Display total API requests
+            st.metric("Total System API Requests", st.session_state.total_api_requests)
+            
             sheet, _ = get_user_sheet()
             if sheet:
                 all_records = sheet.get_all_records()
@@ -2317,7 +2694,6 @@ else:
                     with st.form("create_user_form"):
                         new_u_name = st.text_input("Username")
                         new_u_pass = st.text_input("Password")
-                        # --- MODIFIED: Default limit changed to 100 ---
                         new_u_limit = st.number_input("Initial Hybrid Limit", value=100, min_value=1)
                         if st.form_submit_button("Create User"):
                             if new_u_name and new_u_pass:
@@ -2357,18 +2733,6 @@ else:
                             st.success(f"Usage count set to {new_usage_val}")
                             time.sleep(1)
                             st.rerun()
-
-                # --- NEW: API Usage Statistics ---
-                st.markdown("### 📊 API Usage Statistics")
-                counter = get_api_counter()
-                st.write(f"**Gemini:** {counter['gemini']} requests")
-                st.write(f"**Groq:** {counter['groq']} requests")
-                st.write(f"**Puter:** {counter['puter']} requests")
-                if st.button("Reset Counters"):
-                    counter["gemini"] = 0
-                    counter["groq"] = 0
-                    counter["puter"] = 0
-                    st.rerun()
             else:
                 st.error("Database Connection Failed")
         else:
