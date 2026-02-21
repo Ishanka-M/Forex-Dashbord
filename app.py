@@ -1093,12 +1093,19 @@ def parse_ai_response(text):
         sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
         forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
+        
         if entry_match:
-            data["ENTRY"] = entry_match.group(1)
+            val = entry_match.group(1).strip().rstrip('.,')
+            if val:
+                data["ENTRY"] = val
         if sl_match:
-            data["SL"] = sl_match.group(1)
+            val = sl_match.group(1).strip().rstrip('.,')
+            if val:
+                data["SL"] = val
         if tp_match:
-            data["TP"] = tp_match.group(1)
+            val = tp_match.group(1).strip().rstrip('.,')
+            if val:
+                data["TP"] = val
         if forecast_match:
             data["FORECAST"] = forecast_match.group(1).strip()
     except:
