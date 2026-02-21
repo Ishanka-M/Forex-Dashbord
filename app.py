@@ -1788,6 +1788,8 @@ def create_technical_chart(df, tf):
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave)
 # ... (all previous code remains the same until the create_theory_chart function)
 
+# ... (all previous code remains the same until the create_theory_chart function)
+
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - CORRECTED VERSION
 def create_theory_chart(df, tf):
     """Create a simplified chart showing SMC/ICT concepts, liquidity levels, Fibonacci, and Elliott Wave labels."""
@@ -1804,10 +1806,16 @@ def create_theory_chart(df, tf):
     swing_highs = []
     swing_lows = []
     for i in range(window, len(df)-window):
-        if df['High'].iloc[i] == max(df['High'].iloc[i-window:i+window+1]):
-            swing_highs.append((df.index[i], df['High'].iloc[i]))
-        if df['Low'].iloc[i] == min(df['Low'].iloc[i-window:i+window+1]):
-            swing_lows.append((df.index[i], df['Low'].iloc[i]))
+        # extract the window values as a list of floats
+        high_window = df['High'].iloc[i-window:i+window+1].tolist()
+        low_window = df['Low'].iloc[i-window:i+window+1].tolist()
+        current_high = float(df['High'].iloc[i])
+        current_low = float(df['Low'].iloc[i])
+        
+        if np.isclose(current_high, max(high_window)):
+            swing_highs.append((df.index[i], current_high))
+        if np.isclose(current_low, min(low_window)):
+            swing_lows.append((df.index[i], current_low))
 
     # Plot swing points as markers
     if swing_highs:
@@ -1877,6 +1885,8 @@ def create_theory_chart(df, tf):
                       yaxis_title="Price",
                       hovermode="x unified")
     return fig
+
+# ... (rest of the code remains identical, including the main application section where create_theory_chart is called)
 
 # ... (rest of the code remains identical, including the main application section where create_theory_chart is called)
 
