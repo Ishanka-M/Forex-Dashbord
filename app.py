@@ -15,6 +15,24 @@ import numpy as np
 import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
+import streamlit as st
+
+# Page setup
+st.set_page_config(page_title="System Pro", layout="wide")
+
+# Streamlit ගේ header සහ footer අයින් කරන්න
+hide_style = """
+    <style>
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_style, unsafe_allow_html=True)
+
+# ඔයාගේ API Connection එක මෙතන තියෙන්න ඕනේ
+# API_KEY = st.secrets["MY_API_KEY"] 
+
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
 st.set_page_config(page_title="Infinite Algo Terminal v27.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
