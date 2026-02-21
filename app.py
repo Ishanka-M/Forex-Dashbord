@@ -1785,11 +1785,6 @@ def create_technical_chart(df, tf):
     fig.update_xaxes(rangeslider_visible=False)
     return fig
 
-# NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave)
-# ... (all previous code remains the same until the create_theory_chart function)
-
-# ... (all previous code remains the same until the create_theory_chart function)
-
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - CORRECTED VERSION
 def create_theory_chart(df, tf):
     """Create a simplified chart showing SMC/ICT concepts, liquidity levels, Fibonacci, and Elliott Wave labels."""
@@ -1885,10 +1880,6 @@ def create_theory_chart(df, tf):
                       yaxis_title="Price",
                       hovermode="x unified")
     return fig
-
-# ... (rest of the code remains identical, including the main application section where create_theory_chart is called)
-
-# ... (rest of the code remains identical, including the main application section where create_theory_chart is called)
 
 # ==================== DASHBOARD FUNCTIONS ====================
 def get_major_prices():
@@ -2277,6 +2268,8 @@ else:
                 period = period_map.get(selected_tf, "1mo")
                 df_tech = yf.download(yf_sym, period=period, interval=selected_tf, progress=False)
                 if not df_tech.empty and len(df_tech) > 50:
+                    if isinstance(df_tech.columns, pd.MultiIndex):
+                        df_tech.columns = df_tech.columns.get_level_values(0)
                     tech_chart = create_technical_chart(df_tech, selected_tf)
                     st.session_state.tech_chart = tech_chart
                 else:
@@ -2292,6 +2285,8 @@ else:
                 period = period_map.get(selected_tf, "1mo")
                 df_theory = yf.download(yf_sym, period=period, interval=selected_tf, progress=False)
                 if not df_theory.empty and len(df_theory) > 50:
+                    if isinstance(df_theory.columns, pd.MultiIndex):
+                        df_theory.columns = df_theory.columns.get_level_values(0)
                     theory_chart = create_theory_chart(df_theory, selected_tf)
                     st.session_state.theory_chart = theory_chart
                 else:
