@@ -1852,27 +1852,26 @@ else:
             """, unsafe_allow_html=True)
         
         # NEW: Trades Near Entry Alert
-            # NEW: Trades Near Entry Alert
-st.markdown("### 🎯 Trades Near Entry")
-near_entry_trades = []
-for trade in active_trades:
-    live = get_live_price(trade['Pair'])
-    if live:
-        entry = float(trade['Entry'])
-        diff_pct = abs(live - entry) / entry * 100
-        if diff_pct < 0.5:  # within 0.5% of entry
-            near_entry_trades.append((trade, live))  # store trade and its live price together
+        st.markdown("### 🎯 Trades Near Entry")
+        near_entry_trades = []
+        for trade in active_trades:
+            live = get_live_price(trade['Pair'])
+            if live:
+                entry = float(trade['Entry'])
+                diff_pct = abs(live - entry) / entry * 100
+                if diff_pct < 0.5:  # within 0.5% of entry
+                    near_entry_trades.append((trade, live))  # store trade and its live price together
 
-if near_entry_trades:
-    for trade, live in near_entry_trades:
-        color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
-        st.markdown(f"""
-        <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:5px;'>
-            <b>{trade['Pair']} | {trade['Direction']}</b> - Live: {live:.4f} (Entry: {trade['Entry']}) 
-        </div>
-        """, unsafe_allow_html=True)
-else:
-    st.info("No trades are near entry price currently.")                                                                   
+        if near_entry_trades:
+            for trade, live in near_entry_trades:
+                color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                st.markdown(f"""
+                <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:5px;'>
+                    <b>{trade['Pair']} | {trade['Direction']}</b> - Live: {live:.4f} (Entry: {trade['Entry']}) 
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No trades are near entry price currently.")
         
         # Theory Card - AI Forecast with Market Selector
         st.markdown("### 📈 Theory Card - AI Forecast")
