@@ -15,34 +15,7 @@ import numpy as np
 import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone import streamlit as st
-import streamlit as st
-
-# 1. Mobile-friendly Page Setup
-st.set_page_config(
-    page_title="My Mobile App",
-    layout="centered", # Mobile වලට centered එක ලස්සනයි
-    initial_sidebar_state="collapsed" # Sidebar එක hide කරලා තියන්න
-)
-
-# 2. Sidebar එක වෙනුවට Tabs පාවිච්චි කරන්න (Mobile වලට ලේසියි)
-tab1, tab2, tab3 = st.tabs(["Home", "Data", "Settings"])
-
-with tab1:
-    st.write("Welcome to Mobile View!")
-
-# 3. Mobile එකේ ලස්සනට පේන්න CSS පාවිච්චි කරන්න
-st.markdown("""
-    <style>
-    /* Mobile එකේ padding අඩු කරන්න */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-# ඔයාගේ API Connection එක මෙතන තියෙන්න ඕනේ
-# API_KEY = st.secrets["MY_API_KEY"] 
+ 
 
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
