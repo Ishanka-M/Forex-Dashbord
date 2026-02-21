@@ -397,6 +397,8 @@ if "news_impact_provider" not in st.session_state:
     st.session_state.news_impact_provider = None
 if "tech_chart" not in st.session_state:
     st.session_state.tech_chart = None
+if "theory_chart" not in st.session_state:  # NEW: for theory chart
+    st.session_state.theory_chart = None
 
 # NEW: Groq rate limiting - store timestamps of calls in last 60 seconds
 if "groq_call_timestamps" not in st.session_state:
@@ -793,11 +795,12 @@ def get_data_period(tf):
 def calculate_advanced_signals(df, tf, news_items=None):
     """
     Calculate signals using old code weights and include news score.
-    Returns signals dict, atr, confidence.
+    Returns signals dict, atr, confidence, and a detailed score breakdown.
     """
     if df is None or len(df) < 50:
-        return None, 0, 0
+        return None, 0, 0, {}
     signals = {}
+    score_breakdown = {}
     c = df['Close'].iloc[-1]
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
@@ -810,11 +813,15 @@ def calculate_advanced_signals(df, tf, news_items=None):
     slope, intercept = np.polyfit(x_vals, y_vals, 1) if len(y_vals) > 1 else (0, c)
     
     trend_dir = "neutral"
+    trend_score = 0
     if c > ma_50 and c > ma_200 and slope > 0:
         trend_dir = "bull"
+        trend_score = 20
     elif c < ma_50 and c < ma_200 and slope < 0:
         trend_dir = "bear"
+        trend_score = -20
     signals['TREND'] = (f"Trend {trend_dir.upper()} (Slope {slope:.2f})", trend_dir)
+    score_breakdown['Trend'] = trend_score
 
     # --- 2. MACD ---
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
@@ -824,10 +831,14 @@ def calculate_advanced_signals(df, tf, news_items=None):
     macd_val = macd.iloc[-1]
     sig_val = signal_line.iloc[-1]
     macd_signal = "neutral"
+    macd_score = 0
     if macd_val > sig_val and macd_val > 0:
         macd_signal = "bull"
+        macd_score = 10
     elif macd_val < sig_val and macd_val < 0:
         macd_signal = "bear"
+        macd_score = -10
+    score_breakdown['MACD'] = macd_score
     
     # --- 3. SMC & ICT ---
     highs, lows = df['High'].rolling(10).max(), df['Low'].rolling(10).min()
@@ -838,16 +849,22 @@ def calculate_advanced_signals(df, tf, news_items=None):
                     (last_candles['Close'].iloc[-1] < last_candles['Low'].iloc[-3])
 
     smc_signal = "neutral"
+    smc_score = 0
     if c > highs.iloc[-2] or is_bullish_ob:
         smc_signal = "bull"
+        smc_score = 20
     elif c < lows.iloc[-2] or is_bearish_ob:
         smc_signal = "bear"
+        smc_score = -20
     signals['SMC'] = (f"{smc_signal.upper()} Structure/OB", smc_signal)
+    score_breakdown['SMC'] = smc_score
     
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
     fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
     ict_signal = "bull" if fvg_bull else ("bear" if fvg_bear else "neutral")
+    ict_score = 10 if ict_signal == "bull" else (-10 if ict_signal == "bear" else 0)
     signals['ICT'] = (f"{ict_signal.upper()} FVG", ict_signal)
+    score_breakdown['ICT'] = ict_score
 
     # --- 4. LIQUIDITY & SUPPORT/RESISTANCE ---
     liq_signal = "neutral"
@@ -857,24 +874,32 @@ def calculate_advanced_signals(df, tf, news_items=None):
     is_at_support = abs(c - recent_low) < (c * 0.002)
     is_at_resistance = abs(c - recent_high) < (c * 0.002)
 
+    liq_score = 0
     if l < df['Low'].iloc[-10:-1].min() or is_at_support:
         liq_signal = "bull"
         liq_text = "Liq Grab / Support"
+        liq_score = 15
     elif h > df['High'].iloc[-10:-1].max() or is_at_resistance:
         liq_signal = "bear"
         liq_text = "Liq Grab / Resist"
+        liq_score = -15
     signals['LIQ'] = (liq_text, liq_signal)
+    score_breakdown['Liquidity'] = liq_score
     
     # --- 5. PATTERNS ---
     patt_signal = "neutral"
     patt_text = "No Pattern"
+    patt_score = 0
     if (df['Close'].iloc[-1] > df['Open'].iloc[-1] and df['Close'].iloc[-1] > df['Open'].iloc[-2] and df['Open'].iloc[-1] < df['Close'].iloc[-2]):
         patt_signal = "bull"
         patt_text = "Bull Engulfing"
+        patt_score = 15
     elif (df['Close'].iloc[-1] < df['Open'].iloc[-1] and df['Close'].iloc[-1] < df['Open'].iloc[-2] and df['Open'].iloc[-1] > df['Close'].iloc[-2]):
         patt_signal = "bear"
         patt_text = "Bear Engulfing"
+        patt_score = -15
     signals['PATT'] = (patt_text, patt_signal)
+    score_breakdown['Patterns'] = patt_score
     
     # --- 6. BOLLINGER BANDS ---
     sma_20 = df['Close'].rolling(20).mean()
@@ -883,13 +908,17 @@ def calculate_advanced_signals(df, tf, news_items=None):
     lower_bb = sma_20 - (std_20 * 2)
     bb_status = "neutral"
     bb_text = "Normal Vol"
+    bb_score = 0
     if c > upper_bb.iloc[-1]:
         bb_status = "bear"
         bb_text = "Overextended"
+        bb_score = -10
     elif c < lower_bb.iloc[-1]:
         bb_status = "bull"
         bb_text = "Oversold"
+        bb_score = 10
     signals['VOLATILITY'] = (bb_text, bb_status)
+    score_breakdown['Bollinger'] = bb_score
 
     # --- 7. RSI ---
     delta = df['Close'].diff()
@@ -898,13 +927,21 @@ def calculate_advanced_signals(df, tf, news_items=None):
     rs = gain / loss
     rsi_val = 100 - (100 / (1 + rs)).iloc[-1]
     signals['RSI'] = (f"RSI: {int(rsi_val)}", "neutral")
+    rsi_score = 0
+    if rsi_val < 30:
+        rsi_score = 10 if trend_dir == "bull" else -5
+    elif rsi_val > 70:
+        rsi_score = -10 if trend_dir == "bear" else 5
+    score_breakdown['RSI'] = rsi_score
 
     # --- 8. FIBONACCI ---
     ph_fib = df['High'].rolling(50).max().iloc[-1]
     pl_fib = df['Low'].rolling(50).min().iloc[-1]
     fib_range = ph_fib - pl_fib
     fib_618 = ph_fib - (fib_range * 0.618)
+    fib_score = 10 if abs(c - fib_618) < (c * 0.001) else 0
     signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
+    score_breakdown['Fibonacci'] = fib_score
     
     # --- 9. ELLIOTT WAVE ---
     last_50 = df['Close'].tail(50)
@@ -913,21 +950,29 @@ def calculate_advanced_signals(df, tf, news_items=None):
     
     ew_status = "Wave Analysis"
     ew_col = "neutral"
+    ew_score = 0
     if trend_dir == "bull":
         if current_pos > 0.8:
             ew_status, ew_col = "Wave 5 (Top)", "bear"
+            ew_score = -5
         elif 0.4 < current_pos <= 0.8:
             ew_status, ew_col = "Wave 3 (Impulse)", "bull"
+            ew_score = 10
         else:
             ew_status, ew_col = "Wave 1 (Start)", "bull"
+            ew_score = 5
     else:
         if current_pos < 0.2:
             ew_status, ew_col = "Wave C (Drop)", "bull"
+            ew_score = 10
         elif 0.2 <= current_pos < 0.6:
             ew_status, ew_col = "Wave A (Corr)", "bear"
+            ew_score = -10
         else:
             ew_status, ew_col = "Wave B (Rally)", "neutral"
+            ew_score = 0
     signals['ELLIOTT'] = (ew_status, ew_col)
+    score_breakdown['Elliott'] = ew_score
 
     # --- 10. CONFIDENCE SCORING (OLD CODE STYLE) ---
     confidence = 0
@@ -936,48 +981,10 @@ def calculate_advanced_signals(df, tf, news_items=None):
     if news_items:
         news_score = calculate_news_score(news_items)
         confidence += news_score
+        score_breakdown['News'] = news_score
 
-    # Trend
-    if trend_dir == "bull":
-        confidence += 20
-    elif trend_dir == "bear":
-        confidence -= 20
-
-    # MACD
-    if macd_signal == "bull":
-        confidence += 10
-    elif macd_signal == "bear":
-        confidence -= 10
-
-    # SMC
-    if smc_signal == "bull":
-        confidence += 20
-    elif smc_signal == "bear":
-        confidence -= 20
-
-    # ICT
-    if ict_signal == "bull":
-        confidence += 10
-    elif ict_signal == "bear":
-        confidence -= 10
-
-    # Liquidity
-    if liq_signal == "bull":
-        confidence += 15
-    elif liq_signal == "bear":
-        confidence -= 15
-
-    # Patterns
-    if patt_signal == "bull":
-        confidence += 15
-    elif patt_signal == "bear":
-        confidence -= 15
-
-    # RSI combo (old code sk_conf)
-    if rsi_val < 30 and trend_dir == "bull":
-        confidence += 10
-    elif rsi_val > 70 and trend_dir == "bear":
-        confidence -= 10
+    # Sum all scores
+    confidence += (trend_score + macd_score + smc_score + ict_score + liq_score + patt_score + bb_score + rsi_score + fib_score + ew_score)
 
     final_signal = "neutral"
     if confidence > 0:
@@ -988,7 +995,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
     signals['SK'] = (f"CONFIDENCE: {abs(confidence)}%", final_signal)
 
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
-    return signals, atr, confidence
+    return signals, atr, confidence, score_breakdown
 
 # --- 5. RISK-OPTIMIZED SL/TP CALCULATION (now only used as fallback) ---
 def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
@@ -1040,7 +1047,7 @@ def call_gemini(prompt):
     for idx, key in enumerate(gemini_keys):
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash-preview')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
@@ -1084,7 +1091,7 @@ def call_groq(prompt):
             continue
     return None
 
-def call_ai_with_fallback(prompt, user_info=None):
+def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
     """Try Gemini first, then Groq (with rate limit), then Puter, with credit check."""
     # Credit check
     if user_info:
@@ -1093,6 +1100,8 @@ def call_ai_with_fallback(prompt, user_info=None):
         if current_usage >= max_limit and user_info.get("Role") != "Admin":
             return None, "Daily limit reached (30 credits). Please try again tomorrow."
     
+    if progress_callback:
+        progress_callback(0.2, "Trying Gemini...")
     # Try Gemini first
     response = call_gemini(prompt)
     if response:
@@ -1101,8 +1110,12 @@ def call_ai_with_fallback(prompt, user_info=None):
             user_info["UsageCount"] = new_usage
             st.session_state.user = user_info
             update_usage_in_db(user_info["Username"], new_usage)
-        return response, "Gemini 3.0 Pro"
+        if progress_callback:
+            progress_callback(1.0, "Gemini response received")
+        return response, "Gemini 1.5 Flash"
     
+    if progress_callback:
+        progress_callback(0.4, "Gemini failed, trying Groq...")
     # Try Groq (subject to rate limit)
     response = call_groq(prompt)
     if response:
@@ -1111,8 +1124,12 @@ def call_ai_with_fallback(prompt, user_info=None):
             user_info["UsageCount"] = new_usage
             st.session_state.user = user_info
             update_usage_in_db(user_info["Username"], new_usage)
+        if progress_callback:
+            progress_callback(1.0, "Groq response received")
         return response, "Groq (llama-3.3-70b-versatile)"
     
+    if progress_callback:
+        progress_callback(0.7, "Groq failed, trying Puter...")
     # Fallback to Puter
     try:
         puter_resp = puter.ai.chat(prompt)
@@ -1121,8 +1138,12 @@ def call_ai_with_fallback(prompt, user_info=None):
             user_info["UsageCount"] = new_usage
             st.session_state.user = user_info
             update_usage_in_db(user_info["Username"], new_usage)
+        if progress_callback:
+            progress_callback(1.0, "Puter response received")
         return puter_resp.message.content, "Puter AI (Fallback)"
     except:
+        if progress_callback:
+            progress_callback(1.0, "All providers failed")
         return None, "All AI providers failed"
 
 def parse_ai_response(text):
@@ -1151,7 +1172,7 @@ def parse_ai_response(text):
         pass
     return data
 
-def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, user_info):
+def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
     """
     Get AI-generated trade setup including entry, SL, TP, confidence, forecast, confirmation,
     and a short Sinhala summary.
@@ -1159,6 +1180,8 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     if df_hist is None or df_hist.empty:
         return None
     
+    if progress_callback:
+        progress_callback(0.1, "Calculating market stats...")
     # Calculate some basic stats for prompt
     high_52w = df_hist['High'].tail(252).max() if len(df_hist) > 252 else df_hist['High'].max()
     low_52w = df_hist['Low'].tail(252).min() if len(df_hist) > 252 else df_hist['Low'].min()
@@ -1200,7 +1223,9 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     REASON: [Short reason]
     """
     
-    response, provider = call_ai_with_fallback(prompt, user_info)
+    if progress_callback:
+        progress_callback(0.3, "Calling AI...")
+    response, provider = call_ai_with_fallback(prompt, user_info, progress_callback)
     if not response:
         return None
     
@@ -1219,6 +1244,9 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     # Extract Sinhala summary
     sinhala_match = re.search(r"SINHALA_SUMMARY\s*:\s*(.+)", response, re.IGNORECASE)
     sinhala_summary = sinhala_match.group(1).strip() if sinhala_match else ""
+    
+    if progress_callback:
+        progress_callback(1.0, "Done")
     
     trade = {
         "pair": pair,
@@ -1371,7 +1399,7 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
             if not df_tf.empty and len(df_tf) > 50:
                 if isinstance(df_tf.columns, pd.MultiIndex):
                     df_tf.columns = df_tf.columns.get_level_values(0)
-                sigs, _, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
+                sigs, _, _, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
                 if sigs:
                     tf_signals[tf] = {
                         "trend": sigs['TREND'][0],
@@ -1484,7 +1512,7 @@ def scan_market_with_ai(assets_list, user_info, min_accuracy=40):
                 if isinstance(df_sw.columns, pd.MultiIndex):
                     df_sw.columns = df_sw.columns.get_level_values(0)
                 # Use algorithmic signals to get direction and confidence quickly
-                sigs_sw, atr_sw, conf_sw = calculate_advanced_signals(df_sw, "4h", news_items=None)
+                sigs_sw, atr_sw, conf_sw, _ = calculate_advanced_signals(df_sw, "4h", news_items=None)
                 if abs(conf_sw) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sw > 0 else "SELL"
@@ -1515,7 +1543,7 @@ def scan_market_with_ai(assets_list, user_info, min_accuracy=40):
             if not df_sc.empty and len(df_sc) > 50:
                 if isinstance(df_sc.columns, pd.MultiIndex):
                     df_sc.columns = df_sc.columns.get_level_values(0)
-                sigs_sc, atr_sc, conf_sc = calculate_advanced_signals(df_sc, "15m", news_items=None)
+                sigs_sc, atr_sc, conf_sc, _ = calculate_advanced_signals(df_sc, "15m", news_items=None)
                 if abs(conf_sc) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf_sc > 0 else "SELL"
@@ -1675,7 +1703,7 @@ def create_technical_chart(df, tf):
     recent_high = float(df['High'].tail(20).max())
     recent_low = float(df['Low'].tail(20).min())
     
-    # Fibonacci levels from last swing high/low
+    # Fibonacci levels from last swing high/low (simplified: use recent_high and recent_low)
     fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
     fib_prices = [recent_low + (recent_high - recent_low) * level for level in fib_levels]
     
@@ -1712,7 +1740,7 @@ def create_technical_chart(df, tf):
         line=dict(color="green", width=1, dash="dot"),
         row=1, col=1
     )
-    # Add annotation manually (optional)
+    # Add annotation manually
     fig.add_annotation(
         x=df.index[-1], y=recent_high,
         text="Resistance", showarrow=False,
@@ -1755,6 +1783,97 @@ def create_technical_chart(df, tf):
     
     fig.update_layout(height=800, template='plotly_dark', showlegend=False)
     fig.update_xaxes(rangeslider_visible=False)
+    return fig
+
+# NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave)
+def create_theory_chart(df, tf):
+    """Create a simplified chart showing SMC/ICT concepts, liquidity levels, Fibonacci, and Elliott Wave labels."""
+    fig = go.Figure()
+
+    # Candlestick
+    fig.add_trace(go.Candlestick(x=df.index,
+                                 open=df['Open'], high=df['High'],
+                                 low=df['Low'], close=df['Close'],
+                                 name='Price', showlegend=False))
+
+    # Identify swing highs and lows (simplified)
+    # Find local maxima/minima using a rolling window
+    window = 10
+    df['SwingHigh'] = df['High'].rolling(window, center=True).max()
+    df['SwingLow'] = df['Low'].rolling(window, center=True).min()
+    swing_highs = df[df['High'] == df['SwingHigh']]
+    swing_lows = df[df['Low'] == df['SwingLow']]
+
+    # Plot swing points as markers
+    fig.add_trace(go.Scatter(x=swing_highs.index, y=swing_highs['High'],
+                              mode='markers', marker=dict(color='red', size=5, symbol='triangle-down'),
+                              name='Swing High', showlegend=True))
+    fig.add_trace(go.Scatter(x=swing_lows.index, y=swing_lows['Low'],
+                              mode='markers', marker=dict(color='green', size=5, symbol='triangle-up'),
+                              name='Swing Low', showlegend=True))
+
+    # Liquidity levels: horizontal lines at recent highs/lows (last 20 periods)
+    recent_high = float(df['High'].tail(20).max())
+    recent_low = float(df['Low'].tail(20).min())
+    fig.add_hline(y=recent_high, line_dash="dot", line_color="orange", annotation_text="Resistance", annotation_position="top right")
+    fig.add_hline(y=recent_low, line_dash="dot", line_color="blue", annotation_text="Support", annotation_position="bottom right")
+
+    # Fibonacci retracement from last major swing (using highest high and lowest low in last 50 candles)
+    high_50 = df['High'].tail(50).max()
+    low_50 = df['Low'].tail(50).min()
+    if high_50 > low_50:
+        fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
+        for level in fib_levels:
+            price = low_50 + (high_50 - low_50) * level
+            fig.add_hline(y=price, line_dash="dash", line_color="purple", opacity=0.3,
+                          annotation_text=f"Fib {level*100:.1f}%", annotation_position="right")
+
+    # Elliott Wave: simple labeling of last few swings (simplified)
+    # Identify last few alternating peaks and troughs
+    highs = swing_highs.head(5).sort_index()
+    lows = swing_lows.head(5).sort_index()
+    # Merge and sort all swings
+    swings = pd.concat([highs[['High']].rename(columns={'High':'price'}),
+                        lows[['Low']].rename(columns={'Low':'price'})]).sort_index()
+    # Label alternating starting from most recent trend direction
+    if len(swings) > 3:
+        labels = ['1', '2', '3', '4', '5']
+        for i, (idx, row) in enumerate(swings.tail(5).iterrows()):
+            if i < len(labels):
+                fig.add_annotation(x=idx, y=row['price'], text=labels[i],
+                                   showarrow=True, arrowhead=1, ax=0, ay=-20 if i%2==0 else 20,
+                                   font=dict(color='cyan', size=12))
+
+    # Fair Value Gaps (ICT) - simplified: highlight gaps between candles
+    for i in range(1, len(df)-1):
+        if df['Low'].iloc[i] > df['High'].iloc[i+1]:  # bullish gap
+            fig.add_vrect(x0=df.index[i], x1=df.index[i+1], 
+                          fillcolor="green", opacity=0.1, line_width=0,
+                          annotation_text="FVG", annotation_position="top")
+        elif df['High'].iloc[i] < df['Low'].iloc[i+1]:  # bearish gap
+            fig.add_vrect(x0=df.index[i], x1=df.index[i+1], 
+                          fillcolor="red", opacity=0.1, line_width=0,
+                          annotation_text="FVG", annotation_position="bottom")
+
+    # Order Blocks (SMC) - simplified: mark strong candles
+    for i in range(2, len(df)):
+        # Bullish OB: previous candle bearish, current strong bullish
+        if df['Close'].iloc[i-2] < df['Open'].iloc[i-2] and df['Close'].iloc[i] > df['Open'].iloc[i] and df['Close'].iloc[i] > df['High'].iloc[i-2]:
+            fig.add_vrect(x0=df.index[i-2], x1=df.index[i-1], 
+                          fillcolor="blue", opacity=0.2, line_width=0,
+                          annotation_text="OB", annotation_position="top")
+        # Bearish OB
+        if df['Close'].iloc[i-2] > df['Open'].iloc[i-2] and df['Close'].iloc[i] < df['Open'].iloc[i] and df['Close'].iloc[i] < df['Low'].iloc[i-2]:
+            fig.add_vrect(x0=df.index[i-2], x1=df.index[i-1], 
+                          fillcolor="orange", opacity=0.2, line_width=0,
+                          annotation_text="OB", annotation_position="bottom")
+
+    fig.update_layout(title=f"SMC/ICT Theory Chart ({tf})",
+                      template="plotly_dark",
+                      height=600,
+                      xaxis_title="Time",
+                      yaxis_title="Price",
+                      hovermode="x unified")
     return fig
 
 # ==================== DASHBOARD FUNCTIONS ====================
@@ -1851,29 +1970,48 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
     period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
     period = period_map.get(tf, "1mo")
     
+    # Create a progress bar
+    progress_bar = st.progress(0, text="Starting forecast generation...")
+    
+    def update_progress(progress, text):
+        progress_bar.progress(progress, text=text)
+    
     try:
+        update_progress(0.1, "Downloading data...")
         df = yf.download(yf_sym, period=period, interval=tf, progress=False)
         if df.empty or len(df) < 50:
+            progress_bar.empty()
             return None, "Insufficient data", None
         
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
+        update_progress(0.3, "Calculating signals...")
         current_price = df['Close'].iloc[-1]
         # Get simple signal direction
-        sigs, atr, conf = calculate_advanced_signals(df, tf, news_items=None)
+        sigs, atr, conf, _ = calculate_advanced_signals(df, tf, news_items=None)
         direction = "BUY" if conf > 0 else "SELL" if conf < 0 else "NEUTRAL"
         if direction == "NEUTRAL":
             direction = "BUY"  # default to buy for forecast
         
+        update_progress(0.5, "Fetching news...")
         news_items = get_market_news(yf_sym)
-        ai_trade = get_ai_trade_setup(clean_pair, tf, direction, current_price, df, news_items, user_info)
+        
+        update_progress(0.7, "Calling AI for trade setup...")
+        ai_trade = get_ai_trade_setup(clean_pair, tf, direction, current_price, df, news_items, user_info, update_progress)
         if not ai_trade:
+            progress_bar.empty()
             return None, "AI analysis failed", None
         
+        update_progress(0.9, "Creating forecast chart...")
         chart = create_forecast_chart(df, ai_trade['entry'], ai_trade['sl'], ai_trade['tp'], ai_trade['forecast'])
+        
+        progress_bar.progress(1.0, "Done")
+        time.sleep(0.5)
+        progress_bar.empty()
         return chart, ai_trade['provider'], ai_trade
     except Exception as e:
+        progress_bar.empty()
         return None, str(e), None
 
 # NEW: News impact analysis using AI (Sinhala output) for a specific pair
@@ -2040,7 +2178,7 @@ else:
         
         # Theory Card - AI Forecast with Market Selector
         st.markdown("### 📈 Theory Card - AI Forecast")
-        col_a, col_b, col_c, col_d = st.columns([1,2,2,1])
+        col_a, col_b, col_c, col_d, col_e = st.columns([1,2,2,1,1])
         with col_a:
             selected_market = st.selectbox(
                 "Market",
@@ -2077,7 +2215,9 @@ else:
             )
         with col_d:
             generate_btn = st.button("🔮 Generate Forecast", type="primary", use_container_width=True)
+        with col_e:
             tech_btn = st.button("📊 Technical Chart", use_container_width=True)
+            theory_btn = st.button("📐 Theory Chart", use_container_width=True)  # NEW button for theory chart
         
         # Get yfinance symbol for selected pair (for later use)
         pair_map = {}
@@ -2130,6 +2270,21 @@ else:
         
         if st.session_state.get("tech_chart") is not None:
             st.plotly_chart(st.session_state.tech_chart, use_container_width=True)
+        
+        # Generate theory chart (SMC/ICT etc.)
+        if theory_btn:
+            with st.spinner("Generating theory chart (SMC, ICT, Fibonacci, Elliott)..."):
+                period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+                period = period_map.get(selected_tf, "1mo")
+                df_theory = yf.download(yf_sym, period=period, interval=selected_tf, progress=False)
+                if not df_theory.empty and len(df_theory) > 50:
+                    theory_chart = create_theory_chart(df_theory, selected_tf)
+                    st.session_state.theory_chart = theory_chart
+                else:
+                    st.error("Insufficient data for theory chart.")
+        
+        if st.session_state.get("theory_chart") is not None:
+            st.plotly_chart(st.session_state.theory_chart, use_container_width=True)
         
         # Market News with AI Impact Analysis (Sinhala) for selected pair
         st.markdown("### 📰 Market News & AI Impact Analysis (Sinhala)")
