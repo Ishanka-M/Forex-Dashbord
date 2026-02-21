@@ -16,19 +16,47 @@ import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
 import streamlit as st
+import time
 
-# Page setup
-st.set_page_config(page_title="System Pro", layout="wide")
-
-# Streamlit ගේ header සහ footer අයින් කරන්න
+# UI එක Clean කරන CSS එක (කලින් දුන්න එකමයි)
 hide_style = """
     <style>
     header {visibility: hidden;}
     footer {visibility: hidden;}
     #MainMenu {visibility: hidden;}
+    div[data-testid="stStatusWidget"] {visibility: hidden;} /* Standard icon එක hide කරයි */
+    
+    /* Custom Loading Spinner එක */
+    .loader {
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid #3498db;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
     </style>
 """
 st.markdown(hide_style, unsafe_allow_html=True)
+
+# Custom Loading function එකක්
+def custom_spinner():
+    return st.markdown('<div class="loader"></div>', unsafe_allow_html=True)
+
+st.title("Custom Animation System")
+
+if st.button('Data Load කරන්න'):
+    # පරණ spinner එක වෙනුවට මේක පාවිච්චි කරන්න
+    with st.empty():
+        custom_spinner()
+        # මෙතන තමයි ඔයාගේ API call එක හෝ logic එක වෙන්නේ
+        time.sleep(3) # Load වෙන බව පෙන්වීමට උදාහරණයක්
+        st.success("වැඩේ ඉවරයි!")
 
 # ඔයාගේ API Connection එක මෙතන තියෙන්න ඕනේ
 # API_KEY = st.secrets["MY_API_KEY"] 
