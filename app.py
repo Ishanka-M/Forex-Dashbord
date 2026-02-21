@@ -346,6 +346,16 @@ if "login_time" not in st.session_state: st.session_state.login_time = None
 if "ai_confirmations" not in st.session_state: st.session_state.ai_confirmations = {}  # store AI confirmations for scanner trades
 if "tracked_trades" not in st.session_state: st.session_state.tracked_trades = set()  # store IDs of auto-tracked trades
 
+# NEW: Session state for dashboard forecast and news analysis
+if "dashboard_forecast" not in st.session_state:
+    st.session_state.dashboard_forecast = None  # will store chart and data
+if "dashboard_forecast_provider" not in st.session_state:
+    st.session_state.dashboard_forecast_provider = None
+if "news_impact_analysis" not in st.session_state:
+    st.session_state.news_impact_analysis = None
+if "news_impact_provider" not in st.session_state:
+    st.session_state.news_impact_provider = None
+
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
     st.session_state.price_cache = {}  # clean_pair -> (price, timestamp)
@@ -962,15 +972,11 @@ def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
 # ==================== AI FUNCTIONS WITH GROQ + FALLBACK ====================
 
 def call_groq(prompt):
-    """Try Groq API with key rotation."""
-    groq_keys = []
-    for i in range(1, 5):
-        key = st.secrets.get(f"GROQ_API_KEY_{i}")
-        if key:
-            groq_keys.append(key)
-    
-    if not groq_keys:
+    """Try Groq API with key rotation using GROQ_KEYS from secrets."""
+    groq_keys_str = st.secrets.get("GROQ_KEYS", "")
+    if not groq_keys_str:
         return None
+    groq_keys = [k.strip() for k in groq_keys_str.split(",") if k.strip()]
     
     for key in groq_keys:
         try:
@@ -1049,7 +1055,8 @@ def parse_ai_response(text):
 
 def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, user_info):
     """
-    Get AI-generated trade setup including entry, SL, TP, confidence, forecast, confirmation.
+    Get AI-generated trade setup including entry, SL, TP, confidence, forecast, confirmation,
+    and a short Sinhala summary.
     """
     if df_hist is None or df_hist.empty:
         return None
@@ -1082,6 +1089,7 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     5. Provide a confidence percentage (0-100%).
     6. Give a short-term price forecast (next 5-10 candles).
     7. Finally, give a CONFIRMATION decision: APPROVE or REJECT the trade setup with a brief reason.
+    8. Provide a very short summary in SINHALA language (1 sentence) of this trade setup.
     
     **FINAL OUTPUT FORMAT (STRICT):**
     CONFIDENCE: XX%
@@ -1089,6 +1097,7 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     SL: xxxxx
     TP: xxxxx
     FORECAST: [Brief forecast description]
+    SINHALA_SUMMARY: [One sentence in Sinhala]
     CONFIRMATION: APPROVE/REJECT
     REASON: [Short reason]
     """
@@ -1109,6 +1118,10 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     confirmation = confirm_match.group(1).upper() if confirm_match else "N/A"
     reason = reason_match.group(1).strip() if reason_match else ""
     
+    # Extract Sinhala summary
+    sinhala_match = re.search(r"SINHALA_SUMMARY\s*:\s*(.+)", response, re.IGNORECASE)
+    sinhala_summary = sinhala_match.group(1).strip() if sinhala_match else ""
+    
     trade = {
         "pair": pair,
         "tf": tf,
@@ -1123,7 +1136,8 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
         "forecast": parsed["FORECAST"],
         "confirmation": confirmation,
         "reason": reason,
-        "provider": provider
+        "provider": provider,
+        "sinhala_summary": sinhala_summary
     }
     return trade
 
@@ -1237,9 +1251,9 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, 
     else:
         return algo_result, "Infinite Algo (Default)", None, None
 
-# ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) ====================
-def get_deep_hybrid_analysis(trade, user_info, df_hist):
-    """Run deep analysis with confirmation for scanner trade."""
+# ==================== DEEP ANALYSIS FUNCTION (HYBRID ENGINE) WITH MULTI-TIMEFRAME ====================
+def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
+    """Run deep analysis with confirmation for scanner trade, incorporating multi-timeframe signals."""
     pair = trade['pair']
     symbol_orig = trade.get('symbol_orig', clean_pair_to_yf_symbol(pair))
     
@@ -1248,6 +1262,33 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist):
     
     live_price = trade.get('live_price', trade['price'])
     tf_display = trade['tf']
+    
+    # Fetch data for multiple timeframes
+    timeframes = ["15m", "1h", "4h", "1d"]
+    tf_signals = {}
+    for tf in timeframes:
+        period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+        try:
+            df_tf = yf.download(get_yf_symbol(symbol_orig), period=period_map[tf], interval=tf, progress=False)
+            if not df_tf.empty and len(df_tf) > 50:
+                if isinstance(df_tf.columns, pd.MultiIndex):
+                    df_tf.columns = df_tf.columns.get_level_values(0)
+                sigs, _, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
+                if sigs:
+                    tf_signals[tf] = {
+                        "trend": sigs['TREND'][0],
+                        "smc": sigs['SMC'][0],
+                        "rsi": sigs['RSI'][0],
+                        "signal": sigs['SK'][1].upper(),
+                        "confidence": sigs['SK'][0]
+                    }
+        except Exception as e:
+            print(f"Error fetching {tf} data for {pair}: {e}")
+    
+    # Build multi-timeframe summary
+    mtf_summary = ""
+    for tf, sig in tf_signals.items():
+        mtf_summary += f"- {tf}: {sig['signal']} (Conf: {sig['confidence']}), Trend: {sig['trend']}\n"
     
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
@@ -1261,6 +1302,9 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist):
     **Take Profit:** {trade['tp']:.5f}
     **Confidence:** {trade['conf']}%
     **Current Live Price:** {live_price:.5f}
+    
+    **Multi-Timeframe Analysis:**
+    {mtf_summary}
     
     **Recent News Headlines:**
     {news_str}
@@ -1498,6 +1542,74 @@ def get_major_prices():
         prices[name] = price if price else "N/A"
     return prices
 
+# NEW: Dashboard forecast function
+def generate_dashboard_forecast(pair_display, tf, user_info):
+    """Generate forecast chart for selected pair and timeframe."""
+    # Map display name to yfinance symbol
+    pair_map = {
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "USD/JPY": "USDJPY=X",
+        "AUD/USD": "AUDUSD=X",
+        "USD/CAD": "USDCAD=X",
+        "NZD/USD": "NZDUSD=X",
+        "USD/CHF": "USDCHF=X",
+        "BTC/USD": "BTC-USD",
+        "ETH/USD": "ETH-USD",
+        "XAU/USD": "XAUUSD=X",
+        "XAG/USD": "XAGUSD=X"
+    }
+    yf_sym = pair_map.get(pair_display, pair_display)
+    clean_pair = yf_sym.replace("=X", "").replace("-USD", "").replace("-USDT", "")
+    
+    # Determine period based on tf
+    period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+    period = period_map.get(tf, "1mo")
+    
+    try:
+        df = yf.download(yf_sym, period=period, interval=tf, progress=False)
+        if df.empty or len(df) < 50:
+            return None, "Insufficient data", None
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        current_price = df['Close'].iloc[-1]
+        # Get simple signal direction
+        sigs, atr, conf = calculate_advanced_signals(df, tf, news_items=None)
+        direction = "BUY" if conf > 0 else "SELL" if conf < 0 else "NEUTRAL"
+        if direction == "NEUTRAL":
+            direction = "BUY"  # default to buy for forecast
+        
+        news_items = get_market_news(yf_sym)
+        ai_trade = get_ai_trade_setup(clean_pair, tf, direction, current_price, df, news_items, user_info)
+        if not ai_trade:
+            return None, "AI analysis failed", None
+        
+        chart = create_forecast_chart(df, ai_trade['entry'], ai_trade['sl'], ai_trade['tp'], ai_trade['forecast'])
+        return chart, ai_trade['provider'], ai_trade
+    except Exception as e:
+        return None, str(e), None
+
+# NEW: News impact analysis using AI
+def analyze_news_impact(news_items, user_info):
+    """Use AI to determine which currency pairs are affected by the news."""
+    news_titles = "\n".join([f"- {n['title']}" for n in news_items])
+    prompt = f"""
+    Based on the following recent market news headlines, list the currency pairs (e.g., EUR/USD, GBP/USD, USD/JPY, XAU/USD, BTC/USD) that are likely to be impacted.
+    For each pair, provide a brief reason (in Sinhala) and the expected impact direction (positive or negative).
+    Also include the time of the news if available.
+
+    News:
+    {news_titles}
+
+    Output format (strict):
+    PAIR: [pair] | IMPACT: [positive/negative] | REASON: [Sinhala reason] | TIME: [time if available]
+    Repeat for each pair.
+    """
+    response, provider = call_ai_with_fallback(prompt)
+    return response, provider
+
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
     st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v27.0 (AI-Powered Scanner)</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
@@ -1601,7 +1713,90 @@ else:
             </div>
             """, unsafe_allow_html=True)
         
-        # Recent news or signals preview
+        # NEW: Theory Card (Currency & Timeframe dropdown + Forecast Chart)
+        st.markdown("### 📈 Theory Card - AI Forecast")
+        col_a, col_b, col_c = st.columns([2,2,1])
+        with col_a:
+            selected_pair = st.selectbox(
+                "Currency Pair",
+                options=["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "NZD/USD", "USD/CHF", "BTC/USD", "ETH/USD", "XAU/USD", "XAG/USD"],
+                index=0
+            )
+        with col_b:
+            selected_tf = st.selectbox(
+                "Timeframe",
+                options=["15m", "1h", "4h", "1d"],
+                index=1  # default 1h
+            )
+        with col_c:
+            generate_btn = st.button("🔮 Generate Forecast", type="primary", use_container_width=True)
+        
+        if generate_btn:
+            with st.spinner("Generating AI forecast..."):
+                chart, provider, trade_data = generate_dashboard_forecast(selected_pair, selected_tf, user_info)
+                if chart and trade_data:
+                    st.session_state.dashboard_forecast = chart
+                    st.session_state.dashboard_forecast_provider = provider
+                    st.session_state.dashboard_forecast_data = trade_data
+                else:
+                    st.error(f"Failed to generate forecast: {provider}")
+        
+        if st.session_state.get("dashboard_forecast") is not None:
+            st.plotly_chart(st.session_state.dashboard_forecast, use_container_width=True)
+            # Show provider and progress bar
+            data = st.session_state.dashboard_forecast_data
+            st.caption(f"🤖 AI Provider: {st.session_state.dashboard_forecast_provider}")
+            if data:
+                live = get_live_price(data['pair'])
+                if live:
+                    if data['dir'] == "BUY":
+                        progress = (live - data['entry']) / (data['tp'] - data['entry'])
+                    else:
+                        progress = (data['entry'] - live) / (data['entry'] - data['tp'])
+                    progress = max(0, min(1, progress))
+                    st.progress(progress, text="Progress to Target")
+                st.markdown(f"**Sinhala Summary:** {data.get('sinhala_summary', 'N/A')}")
+        
+        # NEW: Market News with AI Impact Analysis
+        st.markdown("### 📰 Market News & AI Impact Analysis")
+        if st.button("🔄 Refresh News & Analyze Impact"):
+            with st.spinner("Fetching news and analyzing impact..."):
+                all_news = []
+                # Fetch news for major symbols
+                for sym in ["EURUSD=X", "GBPUSD=X", "BTC-USD", "XAUUSD=X"]:
+                    all_news.extend(get_market_news(sym))
+                # Deduplicate by title
+                seen = set()
+                unique_news = []
+                for n in all_news:
+                    if n['title'] not in seen:
+                        seen.add(n['title'])
+                        unique_news.append(n)
+                st.session_state.dashboard_news = unique_news
+                # AI analysis
+                impact_result, provider = analyze_news_impact(unique_news, user_info)
+                st.session_state.news_impact_analysis = impact_result
+                st.session_state.news_impact_provider = provider
+        
+        # Display news cards
+        if st.session_state.get("dashboard_news"):
+            st.subheader("Latest News")
+            for news in st.session_state.dashboard_news[:5]:
+                sentiment_class = get_sentiment_class(news['title'])
+                st.markdown(f"""
+                <div class='news-card {sentiment_class}'>
+                    <a href="{news['link']}" target="_blank" style="color:white; text-decoration:none;">{news['title']}</a>
+                    <span class='news-time'>{news['time']}</span>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # Display AI impact analysis
+        if st.session_state.get("news_impact_analysis"):
+            st.subheader("🔍 AI Impact Analysis (Sinhala)")
+            st.caption(f"Provider: {st.session_state.news_impact_provider}")
+            st.markdown(f"<div class='entry-box'>{st.session_state.news_impact_analysis}</div>", unsafe_allow_html=True)
+        
+        # Recent scanner signals
         st.markdown("### 🔥 Recent Scanner Signals")
         if st.session_state.scan_results['swing'] or st.session_state.scan_results['scalp']:
             col1, col2 = st.columns(2)
@@ -1692,7 +1887,8 @@ else:
                         <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
                         Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
-                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small>
+                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
+                        <small>🇱🇰 {sig.get('sinhala_summary', '')}</small>
                     </div>
                     """, unsafe_allow_html=True)
                 with col2:
@@ -1733,7 +1929,8 @@ else:
                         <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
                         Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
                         Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
-                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small>
+                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
+                        <small>🇱🇰 {sig.get('sinhala_summary', '')}</small>
                     </div>
                     """, unsafe_allow_html=True)
                 with col2:
