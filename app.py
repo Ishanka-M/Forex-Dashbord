@@ -982,7 +982,7 @@ def call_groq(prompt):
         try:
             client = groq.Client(api_key=key)
             completion = client.chat.completions.create(
-                model="deepseek-r1-distill-llama-70b-specdec",
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=1000
