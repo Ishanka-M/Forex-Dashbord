@@ -5,6 +5,7 @@ import puter  # Puter AI for Fallback
 import google.generativeai as genai  # Gemini AI
 import groq  # Groq AI
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
@@ -394,6 +395,8 @@ if "news_impact_analysis" not in st.session_state:
     st.session_state.news_impact_analysis = None
 if "news_impact_provider" not in st.session_state:
     st.session_state.news_impact_provider = None
+if "tech_chart" not in st.session_state:
+    st.session_state.tech_chart = None
 
 # NEW: Groq rate limiting - store timestamps of calls in last 60 seconds
 if "groq_call_timestamps" not in st.session_state:
@@ -1037,7 +1040,7 @@ def call_gemini(prompt):
     for idx, key in enumerate(gemini_keys):
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash-preview')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
@@ -1068,7 +1071,7 @@ def call_groq(prompt):
         try:
             client = groq.Client(api_key=key)
             completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",  # Updated model
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=1000
@@ -1081,21 +1084,43 @@ def call_groq(prompt):
             continue
     return None
 
-def call_ai_with_fallback(prompt):
-    """Try Gemini first, then Groq (with rate limit), then Puter."""
+def call_ai_with_fallback(prompt, user_info=None):
+    """Try Gemini first, then Groq (with rate limit), then Puter, with credit check."""
+    # Credit check
+    if user_info:
+        current_usage = user_info.get("UsageCount", 0)
+        max_limit = user_info.get("HybridLimit", 30)
+        if current_usage >= max_limit and user_info.get("Role") != "Admin":
+            return None, "Daily limit reached (30 credits). Please try again tomorrow."
+    
     # Try Gemini first
     response = call_gemini(prompt)
     if response:
-        return response, "Gemini 3.0"
+        if user_info and user_info.get("Role") != "Admin":
+            new_usage = current_usage + 1
+            user_info["UsageCount"] = new_usage
+            st.session_state.user = user_info
+            update_usage_in_db(user_info["Username"], new_usage)
+        return response, "Gemini 1.5 Flash"
     
     # Try Groq (subject to rate limit)
     response = call_groq(prompt)
     if response:
+        if user_info and user_info.get("Role") != "Admin":
+            new_usage = current_usage + 1
+            user_info["UsageCount"] = new_usage
+            st.session_state.user = user_info
+            update_usage_in_db(user_info["Username"], new_usage)
         return response, "Groq (llama-3.3-70b-versatile)"
     
     # Fallback to Puter
     try:
         puter_resp = puter.ai.chat(prompt)
+        if user_info and user_info.get("Role") != "Admin":
+            new_usage = current_usage + 1
+            user_info["UsageCount"] = new_usage
+            st.session_state.user = user_info
+            update_usage_in_db(user_info["Username"], new_usage)
         return puter_resp.message.content, "Puter AI (Fallback)"
     except:
         return None, "All AI providers failed"
@@ -1175,7 +1200,7 @@ def get_ai_trade_setup(pair, tf, direction, current_price, df_hist, news_items, 
     REASON: [Short reason]
     """
     
-    response, provider = call_ai_with_fallback(prompt)
+    response, provider = call_ai_with_fallback(prompt, user_info)
     if not response:
         return None
     
@@ -1306,7 +1331,7 @@ def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, 
     REASON: [Short reason in English or Sinhala]
     """
 
-    response, provider = call_ai_with_fallback(prompt)
+    response, provider = call_ai_with_fallback(prompt, user_info)
     
     if response:
         new_usage = current_usage + 1
@@ -1404,7 +1429,7 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     if current_usage >= max_limit and user_info["Role"] != "Admin":
         return "Daily limit reached. Please try again tomorrow.", "Limit Reached", None, None
     
-    response, provider = call_ai_with_fallback(prompt)
+    response, provider = call_ai_with_fallback(prompt, user_info)
     
     if response:
         new_usage = current_usage + 1
@@ -1623,6 +1648,79 @@ def create_mini_chart(df, entry_price, sl, tp):
     )
     return fig
 
+# NEW: Technical chart with multiple indicators
+def create_technical_chart(df, tf):
+    """Create a multi-panel chart with indicators."""
+    # Calculate indicators
+    df['MA50'] = df['Close'].rolling(50).mean()
+    df['MA200'] = df['Close'].rolling(200).mean()
+    df['BB_upper'] = df['Close'].rolling(20).mean() + 2*df['Close'].rolling(20).std()
+    df['BB_lower'] = df['Close'].rolling(20).mean() - 2*df['Close'].rolling(20).std()
+    
+    # MACD
+    exp12 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = exp12 - exp26
+    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_hist'] = df['MACD'] - df['Signal']
+    
+    # RSI
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # Support/Resistance (last 20 days high/low)
+    recent_high = df['High'].tail(20).max()
+    recent_low = df['Low'].tail(20).min()
+    
+    # Fibonacci levels from last swing high/low (simplified: use recent_high and recent_low)
+    fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
+    fib_prices = [recent_low + (recent_high - recent_low) * level for level in fib_levels]
+    
+    # Create subplots
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.05,
+                        row_heights=[0.5, 0.15, 0.15, 0.2],
+                        subplot_titles=('Price & Indicators', 'MACD', 'RSI', 'Volume'))
+    
+    # Price candlesticks
+    fig.add_trace(go.Candlestick(x=df.index,
+                                 open=df['Open'], high=df['High'],
+                                 low=df['Low'], close=df['Close'],
+                                 name='Price'), row=1, col=1)
+    # Moving averages
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='orange', width=1), name='MA50'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='blue', width=1), name='MA200'), row=1, col=1)
+    # Bollinger Bands
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_upper'], line=dict(color='gray', width=1, dash='dash'), name='BB Upper'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['BB_lower'], line=dict(color='gray', width=1, dash='dash'), name='BB Lower'), row=1, col=1)
+    # Support/Resistance lines
+    fig.add_hline(y=recent_high, line_dash="dot", line_color="red", annotation_text="Resistance", row=1, col=1)
+    fig.add_hline(y=recent_low, line_dash="dot", line_color="green", annotation_text="Support", row=1, col=1)
+    # Fibonacci levels
+    for price in fib_prices:
+        fig.add_hline(y=price, line_dash="dot", line_color="purple", opacity=0.3, row=1, col=1)
+    
+    # MACD
+    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue'), name='MACD'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['Signal'], line=dict(color='orange'), name='Signal'), row=2, col=1)
+    fig.add_trace(go.Bar(x=df.index, y=df['MACD_hist'], marker_color='gray', name='Histogram'), row=2, col=1)
+    
+    # RSI
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple'), name='RSI'), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    
+    # Volume
+    colors = ['red' if close < open else 'green' for close, open in zip(df['Close'], df['Open'])]
+    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='Volume'), row=4, col=1)
+    
+    fig.update_layout(height=800, template='plotly_dark', showlegend=False)
+    fig.update_xaxes(rangeslider_visible=False)
+    return fig
+
 # ==================== DASHBOARD FUNCTIONS ====================
 def get_major_prices():
     """Get live prices for major forex, crypto, and metals."""
@@ -1653,7 +1751,27 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
             "AUD/USD": "AUDUSD=X",
             "USD/CAD": "USDCAD=X",
             "NZD/USD": "NZDUSD=X",
-            "USD/CHF": "USDCHF=X"
+            "USD/CHF": "USDCHF=X",
+            # Additional Forex pairs
+            "USD/SEK": "USDSEK=X",
+            "USD/NOK": "USDNOK=X",
+            "USD/TRY": "USDTRY=X",
+            "USD/ZAR": "USDZAR=X",
+            "EUR/TRY": "EURTRY=X",
+            "EUR/SEK": "EURSEK=X",
+            "EUR/NOK": "EURNOK=X",
+            "GBP/SEK": "GBPSEK=X",
+            "GBP/NOK": "GBPNOK=X",
+            "AUD/CHF": "AUDCHF=X",
+            "CAD/CHF": "CADCHF=X",
+            "NZD/CHF": "NZDCHF=X",
+            "CHF/JPY": "CHFJPY=X",
+            "EUR/HUF": "EURHUF=X",
+            "USD/HUF": "USDHUF=X",
+            "EUR/PLN": "EURPLN=X",
+            "USD/PLN": "USDPLN=X",
+            "EUR/CZK": "EURCZK=X",
+            "USD/CZK": "USDCZK=X"
         }
     elif market == "Crypto":
         pair_map = {
@@ -1661,7 +1779,27 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
             "ETH/USD": "ETH-USD",
             "SOL/USD": "SOL-USD",
             "BNB/USD": "BNB-USD",
-            "XRP/USD": "XRP-USD"
+            "XRP/USD": "XRP-USD",
+            "ADA/USD": "ADA-USD",
+            "DOGE/USD": "DOGE-USD",
+            "MATIC/USD": "MATIC-USD",
+            "DOT/USD": "DOT-USD",
+            "LINK/USD": "LINK-USD",
+            "AVAX/USD": "AVAX-USD",
+            "UNI/USD": "UNI-USD",
+            "LTC/USD": "LTC-USD",
+            "BCH/USD": "BCH-USD",
+            # Additional Crypto
+            "ALGO/USD": "ALGO-USD",
+            "VET/USD": "VET-USD",
+            "ICP/USD": "ICP-USD",
+            "FIL/USD": "FIL-USD",
+            "AAVE/USD": "AAVE-USD",
+            "AXS/USD": "AXS-USD",
+            "SAND/USD": "SAND-USD",
+            "MANA/USD": "MANA-USD",
+            "EGLD/USD": "EGLD-USD",
+            "THETA/USD": "THETA-USD"
         }
     elif market == "Metals":
         pair_map = {
@@ -1702,41 +1840,25 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
     except Exception as e:
         return None, str(e), None
 
-# NEW: Parse AI impact response into structured data
-def parse_impact_response(text):
-    lines = text.strip().split('\n')
-    data = []
-    for line in lines:
-        match = re.search(r"PAIR:\s*([^\|]+)\s*\|\s*IMPACT:\s*([^\|]+)\s*\|\s*REASON:\s*([^\|]+)\s*\|\s*TIME:\s*(.+)", line, re.IGNORECASE)
-        if match:
-            data.append({
-                "pair": match.group(1).strip(),
-                "impact": match.group(2).strip(),
-                "reason": match.group(3).strip(),
-                "time": match.group(4).strip()
-            })
-    return data
-
-# NEW: News impact analysis using AI (Sinhala output)
-def analyze_news_impact(news_items, user_info):
-    """Use AI to determine which currency pairs are affected by the news."""
+# NEW: News impact analysis using AI (Sinhala output) for a specific pair
+def analyze_news_impact(news_items, target_pair, user_info):
+    """Use AI to determine impact on a specific currency pair."""
     news_titles = "\n".join([f"- {n['title']} (Time: {n['time']})" for n in news_items])
     prompt = f"""
-    Based on the following recent market news headlines (with Colombo times), list the currency pairs (e.g., EUR/USD, GBP/USD, USD/JPY, XAU/USD, BTC/USD) that are likely to be impacted.
-    For each pair, provide a brief reason in SINHALA language and the expected impact direction (positive or negative).
-    Also include the time of the news.
+    Based on the following recent market news headlines (with Colombo times), analyze the impact on {target_pair}.
+    Provide a brief summary in SINHALA language, indicating whether the news is positive, negative, or neutral for {target_pair}, and why.
+    Also mention the time of the news that is most relevant.
 
     News:
     {news_titles}
 
-    Output format (strict):
-    PAIR: [pair] | IMPACT: [positive/negative] | REASON: [Sinhala reason] | TIME: [time]
-    Repeat for each pair.
+    Output format:
+    IMPACT: [positive/negative/neutral]
+    REASON: [Sinhala reason]
+    TIME: [most relevant news time]
     """
-    response, provider = call_ai_with_fallback(prompt)
-    # Parse response into structured data
-    parsed = parse_impact_response(response) if response else []
-    return response, provider, parsed
+    response, provider = call_ai_with_fallback(prompt, user_info)
+    return response, provider
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
@@ -1794,11 +1916,18 @@ else:
         "Forex": [
             "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "USDCAD=X", "NZDUSD=X",
             "EURJPY=X", "GBPJPY=X", "EURGBP=X", "EURCHF=X", "CADJPY=X", "AUDJPY=X", "NZDJPY=X",
-            "GBPAUD=X", "GBPCAD=X", "EURCAD=X", "AUDCAD=X", "AUDNZD=X", "EURNZD=X"
+            "GBPAUD=X", "GBPCAD=X", "EURCAD=X", "AUDCAD=X", "AUDNZD=X", "EURNZD=X",
+            # New additions
+            "USDSEK=X", "USDNOK=X", "USDTRY=X", "USDZAR=X", "EURTRY=X", "EURSEK=X", "EURNOK=X",
+            "GBPSEK=X", "GBPNOK=X", "AUDCHF=X", "CADCHF=X", "NZDCHF=X", "CHFJPY=X", "EURHUF=X",
+            "USDHUF=X", "EURPLN=X", "USDPLN=X", "EURCZK=X", "USDCZK=X"
         ],
         "Crypto": [
             "BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT", "XRP-USDT", "ADA-USDT", "DOGE-USDT",
-            "MATIC-USDT", "DOT-USDT", "LINK-USDT", "AVAX-USDT", "UNI-USDT", "LTC-USDT", "BCH-USDT"
+            "MATIC-USDT", "DOT-USDT", "LINK-USDT", "AVAX-USDT", "UNI-USDT", "LTC-USDT", "BCH-USDT",
+            # New additions
+            "ALGO-USDT", "VET-USDT", "ICP-USDT", "FIL-USDT", "AAVE-USDT", "AXS-USDT", "SAND-USDT",
+            "MANA-USDT", "EGLD-USDT", "THETA-USDT"
         ],
         "Metals": ["XAUUSD=X", "XAGUSD=X", "XPTUSD=X", "XPDUSD=X"]
     }
@@ -1860,7 +1989,7 @@ else:
                 entry = float(trade['Entry'])
                 diff_pct = abs(live - entry) / entry * 100
                 if diff_pct < 0.5:  # within 0.5% of entry
-                    near_entry_trades.append((trade, live))  # store trade and its live price together
+                    near_entry_trades.append((trade, live))
 
         if near_entry_trades:
             for trade, live in near_entry_trades:
@@ -1880,27 +2009,52 @@ else:
             selected_market = st.selectbox(
                 "Market",
                 options=["Forex", "Crypto", "Metals"],
-                index=0
+                index=0,
+                key="theory_market"
             )
         # Define pair options based on market
         if selected_market == "Forex":
-            pair_options = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "NZD/USD", "USD/CHF"]
+            pair_options = [
+                "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "NZD/USD", "USD/CHF",
+                "USD/SEK", "USD/NOK", "USD/TRY", "USD/ZAR", "EUR/TRY", "EUR/SEK", "EUR/NOK",
+                "GBP/SEK", "GBP/NOK", "AUD/CHF", "CAD/CHF", "NZD/CHF", "CHF/JPY", "EUR/HUF",
+                "USD/HUF", "EUR/PLN", "USD/PLN", "EUR/CZK", "USD/CZK"
+            ]
         elif selected_market == "Crypto":
-            pair_options = ["BTC/USD", "ETH/USD", "SOL/USD", "BNB/USD", "XRP/USD"]
+            pair_options = [
+                "BTC/USD", "ETH/USD", "SOL/USD", "BNB/USD", "XRP/USD", "ADA/USD", "DOGE/USD",
+                "MATIC/USD", "DOT/USD", "LINK/USD", "AVAX/USD", "UNI/USD", "LTC/USD", "BCH/USD",
+                "ALGO/USD", "VET/USD", "ICP/USD", "FIL/USD", "AAVE/USD", "AXS/USD", "SAND/USD",
+                "MANA/USD", "EGLD/USD", "THETA/USD"
+            ]
         else:
             pair_options = ["XAU/USD", "XAG/USD", "XPT/USD", "XPD/USD"]
         
         with col_b:
-            selected_pair = st.selectbox("Currency Pair", options=pair_options, index=0)
+            selected_pair = st.selectbox("Currency Pair", options=pair_options, index=0, key="theory_pair")
         with col_c:
             selected_tf = st.selectbox(
                 "Timeframe",
                 options=["15m", "1h", "4h", "1d"],
-                index=1
+                index=1,
+                key="theory_tf"
             )
         with col_d:
             generate_btn = st.button("🔮 Generate Forecast", type="primary", use_container_width=True)
+            tech_btn = st.button("📊 Technical Chart", use_container_width=True)
         
+        # Get yfinance symbol for selected pair (for later use)
+        pair_map = {}
+        if selected_market == "Forex":
+            pair_map = {p: p.replace("/","")+"=X" for p in pair_options}
+            pair_map["USD/SEK"] = "USDSEK=X"  # handle special cases
+        elif selected_market == "Crypto":
+            pair_map = {p: p.replace("/","-")+"USD" for p in pair_options}
+        else:
+            pair_map = {p: p.replace("/","")+"=X" for p in pair_options}
+        yf_sym = pair_map.get(selected_pair, selected_pair)
+        
+        # Generate forecast chart
         if generate_btn:
             with st.spinner("Generating AI forecast..."):
                 chart, provider, trade_data = generate_dashboard_forecast(selected_market, selected_pair, selected_tf, user_info)
@@ -1926,49 +2080,32 @@ else:
                     st.progress(progress, text="Progress to Target")
                 st.markdown(f"**Sinhala Summary:** {data.get('sinhala_summary', 'N/A')}")
         
-        # Market News with AI Impact Analysis (Sinhala)
+        # Generate technical chart
+        if tech_btn:
+            with st.spinner("Generating technical analysis chart..."):
+                period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+                period = period_map.get(selected_tf, "1mo")
+                df_tech = yf.download(yf_sym, period=period, interval=selected_tf, progress=False)
+                if not df_tech.empty and len(df_tech) > 50:
+                    tech_chart = create_technical_chart(df_tech, selected_tf)
+                    st.session_state.tech_chart = tech_chart
+                else:
+                    st.error("Insufficient data for technical chart.")
+        
+        if st.session_state.get("tech_chart") is not None:
+            st.plotly_chart(st.session_state.tech_chart, use_container_width=True)
+        
+        # Market News with AI Impact Analysis (Sinhala) for selected pair
         st.markdown("### 📰 Market News & AI Impact Analysis (Sinhala)")
-        if st.button("🔄 Refresh News & Analyze Impact"):
-            with st.spinner("Fetching news and analyzing impact..."):
-                all_news = []
-                for sym in ["EURUSD=X", "GBPUSD=X", "BTC-USD", "XAUUSD=X"]:
-                    all_news.extend(get_market_news(sym))
-                seen = set()
-                unique_news = []
-                for n in all_news:
-                    if n['title'] not in seen:
-                        seen.add(n['title'])
-                        unique_news.append(n)
-                st.session_state.dashboard_news = unique_news
-                impact_result, provider, parsed_impacts = analyze_news_impact(unique_news, user_info)
+        if st.button(f"🔍 Analyze Impact for {selected_pair}"):
+            with st.spinner(f"Fetching news and analyzing impact on {selected_pair}..."):
+                news_items = get_market_news(yf_sym)
+                impact_result, provider = analyze_news_impact(news_items, selected_pair, user_info)
                 st.session_state.news_impact_analysis = impact_result
                 st.session_state.news_impact_provider = provider
-                st.session_state.parsed_impacts = parsed_impacts
         
-        # Display news cards
-        if st.session_state.get("dashboard_news"):
-            st.subheader("Latest News")
-            for news in st.session_state.dashboard_news[:5]:
-                sentiment_class = get_sentiment_class(news['title'])
-                st.markdown(f"""
-                <div class='news-card {sentiment_class}'>
-                    <a href="{news['link']}" target="_blank" style="color:white; text-decoration:none;">{news['title']}</a>
-                    <span class='news-time'>{news['time']}</span>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Display structured AI impact analysis
-        if st.session_state.get("parsed_impacts"):
-            st.subheader("🔍 AI Impact Analysis (Sinhala)")
-            st.caption(f"Provider: {st.session_state.news_impact_provider}")
-            df_impact = pd.DataFrame(st.session_state.parsed_impacts)
-            st.dataframe(df_impact, use_container_width=True)
-            # Overall impact summary
-            pos_count = len([i for i in st.session_state.parsed_impacts if i['impact'].lower() == 'positive'])
-            neg_count = len([i for i in st.session_state.parsed_impacts if i['impact'].lower() == 'negative'])
-            st.markdown(f"**Overall Market Impact:** Positive: {pos_count} | Negative: {neg_count} | Neutral: {len(st.session_state.parsed_impacts)-pos_count-neg_count}")
-        elif st.session_state.get("news_impact_analysis"):
-            st.subheader("🔍 AI Impact Analysis (Raw)")
+        if st.session_state.get("news_impact_analysis"):
+            st.subheader("🔍 AI Impact Analysis")
             st.caption(f"Provider: {st.session_state.news_impact_provider}")
             st.markdown(f"<div class='entry-box'>{st.session_state.news_impact_analysis}</div>", unsafe_allow_html=True)
         
