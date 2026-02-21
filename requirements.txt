@@ -8,3 +8,7 @@ google-auth
 requests
 numpy
 puter
+groq
+streamlit
+yfinance
+httpx
