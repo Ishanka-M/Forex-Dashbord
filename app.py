@@ -15,29 +15,39 @@ import numpy as np
 import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone import streamlit as st
-from streamlit_lottie import st_lottie
-import requests
+import streamlit as st
 
-def load_lottieurl(url):
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+# Page setup
+st.set_page_config(page_title="System Pro", layout="wide")
 
-# උදාහරණ ඇනිමේෂන් එකක්
-lottie_loading = load_lottieurl("https://assets5.lottiefiles.com/packages/lf20_t9gkkhz4.json")
+# සම්පූර්ණයෙන්ම UI එක clean කරන CSS එක
+hide_style = """
+    <style>
+    /* Header, Footer සහ Main Menu අයින් කිරීම */
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    
+    /* යට තියෙන icons සහ decoration line එක අයින් කිරීම */
+    .stDeployButton {display:none;}
+    div[data-testid="stStatusWidget"] {visibility: hidden;}
+    [data-testid="stDecoration"] {display:none;}
+    
+    /* Mobile එකේදී එන sidebar button එකත් අයින් කිරීමට (අවශ්‍ය නම් පමණක්) */
+    /* [data-testid="bundle--menubar"] {display:none;} */
+    
+    /* Content එක උඩටම ගන්න (Padding අඩු කරන්න) */
+    .block-container {
+        padding-top: 0rem;
+        padding-bottom: 0rem;
+    }
+    </style>
+"""
+st.markdown(hide_style, unsafe_allow_html=True)
 
-st.title("System Pro with Lottie")
-
-# දත්ත Load වන විට ඇනිමේෂන් එක පෙන්වීම
-with st.spinner("Processing..."):
-    st_lottie(lottie_loading, height=200, key="loader")
-    # මෙතන ඔයාගේ API code එක දාන්න
-    import time
-    time.sleep(3)
-
-st.write("Data Loaded!")
-
+# --- ඔයාගේ වැඩේ මෙතන ඉඳන් පටන් ගන්න ---
+st.title("System Pro Live")
+st.write("දැන් ඔයාගේ App එකේ කිසිම Streamlit icon එකක් පේන්නේ නැහැ.")
 
 
 # ඔයාගේ API Connection එක මෙතන තියෙන්න ඕනේ
