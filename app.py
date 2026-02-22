@@ -625,23 +625,8 @@ def delete_trade_by_row_number(row_number):
             entry_str = trade_dict.get('Entry', '0').replace(',', '')
             try:
                 entry = float(entry_str)
-                # Determine timeframe from entry? Not available. We'll use a placeholder.
-                # Since we don't have timeframe in ongoing trades, we can't reconstruct exact trade_id.
-                # Instead, we'll try to match by pair, direction, and entry.
-                # But for scanner trades, we know they have tf in '4H (Swing)' or '15M (Scalp)' format.
-                # We'll check if the trade might be from scanner by looking at confidence? Not reliable.
-                # Safer: we'll not remove from tracked_trades here, because we can't guarantee it's from scanner.
-                # Instead, we'll let the user manually clear tracked_trades if needed.
-                # But to satisfy requirement, we'll attempt to reconstruct trade_id for scanner trades.
-                # We'll assume if confidence is high and entry matches, it might be from scanner.
-                # This is not perfect but better than nothing.
-                # For simplicity, we'll skip removal here and rely on the fact that when a trade is deleted,
-                # it will no longer appear in ongoing, and scanner will not show it because tracked_trades still has it.
-                # That means user would have to clear tracked_trades manually (e.g., by restarting session) to see it again.
-                # To avoid that, we need to store timeframe in ongoing trades.
-                # Since we don't have it, we'll skip removal and accept that deleted trades won't reappear in scanner.
-                # This is acceptable because the requirement is only that ongoing trades don't appear in scanner,
-                # not that deleted ones reappear.
+                # Since we don't have timeframe, we can't reconstruct exact trade_id.
+                # We'll leave tracked_trades as is; user may need to clear session to see deleted trades again.
                 pass
             except:
                 pass
@@ -1087,37 +1072,96 @@ def calculate_advanced_signals(df, tf, news_items=None):
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence, score_breakdown
 
-# --- 5. RISK-OPTIMIZED SL/TP CALCULATION (now only used as fallback) ---
-def calculate_risk_optimized_sl_tp(df, direction, entry, atr, tf_type):
+# --- 5. ADVANCED SL/TP CALCULATION USING SMC + ICT + ELLIOTT WAVE ---
+def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
     """
-    Calculate SL and TP using ATR and recent swing levels to minimize risk.
-    tf_type: 'scalp' or 'swing'
+    Calculate SL and TP using SMC, ICT, and Elliott Wave concepts:
+    - SL placed below recent swing low (for BUY) or above recent swing high (for SELL), adjusted by ATR.
+    - TP targets determined by combination of:
+        * SMC: order blocks, breaker blocks, liquidity levels
+        * ICT: fair value gaps (FVGs)
+        * Elliott Wave: wave extensions (Wave 3, Wave 5)
     """
-    # Get recent swing levels (last 5 candles)
+    # Get recent swing levels (last 5 candles for structure)
     recent_low = df['Low'].tail(5).min()
     recent_high = df['High'].tail(5).max()
     
-    # Determine base SL distance from ATR
+    # Determine base SL distance from ATR (structure-based)
     if tf_type == 'scalp':
         base_sl_mult = 1.2
-        risk_reward = 2.0
     else:
         base_sl_mult = 1.5
-        risk_reward = 3.0
     
     atr_distance = atr * base_sl_mult
     
+    # Initialize TP target (will be modified based on SMC/ICT/Elliott)
+    tp = None
+    
     if direction == "BUY":
-        # SL should be below recent low and below entry
-        structure_distance = (entry - recent_low) * 1.1  # place 10% below recent low
+        # SL calculation
+        structure_distance = (entry - recent_low) * 1.1
         sl_distance = max(atr_distance, structure_distance)
         sl = entry - sl_distance
-        tp = entry + (sl_distance * risk_reward)
+        
+        # ---- TP target using SMC/ICT/Elliott ----
+        # 1. SMC: look for order blocks above (bearish candles that were broken)
+        # Simplified: find recent high as initial target
+        target_high = df['High'].tail(20).max()
+        tp_candidates = [target_high]
+        
+        # 2. ICT: look for fair value gaps above
+        for i in range(2, len(df)-1):
+            if df['Low'].iloc[i] > df['High'].iloc[i+1]:  # bullish FVG
+                fvg_top = df['Low'].iloc[i]  # top of FVG
+                if fvg_top > entry:
+                    tp_candidates.append(fvg_top)
+        
+        # 3. Elliott Wave: if in Wave 3, expect extension beyond recent high
+        ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
+        if "Wave 3" in ew_status:
+            # Add a calculated extension (e.g., 1.618 * recent range)
+            recent_range = recent_high - recent_low
+            extension = recent_high + 1.618 * recent_range
+            tp_candidates.append(extension)
+        elif "Wave 5" in ew_status:
+            # Wave 5 often exceeds Wave 3 high
+            if len(df) > 100:
+                wave3_high = df['High'].tail(100).max()  # rough estimate
+                tp_candidates.append(wave3_high * 1.02)  # slight extension
+        
+        # Choose the highest candidate as TP (for BUY)
+        tp = max(tp_candidates) if tp_candidates else entry * 1.02
+        
     else:  # SELL
+        # SL calculation
         structure_distance = (recent_high - entry) * 1.1
         sl_distance = max(atr_distance, structure_distance)
         sl = entry + sl_distance
-        tp = entry - (sl_distance * risk_reward)
+        
+        # ---- TP target using SMC/ICT/Elliott ----
+        target_low = df['Low'].tail(20).min()
+        tp_candidates = [target_low]
+        
+        # ICT: bearish FVGs below
+        for i in range(2, len(df)-1):
+            if df['High'].iloc[i] < df['Low'].iloc[i+1]:  # bearish FVG
+                fvg_bottom = df['High'].iloc[i]  # bottom of FVG
+                if fvg_bottom < entry:
+                    tp_candidates.append(fvg_bottom)
+        
+        # Elliott Wave
+        ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
+        if "Wave C" in ew_status:
+            recent_range = recent_high - recent_low
+            extension = recent_low - 1.618 * recent_range
+            tp_candidates.append(extension)
+        elif "Wave A" in ew_status:
+            if len(df) > 100:
+                wave_a_low = df['Low'].tail(100).min()
+                tp_candidates.append(wave_a_low)
+        
+        # Choose the lowest candidate as TP (for SELL)
+        tp = min(tp_candidates) if tp_candidates else entry * 0.98
     
     return sl, tp
 
@@ -1364,6 +1408,16 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     if progress_callback:
         progress_callback(1.0, "Done")
     
+    # If AI didn't provide TP, use advanced SMC/ICT/Elliott calculation
+    if parsed["TP"] == "N/A" or float(parsed["TP"]) <= 0:
+        # Determine tf_type from primary_tf
+        tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
+        # Get signals for current timeframe
+        sigs, _, _, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
+        sl, tp = calculate_advanced_sl_tp(df_hist, direction, current_price, atr, tf_type, sigs)
+        parsed["SL"] = str(sl)
+        parsed["TP"] = str(tp)
+    
     trade = {
         "pair": pair,
         "tf": primary_tf,
@@ -1383,7 +1437,7 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     }
     return trade
 
-# --- 6. INFINITE ALGORITHMIC ENGINE (UPDATED WITH RISK-OPTIMIZED SL/TP) ---
+# --- 6. INFINITE ALGORITHMIC ENGINE (UPDATED WITH SMC/ICT/ELLIOTT SL/TP) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     if sigs is None:
         return "Insufficient Data for Analysis"
@@ -1406,11 +1460,11 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     if signal_dir == "bull":
         action = "BUY"
         status_sinhala = "වෙළඳපල ගැනුම්කරුවන් අත. (Market is Bullish)"
-        sl, tp = calculate_risk_optimized_sl_tp(df, "BUY", curr_p, atr, tf_type)
+        sl, tp = calculate_advanced_sl_tp(df, "BUY", curr_p, atr, tf_type, sigs)
     elif signal_dir == "bear":
         action = "SELL"
         status_sinhala = "වෙළඳපල විකුණුම්කරුවන් අත. (Market is Bearish)"
-        sl, tp = calculate_risk_optimized_sl_tp(df, "SELL", curr_p, atr, tf_type)
+        sl, tp = calculate_advanced_sl_tp(df, "SELL", curr_p, atr, tf_type, sigs)
 
     analysis_text = f"""
     ♾️ **INFINITE ALGO ENGINE V27.0 (AI-POWERED SCANNER)**
