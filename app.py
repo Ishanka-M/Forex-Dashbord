@@ -14,9 +14,7 @@ import re
 import numpy as np
 import requests
 import xml.etree.ElementTree as ET
-import pytz  # For Timezone import streamlit as st
- 
-
+import pytz  # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
 st.set_page_config(page_title="Infinite Algo Terminal v27.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
@@ -406,6 +404,18 @@ if "theory_chart" not in st.session_state:
 if "total_api_requests" not in st.session_state:
     st.session_state.total_api_requests = 0
 
+# NEW: Historical data cache
+if "historical_data_cache" not in st.session_state:
+    st.session_state.historical_data_cache = {}  # key -> (df, timestamp)
+
+# NEW: Beginner mode
+if "beginner_mode" not in st.session_state:
+    st.session_state.beginner_mode = False
+
+# NEW: Backtest results
+if "backtest_results" not in st.session_state:
+    st.session_state.backtest_results = None
+
 # Cache for live prices (to avoid rate limits)
 if "price_cache" not in st.session_state:
     st.session_state.price_cache = {}  # clean_pair -> (price, timestamp)
@@ -467,6 +477,45 @@ def get_live_price(clean_pair):
             return None
     except Exception as e:
         print(f"Error fetching price for {clean_pair}: {e}")
+        return None
+
+# --- Historical Data Cache ---
+def get_cached_historical_data(symbol, interval, period=None, start=None, end=None):
+    """
+    Fetch historical data with caching.
+    Cache key is based on symbol, interval, and period (or start/end).
+    Cache expires after 1 hour.
+    """
+    if period:
+        key = f"{symbol}_{interval}_{period}"
+    else:
+        key = f"{symbol}_{interval}_{start}_{end}"
+    
+    current_time = time.time()
+    cache_entry = st.session_state.historical_data_cache.get(key)
+    
+    if cache_entry:
+        df, timestamp = cache_entry
+        if current_time - timestamp < 3600:  # 1 hour cache
+            return df
+    
+    # Download data
+    try:
+        if period:
+            df = yf.download(symbol, period=period, interval=interval, progress=False)
+        else:
+            df = yf.download(symbol, start=start, end=end, interval=interval, progress=False)
+        
+        if df.empty or len(df) < 10:
+            return None
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        st.session_state.historical_data_cache[key] = (df, current_time)
+        return df
+    except Exception as e:
+        print(f"Error downloading {symbol} {interval}: {e}")
         return None
 
 # --- Google Sheets Functions (User DB) ---
@@ -1200,10 +1249,8 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     for tf in timeframes:
         period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
         try:
-            df_tf = yf.download(get_yf_symbol(symbol_orig), period=period_map[tf], interval=tf, progress=False)
-            if not df_tf.empty and len(df_tf) > 50:
-                if isinstance(df_tf.columns, pd.MultiIndex):
-                    df_tf.columns = df_tf.columns.get_level_values(0)
+            df_tf = get_cached_historical_data(get_yf_symbol(symbol_orig), tf, period=period_map[tf])
+            if df_tf is not None and len(df_tf) > 50:
                 sigs, _, conf, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
                 if sigs:
                     tf_signals[tf] = {
@@ -1429,10 +1476,8 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     for tf in timeframes:
         period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
         try:
-            df_tf = yf.download(get_yf_symbol(symbol_orig), period=period_map[tf], interval=tf, progress=False)
-            if not df_tf.empty and len(df_tf) > 50:
-                if isinstance(df_tf.columns, pd.MultiIndex):
-                    df_tf.columns = df_tf.columns.get_level_values(0)
+            df_tf = get_cached_historical_data(get_yf_symbol(symbol_orig), tf, period=period_map[tf])
+            if df_tf is not None and len(df_tf) > 50:
                 sigs, _, _, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
                 if sigs:
                     tf_signals[tf] = {
@@ -1509,6 +1554,109 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     else:
         return "Deep analysis failed.", "Error", None, None
 
+# ==================== BACKTEST FUNCTION ====================
+def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info):
+    """
+    Run backtest over historical data.
+    For each asset in selected market, for each day in range (or each candle), simulate trades.
+    Uses same logic as scan_market_with_ai but on historical data up to that point.
+    This is simplified: we only check signals at the end of each day (using daily data) to avoid too many AI calls.
+    For performance, we limit to last 30 days and use daily timeframe.
+    """
+    assets_list = []
+    if market_choice == "All":
+        assets_list = assets["Forex"] + assets["Crypto"] + assets["Metals"]
+    else:
+        assets_list = assets[market_choice]
+    
+    # For simplicity, use daily timeframe for backtest
+    interval = "1d"
+    # Convert dates to datetime
+    start = datetime.combine(start_date, datetime.min.time())
+    end = datetime.combine(end_date, datetime.max.time())
+    
+    results = []
+    total_trades = 0
+    winning_trades = 0
+    total_profit = 0.0
+    
+    progress_bar = st.progress(0, text="Running backtest...")
+    total_assets = len(assets_list)
+    
+    for idx, symbol in enumerate(assets_list):
+        progress_bar.progress((idx+1)/total_assets, text=f"Backtesting {symbol}...")
+        try:
+            # Fetch historical data for the entire period
+            df = get_cached_historical_data(get_yf_symbol(symbol), interval, start=start, end=end)
+            if df is None or len(df) < 10:
+                continue
+            
+            # For each day, we could simulate a trade if signal appears
+            # To avoid too many AI calls, we'll only consider the last bar of each day (which is the daily close)
+            # Actually, with daily data, each row is a day. We'll loop through rows and check signal at each day's close.
+            # But that would be many AI calls. Let's limit to last 30 days.
+            df = df.tail(30)  # last 30 days
+            for i in range(len(df)-1):  # we need next day's price to simulate exit
+                row = df.iloc[i]
+                current_price = row['Close']
+                # Get signals using data up to this point (including current row)
+                df_up_to_now = df.iloc[:i+1].copy()
+                if len(df_up_to_now) < 50:
+                    continue
+                sigs, atr, conf, _ = calculate_advanced_signals(df_up_to_now, interval, news_items=None)
+                if sigs and abs(conf) > min_accuracy:
+                    direction = "BUY" if conf > 0 else "SELL"
+                    # Get AI trade setup using data up to now
+                    news_items = get_market_news(symbol)  # note: news is current, not historical
+                    # We'll use current news as approximation (hard to get historical news)
+                    ai_trade = get_ai_trade_setup(
+                        clean_pair_to_yf_symbol(symbol).replace("=X","").replace("-USD","").replace("-USDT",""),
+                        interval,
+                        direction,
+                        current_price,
+                        df_up_to_now,
+                        news_items,
+                        user_info
+                    )
+                    if ai_trade and ai_trade['confirmation'] == "APPROVE":
+                        # Simulate trade: enter at next day's open? For simplicity, enter at current close, exit at next close.
+                        next_row = df.iloc[i+1]
+                        exit_price = next_row['Close']
+                        if direction == "BUY":
+                            profit = (exit_price - ai_trade['entry']) / ai_trade['entry']
+                        else:
+                            profit = (ai_trade['entry'] - exit_price) / ai_trade['entry']
+                        total_trades += 1
+                        if profit > 0:
+                            winning_trades += 1
+                        total_profit += profit
+                        results.append({
+                            "symbol": symbol,
+                            "date": row.name,
+                            "direction": direction,
+                            "entry": ai_trade['entry'],
+                            "exit": exit_price,
+                            "profit_pct": profit * 100,
+                            "confidence": ai_trade['conf']
+                        })
+        except Exception as e:
+            print(f"Backtest error for {symbol}: {e}")
+            continue
+    
+    progress_bar.empty()
+    
+    win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+    profit_factor = total_profit / abs(total_profit) if total_profit != 0 else 0  # simplified
+    
+    return {
+        "results": results,
+        "total_trades": total_trades,
+        "winning_trades": winning_trades,
+        "win_rate": win_rate,
+        "total_profit_pct": total_profit * 100,
+        "profit_factor": profit_factor
+    }
+
 # ==================== SESSION DETECTION ====================
 def get_current_session():
     """Return the current trading session based on UTC time."""
@@ -1541,10 +1689,8 @@ def scan_market_with_ai(assets_list, user_info, min_accuracy=40):
     for idx, symbol in enumerate(assets_list):
         swing_progress.progress((idx+1)/total_swing, text=f"Scanning {symbol} for Swing...")
         try:
-            df_sw = yf.download(get_yf_symbol(symbol), period="6mo", interval="4h", progress=False)
-            if not df_sw.empty and len(df_sw) > 50:
-                if isinstance(df_sw.columns, pd.MultiIndex):
-                    df_sw.columns = df_sw.columns.get_level_values(0)
+            df_sw = get_cached_historical_data(get_yf_symbol(symbol), "4h", period="6mo")
+            if df_sw is not None and len(df_sw) > 50:
                 # Use algorithmic signals to get direction and confidence quickly
                 sigs_sw, atr_sw, conf_sw, _ = calculate_advanced_signals(df_sw, "4h", news_items=None)
                 if abs(conf_sw) > min_accuracy:
@@ -1573,10 +1719,8 @@ def scan_market_with_ai(assets_list, user_info, min_accuracy=40):
     for idx, symbol in enumerate(assets_list):
         scalp_progress.progress((idx+1)/total_scalp, text=f"Scanning {symbol} for Scalp...")
         try:
-            df_sc = yf.download(get_yf_symbol(symbol), period="1mo", interval="15m", progress=False)
-            if not df_sc.empty and len(df_sc) > 50:
-                if isinstance(df_sc.columns, pd.MultiIndex):
-                    df_sc.columns = df_sc.columns.get_level_values(0)
+            df_sc = get_cached_historical_data(get_yf_symbol(symbol), "15m", period="1mo")
+            if df_sc is not None and len(df_sc) > 50:
                 sigs_sc, atr_sc, conf_sc, _ = calculate_advanced_signals(df_sc, "15m", news_items=None)
                 if abs(conf_sc) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
@@ -2023,13 +2167,10 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
     
     try:
         update_progress(0.1, "Downloading data...")
-        df = yf.download(yf_sym, period=period, interval=tf, progress=False)
-        if df.empty or len(df) < 50:
+        df = get_cached_historical_data(yf_sym, tf, period=period)
+        if df is None or len(df) < 50:
             progress_bar.empty()
             return None, "Insufficient data", None
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
         
         update_progress(0.3, "Calculating signals...")
         current_price = df['Close'].iloc[-1]
@@ -2107,6 +2248,10 @@ else:
     st.sidebar.title(f"👤 {user_info.get('Username', 'Trader')}")
     st.sidebar.caption(f"Credits: {user_info.get('UsageCount', 0)}/{user_info.get('HybridLimit', 30)}")
     
+    # Beginner mode toggle
+    st.sidebar.checkbox("👶 Beginner Mode", value=st.session_state.beginner_mode, key="beginner_mode_toggle")
+    st.session_state.beginner_mode = st.session_state.beginner_mode_toggle
+    
     # Session dashboard card
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📊 Session Info")
@@ -2127,8 +2272,10 @@ else:
     
     # Navigation
     nav_options = ["Dashboard", "Market Scanner", "Ongoing Trades"]
-    if user_info.get("Role") == "Admin":
+    if user_info.get("Role") == "Admin" and not st.session_state.beginner_mode:
         nav_options.append("Admin Panel")
+    if not st.session_state.beginner_mode:
+        nav_options.append("Backtest")
     app_mode = st.sidebar.radio("Navigation", nav_options)
     
     assets = {
@@ -2262,8 +2409,9 @@ else:
         with col_d:
             generate_btn = st.button("🔮 Generate Forecast", type="primary", use_container_width=True)
         with col_e:
-            tech_btn = st.button("📊 Technical Chart", use_container_width=True)
-            theory_btn = st.button("📐 Theory Chart", use_container_width=True)  # NEW button for theory chart
+            if not st.session_state.beginner_mode:
+                tech_btn = st.button("📊 Technical Chart", use_container_width=True)
+                theory_btn = st.button("📐 Theory Chart", use_container_width=True)  # NEW button for theory chart
         
         # Get yfinance symbol for selected pair (for later use)
         pair_map = {}
@@ -2302,39 +2450,36 @@ else:
                     st.progress(progress, text="Progress to Target")
                 st.markdown(f"**Sinhala Summary:** {data.get('sinhala_summary', 'N/A')}")
         
-        # Generate technical chart
-        if tech_btn:
-            with st.spinner("Generating technical analysis chart..."):
-                period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
-                period = period_map.get(selected_tf, "1mo")
-                df_tech = yf.download(yf_sym, period=period, interval=selected_tf, progress=False)
-                if not df_tech.empty and len(df_tech) > 50:
-                    if isinstance(df_tech.columns, pd.MultiIndex):
-                        df_tech.columns = df_tech.columns.get_level_values(0)
-                    tech_chart = create_technical_chart(df_tech, selected_tf)
-                    st.session_state.tech_chart = tech_chart
-                else:
-                    st.error("Insufficient data for technical chart.")
-        
-        if st.session_state.get("tech_chart") is not None:
-            st.plotly_chart(st.session_state.tech_chart, use_container_width=True)
-        
-        # Generate theory chart (SMC/ICT etc.)
-        if theory_btn:
-            with st.spinner("Generating theory chart (SMC, ICT, Fibonacci, Elliott)..."):
-                period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
-                period = period_map.get(selected_tf, "1mo")
-                df_theory = yf.download(yf_sym, period=period, interval=selected_tf, progress=False)
-                if not df_theory.empty and len(df_theory) > 50:
-                    if isinstance(df_theory.columns, pd.MultiIndex):
-                        df_theory.columns = df_theory.columns.get_level_values(0)
-                    theory_chart = create_theory_chart(df_theory, selected_tf)
-                    st.session_state.theory_chart = theory_chart
-                else:
-                    st.error("Insufficient data for theory chart.")
-        
-        if st.session_state.get("theory_chart") is not None:
-            st.plotly_chart(st.session_state.theory_chart, use_container_width=True)
+        # Generate technical chart (only in expert mode)
+        if not st.session_state.beginner_mode:
+            if 'tech_btn' in locals() and tech_btn:
+                with st.spinner("Generating technical analysis chart..."):
+                    period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+                    period = period_map.get(selected_tf, "1mo")
+                    df_tech = get_cached_historical_data(yf_sym, selected_tf, period=period)
+                    if df_tech is not None and len(df_tech) > 50:
+                        tech_chart = create_technical_chart(df_tech, selected_tf)
+                        st.session_state.tech_chart = tech_chart
+                    else:
+                        st.error("Insufficient data for technical chart.")
+            
+            if st.session_state.get("tech_chart") is not None:
+                st.plotly_chart(st.session_state.tech_chart, use_container_width=True)
+            
+            # Generate theory chart (SMC/ICT etc.)
+            if 'theory_btn' in locals() and theory_btn:
+                with st.spinner("Generating theory chart (SMC, ICT, Fibonacci, Elliott)..."):
+                    period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
+                    period = period_map.get(selected_tf, "1mo")
+                    df_theory = get_cached_historical_data(yf_sym, selected_tf, period=period)
+                    if df_theory is not None and len(df_theory) > 50:
+                        theory_chart = create_theory_chart(df_theory, selected_tf)
+                        st.session_state.theory_chart = theory_chart
+                    else:
+                        st.error("Insufficient data for theory chart.")
+            
+            if st.session_state.get("theory_chart") is not None:
+                st.plotly_chart(st.session_state.theory_chart, use_container_width=True)
         
         # Market News with AI Impact Analysis (Sinhala) for selected pair
         st.markdown("### 📰 Market News & AI Impact Analysis (Sinhala)")
@@ -2447,20 +2592,21 @@ else:
                 with col2:
                     st.progress(progress, text="Approach")
                 with col3:
-                    if st.button("🔍 Deep", key=f"swing_deep_{idx}"):
-                        st.session_state.selected_trade = sig
-                        st.session_state.deep_analysis_result = None
-                        st.session_state.deep_analysis_provider = None
-                        st.session_state.deep_forecast_chart = None
-                        st.session_state.deep_confirmation = None
-                        st.session_state.deep_reason = None
-                        st.rerun()
+                    if not st.session_state.beginner_mode:
+                        if st.button("🔍 Deep", key=f"swing_deep_{idx}"):
+                            st.session_state.selected_trade = sig
+                            st.session_state.deep_analysis_result = None
+                            st.session_state.deep_analysis_provider = None
+                            st.session_state.deep_forecast_chart = None
+                            st.session_state.deep_confirmation = None
+                            st.session_state.deep_reason = None
+                            st.rerun()
                 with col4:
                     # Fetch historical data for mini chart
                     try:
                         symbol_orig = sig.get('symbol_orig', sig['pair'])
-                        df_hist = yf.download(get_yf_symbol(symbol_orig), period="1mo", interval="1h", progress=False)
-                        if not df_hist.empty:
+                        df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), "1h", period="1mo")
+                        if df_hist is not None:
                             mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
                             st.plotly_chart(mini_chart, use_container_width=True)
                     except:
@@ -2499,19 +2645,20 @@ else:
                 with col2:
                     st.progress(progress, text="Approach")
                 with col3:
-                    if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
-                        st.session_state.selected_trade = sig
-                        st.session_state.deep_analysis_result = None
-                        st.session_state.deep_analysis_provider = None
-                        st.session_state.deep_forecast_chart = None
-                        st.session_state.deep_confirmation = None
-                        st.session_state.deep_reason = None
-                        st.rerun()
+                    if not st.session_state.beginner_mode:
+                        if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
+                            st.session_state.selected_trade = sig
+                            st.session_state.deep_analysis_result = None
+                            st.session_state.deep_analysis_provider = None
+                            st.session_state.deep_forecast_chart = None
+                            st.session_state.deep_confirmation = None
+                            st.session_state.deep_reason = None
+                            st.rerun()
                 with col4:
                     try:
                         symbol_orig = sig.get('symbol_orig', sig['pair'])
-                        df_hist = yf.download(get_yf_symbol(symbol_orig), period="1d", interval="15m", progress=False)
-                        if not df_hist.empty:
+                        df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), "15m", period="1d")
+                        if df_hist is not None:
                             mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
                             st.plotly_chart(mini_chart, use_container_width=True)
                     except:
@@ -2519,8 +2666,8 @@ else:
         else:
             st.info("No Scalp setups found.")
         
-        # Deep analysis display
-        if st.session_state.selected_trade:
+        # Deep analysis display (only in expert mode)
+        if not st.session_state.beginner_mode and st.session_state.selected_trade:
             st.markdown("---")
             st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
             
@@ -2534,11 +2681,8 @@ else:
                         else:
                             interval = "15m"
                             period = "1mo"
-                        df_hist = yf.download(get_yf_symbol(symbol_orig), period=period, interval=interval, progress=False)
-                        if not df_hist.empty and len(df_hist) > 10:
-                            if isinstance(df_hist.columns, pd.MultiIndex):
-                                df_hist.columns = df_hist.columns.get_level_values(0)
-                        else:
+                        df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), interval, period=period)
+                        if df_hist is None or len(df_hist) < 10:
                             df_hist = None
                     except:
                         df_hist = None
@@ -2622,10 +2766,11 @@ else:
                         </div>
                         """, unsafe_allow_html=True)
                     with col2:
-                        if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
-                            if delete_trade_by_row_number(trade['row_num']):
-                                st.success("Trade deleted.")
-                                st.rerun()
+                        if not st.session_state.beginner_mode:
+                            if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
+                                if delete_trade_by_row_number(trade['row_num']):
+                                    st.success("Trade deleted.")
+                                    st.rerun()
             else:
                 st.info("No active ongoing trades.")
         
@@ -2660,10 +2805,11 @@ else:
                         </div>
                         """, unsafe_allow_html=True)
                     with col2:
-                        if st.button("🗑️ Delete", key=f"del_closed_{trade['row_num']}"):
-                            if delete_trade_by_row_number(trade['row_num']):
-                                st.success("Trade deleted.")
-                                st.rerun()
+                        if not st.session_state.beginner_mode:
+                            if st.button("🗑️ Delete", key=f"del_closed_{trade['row_num']}"):
+                                if delete_trade_by_row_number(trade['row_num']):
+                                    st.success("Trade deleted.")
+                                    st.rerun()
             else:
                 st.info("No closed trades found in selected date range.")
         
@@ -2731,6 +2877,58 @@ else:
                 st.error("Database Connection Failed")
         else:
             st.error("Access Denied.")
+
+    elif app_mode == "Backtest" and not st.session_state.beginner_mode:
+        st.title("📈 Backtest Engine")
+        
+        st.markdown("<div class='scan-header'><h3>⚙️ Configure Backtest</h3></div>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            market_choice = st.selectbox(
+                "Market",
+                options=["All", "Forex", "Crypto", "Metals"],
+                index=0,
+                key="backtest_market"
+            )
+        with col2:
+            min_acc = st.slider(
+                "Minimum Accuracy (%)",
+                min_value=0,
+                max_value=100,
+                value=st.session_state.min_accuracy,
+                step=5
+            )
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=30))
+        with col4:
+            end_date = st.date_input("End Date", value=datetime.now())
+        
+        if st.button("🚀 Run Backtest", type="primary"):
+            with st.spinner("Running backtest... This may take a while."):
+                results = run_backtest(market_choice, start_date, end_date, min_acc, user_info)
+                st.session_state.backtest_results = results
+        
+        if st.session_state.backtest_results:
+            res = st.session_state.backtest_results
+            st.markdown("---")
+            st.subheader("📊 Backtest Results")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Trades", res['total_trades'])
+            with col2:
+                st.metric("Winning Trades", res['winning_trades'])
+            with col3:
+                st.metric("Win Rate", f"{res['win_rate']:.2f}%")
+            with col4:
+                st.metric("Total Profit %", f"{res['total_profit_pct']:.2f}%")
+            
+            if res['results']:
+                df_res = pd.DataFrame(res['results'])
+                st.dataframe(df_res, use_container_width=True)
 
     # Footer
     st.markdown("---")
