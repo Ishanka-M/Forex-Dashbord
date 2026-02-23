@@ -2847,6 +2847,7 @@ else:
                     
                     # Calculate progress towards target (0 = entry, 1 = TP)
                     progress = 0.5  # default
+                    direction_text = ""
                     if live is not None:
                         try:
                             entry = float(trade['Entry'])
@@ -2855,13 +2856,30 @@ else:
                                 # For BUY: progress = (live - entry) / (tp - entry)
                                 if tp > entry:
                                     progress = (live - entry) / (tp - entry)
+                                # Determine direction
+                                if live < entry:
+                                    direction_text = "⚠️ Moving towards **STOP LOSS**"
+                                elif live > entry:
+                                    direction_text = "✅ Moving towards **TAKE PROFIT**"
+                                else:
+                                    direction_text = "⚖️ At entry level"
                             else:  # SELL
                                 # For SELL: progress = (entry - live) / (entry - tp)
                                 if entry > tp:
                                     progress = (entry - live) / (entry - tp)
+                                # Determine direction
+                                if live > entry:
+                                    direction_text = "⚠️ Moving towards **STOP LOSS**"
+                                elif live < entry:
+                                    direction_text = "✅ Moving towards **TAKE PROFIT**"
+                                else:
+                                    direction_text = "⚖️ At entry level"
                             progress = max(0, min(1, progress))
-                        except:
+                        except Exception as e:
                             progress = 0.5
+                            direction_text = "❌ Error calculating"
+                    else:
+                        direction_text = "❌ Live price unavailable"
                     
                     col1, col2 = st.columns([5,1])
                     with col1:
@@ -2873,8 +2891,9 @@ else:
                             <small>Tracked since: {trade['Timestamp']}</small>
                         </div>
                         """, unsafe_allow_html=True)
-                        # Progress bar
                         st.progress(progress, text="Progress to Target")
+                        st.caption(direction_text)
+                    
                     with col2:
                         if not st.session_state.beginner_mode:
                             if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
