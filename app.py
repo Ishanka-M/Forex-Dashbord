@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
 
 # --- 1. SETUP & STYLE (UPDATED ANIMATIONS & BRANDING) ---
-st.set_page_config(page_title="Infinite Algo Terminal v27.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite Algo Terminal v28.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -366,6 +366,19 @@ st.markdown("""
     body {
         font-family: 'Noto Sans Sinhala', 'Iskoola Pota', 'Arial Unicode MS', sans-serif;
     }
+    
+    /* --- THEORY BADGES --- */
+    .theory-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: bold;
+        margin-right: 4px;
+    }
+    .theory-bull { background: #004d40; color: #00ff00; border: 1px solid #00ff00; }
+    .theory-bear { background: #4a1414; color: #ff4b4b; border: 1px solid #ff4b4b; }
+    .theory-neutral { background: #333; color: #ccc; border: 1px solid #666; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -895,12 +908,13 @@ def get_data_period(tf):
 def calculate_advanced_signals(df, tf, news_items=None):
     """
     Calculate signals using old code weights and include news score.
-    Returns signals dict, atr, confidence, and a detailed score breakdown.
+    Returns signals dict, atr, confidence, score_breakdown, and theory_signals dict.
     """
     if df is None or len(df) < 50:
-        return None, 0, 0, {}
+        return None, 0, 0, {}, {}
     signals = {}
     score_breakdown = {}
+    theory_signals = {}  # NEW: store individual theory signals
     c = df['Close'].iloc[-1]
     h = df['High'].iloc[-1]
     l = df['Low'].iloc[-1]
@@ -921,6 +935,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
         trend_dir = "bear"
         trend_score = -20
     signals['TREND'] = (f"Trend {trend_dir.upper()} (Slope {slope:.2f})", trend_dir)
+    theory_signals['TREND'] = trend_dir
     score_breakdown['Trend'] = trend_score
 
     # --- 2. MACD ---
@@ -957,6 +972,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
         smc_signal = "bear"
         smc_score = -20
     signals['SMC'] = (f"{smc_signal.upper()} Structure/OB", smc_signal)
+    theory_signals['SMC'] = smc_signal
     score_breakdown['SMC'] = smc_score
     
     fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
@@ -964,6 +980,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
     ict_signal = "bull" if fvg_bull else ("bear" if fvg_bear else "neutral")
     ict_score = 10 if ict_signal == "bull" else (-10 if ict_signal == "bear" else 0)
     signals['ICT'] = (f"{ict_signal.upper()} FVG", ict_signal)
+    theory_signals['ICT'] = ict_signal
     score_breakdown['ICT'] = ict_score
 
     # --- 4. LIQUIDITY & SUPPORT/RESISTANCE ---
@@ -984,6 +1001,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
         liq_text = "Liq Grab / Resist"
         liq_score = -15
     signals['LIQ'] = (liq_text, liq_signal)
+    theory_signals['LIQ'] = liq_signal
     score_breakdown['Liquidity'] = liq_score
     
     # --- 5. PATTERNS ---
@@ -999,6 +1017,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
         patt_text = "Bear Engulfing"
         patt_score = -15
     signals['PATT'] = (patt_text, patt_signal)
+    theory_signals['PATT'] = patt_signal
     score_breakdown['Patterns'] = patt_score
     
     # --- 6. BOLLINGER BANDS ---
@@ -1018,6 +1037,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
         bb_text = "Oversold"
         bb_score = 10
     signals['VOLATILITY'] = (bb_text, bb_status)
+    theory_signals['BB'] = bb_status
     score_breakdown['Bollinger'] = bb_score
 
     # --- 7. RSI ---
@@ -1033,6 +1053,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
     elif rsi_val > 70:
         rsi_score = -10 if trend_dir == "bear" else 5
     score_breakdown['RSI'] = rsi_score
+    # RSI not added to theory_signals (not one of the four main theories)
 
     # --- 8. FIBONACCI ---
     ph_fib = df['High'].rolling(50).max().iloc[-1]
@@ -1040,7 +1061,9 @@ def calculate_advanced_signals(df, tf, news_items=None):
     fib_range = ph_fib - pl_fib
     fib_618 = ph_fib - (fib_range * 0.618)
     fib_score = 10 if abs(c - fib_618) < (c * 0.001) else 0
-    signals['FIB'] = ("Golden Zone", "bull") if abs(c - fib_618) < (c * 0.001) else ("Ranging", "neutral")
+    fib_signal = "bull" if abs(c - fib_618) < (c * 0.001) else "neutral"
+    signals['FIB'] = ("Golden Zone", fib_signal) if fib_signal=="bull" else ("Ranging", "neutral")
+    theory_signals['FIB'] = fib_signal
     score_breakdown['Fibonacci'] = fib_score
     
     # --- 9. ELLIOTT WAVE ---
@@ -1072,6 +1095,7 @@ def calculate_advanced_signals(df, tf, news_items=None):
             ew_status, ew_col = "Wave B (Rally)", "neutral"
             ew_score = 0
     signals['ELLIOTT'] = (ew_status, ew_col)
+    theory_signals['ELLIOTT'] = ew_col
     score_breakdown['Elliott'] = ew_score
 
     # --- 10. CONFIDENCE SCORING (OLD CODE STYLE) ---
@@ -1095,14 +1119,14 @@ def calculate_advanced_signals(df, tf, news_items=None):
     signals['SK'] = (f"CONFIDENCE: {abs(confidence)}%", final_signal)
 
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
-    return signals, atr, confidence, score_breakdown
+    return signals, atr, confidence, score_breakdown, theory_signals
 
-# --- 5. ADVANCED SL/TP CALCULATION USING ALL SIGNALS (SKS THEORY) ---
-def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
+# --- 5. ADVANCED SL/TP CALCULATION USING ALL SIGNALS (SKS THEORY) WITH PARTIAL CLOSE LEVELS ---
+def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals, theory_signals):
     """
     Calculate SL and TP using all signals from the engine (SKS Theory):
     - Trend, MACD, SMC, ICT, Liquidity, Patterns, Bollinger, RSI, Fibonacci, Elliott.
-    Compares multiple candidates and selects the optimal level based on confluence and distance.
+    Returns sl, tp1, tp2, tp3 (partial close levels).
     """
     # Get recent swing levels (last 5 candles for structure)
     recent_low = df['Low'].tail(5).min()
@@ -1170,7 +1194,7 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         # Choose the most conservative SL (highest price for SELL)
         sl = max(sl_candidates)
     
-    # --- TP Calculation using all signals ---
+    # --- TP Calculation with partial close levels (tp1, tp2, tp3) ---
     tp_candidates = []
     
     if direction == "BUY":
@@ -1240,12 +1264,18 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         # Remove duplicates and sort ascending
         unique_candidates = sorted(set(tp_candidates))
         
-        # Select the best TP: closest to entry among those above entry
+        # Select the best TPs: closest to entry, then next levels
         valid_candidates = [c for c in unique_candidates if c > entry]
         if valid_candidates:
-            tp = min(valid_candidates, key=lambda x: abs(x - entry))
+            # Sort by distance to entry
+            valid_candidates.sort(key=lambda x: abs(x - entry))
+            tp1 = valid_candidates[0]
+            tp2 = valid_candidates[1] if len(valid_candidates) > 1 else tp1 * 1.01  # fallback
+            tp3 = valid_candidates[2] if len(valid_candidates) > 2 else tp2 * 1.01
         else:
-            tp = entry * 1.02  # fallback
+            tp1 = entry * 1.02
+            tp2 = entry * 1.03
+            tp3 = entry * 1.05
     
     else:  # SELL
         # 1. SMC: recent low
@@ -1311,20 +1341,21 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         
         valid_candidates = [c for c in unique_candidates if c < entry]
         if valid_candidates:
-            # Closest to entry (most probable)
-            tp = max(valid_candidates, key=lambda x: abs(x - entry))  # this gives closest? Actually we want min absolute diff
-            # Better:
-            tp = min(valid_candidates, key=lambda x: abs(x - entry))
+            valid_candidates.sort(key=lambda x: abs(x - entry))
+            tp1 = valid_candidates[0]
+            tp2 = valid_candidates[1] if len(valid_candidates) > 1 else tp1 * 0.99
+            tp3 = valid_candidates[2] if len(valid_candidates) > 2 else tp2 * 0.99
         else:
-            tp = entry * 0.98  # fallback
+            tp1 = entry * 0.98
+            tp2 = entry * 0.97
+            tp3 = entry * 0.95
     
-    return sl, tp
+    return sl, tp1, tp2, tp3
 
-# --- 6. ENGINE-BASED FORECAST GENERATION ---
-def generate_engine_forecast(df, direction, entry, tp, signals):
+# --- 6. ENGINE-BASED FORECAST GENERATION (with partial closes) ---
+def generate_engine_forecast(df, direction, entry, tp1, tp2, tp3, signals):
     """
-    Generate a forecast string based on engine analysis.
-    Uses recent price action, trend, and target levels.
+    Generate a forecast string based on engine analysis including partial close levels.
     """
     # Get current price
     current_price = df['Close'].iloc[-1]
@@ -1335,19 +1366,17 @@ def generate_engine_forecast(df, direction, entry, tp, signals):
     # Get Elliott Wave status
     ew_status = signals.get('ELLIOTT', ("Wave Analysis", "neutral"))[0]
     
-    # Calculate distance to TP
+    # Calculate distances to TPs
     if direction == "BUY":
-        distance_to_tp = ((tp - current_price) / current_price) * 100
-        if distance_to_tp > 0:
-            forecast = f"📈 Bullish: Expected to rise towards {tp:.5f} (≈{distance_to_tp:.2f}% gain). {trend}. {ew_status}."
-        else:
-            forecast = f"⚠️ Price already above TP? Current: {current_price:.5f}, TP: {tp:.5f}. {trend}."
+        dist1 = ((tp1 - current_price) / current_price) * 100
+        dist2 = ((tp2 - current_price) / current_price) * 100
+        dist3 = ((tp3 - current_price) / current_price) * 100
+        forecast = f"📈 Bullish: Target 1: {tp1:.5f} ({dist1:.2f}%), Target 2: {tp2:.5f} ({dist2:.2f}%), Target 3: {tp3:.5f} ({dist3:.2f}%). {trend}. {ew_status}."
     else:  # SELL
-        distance_to_tp = ((current_price - tp) / current_price) * 100
-        if distance_to_tp > 0:
-            forecast = f"📉 Bearish: Expected to fall towards {tp:.5f} (≈{distance_to_tp:.2f}% gain). {trend}. {ew_status}."
-        else:
-            forecast = f"⚠️ Price already below TP? Current: {current_price:.5f}, TP: {tp:.5f}. {trend}."
+        dist1 = ((current_price - tp1) / current_price) * 100
+        dist2 = ((current_price - tp2) / current_price) * 100
+        dist3 = ((current_price - tp3) / current_price) * 100
+        forecast = f"📉 Bearish: Target 1: {tp1:.5f} ({dist1:.2f}%), Target 2: {tp2:.5f} ({dist2:.2f}%), Target 3: {tp3:.5f} ({dist3:.2f}%). {trend}. {ew_status}."
     
     return forecast
 
@@ -1577,7 +1606,7 @@ def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items
 def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
     """
     Get AI-generated trade setup - now only for news confirmation.
-    Entry, SL, TP, and forecast are engine-generated.
+    Entry, SL, TP1, TP2, TP3, and forecast are engine-generated.
     Entry is based on Fibonacci pullback levels.
     """
     if df_hist is None or df_hist.empty:
@@ -1594,7 +1623,9 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
         progress_callback(0.5, "Calculating engine signals...")
     
     # Get signals for current timeframe
-    sigs, atr, conf, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
+    sigs, atr, conf, _, theory_signals = calculate_advanced_signals(df_hist, primary_tf, news_items)
+    if sigs is None:
+        return None
     
     # --- Entry Optimization using Fibonacci ---
     # Calculate Fibonacci levels from recent swing (last 50 candles)
@@ -1630,12 +1661,12 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     
     final_entry = optimized_entry
     
-    # Calculate SL and TP using engine (SMC+Elliott+ICT)
+    # Calculate SL and TPs using engine (SMC+Elliott+ICT)
     tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
-    sl, tp = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs)
+    sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs, theory_signals)
     
-    # Generate engine-based forecast
-    engine_forecast = generate_engine_forecast(df_hist, direction, final_entry, tp, sigs)
+    # Generate engine-based forecast with partial close levels
+    engine_forecast = generate_engine_forecast(df_hist, direction, final_entry, tp1, tp2, tp3, sigs)
     
     trade = {
         "pair": pair,
@@ -1643,8 +1674,11 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
         "dir": direction,
         "entry": final_entry,
         "sl": sl,
-        "tp": tp,
+        "tp1": tp1,
+        "tp2": tp2,
+        "tp3": tp3,
         "conf": ai_result['confidence'],  # AI news confidence
+        "engine_conf": abs(conf),  # engine confidence (positive number)
         "price": current_price,
         "live_price": get_live_price(pair) or current_price,
         "symbol_orig": clean_pair_to_yf_symbol(pair),
@@ -1655,12 +1689,13 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
         "provider": ai_result['provider'],
         "sinhala_summary": ai_result['sinhala_summary'],
         "entry_source": entry_source,
-        "timeframe": primary_tf.split()[0]  # for display
+        "timeframe": primary_tf.split()[0],  # for display
+        "theory_signals": theory_signals  # store per-theory signals
     }
     return trade
 
 # --- 7. INFINITE ALGORITHMIC ENGINE (UPDATED WITH SMC/ICT/ELLIOTT SL/TP) ---
-def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
+def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df, theory_signals):
     if sigs is None:
         return "Insufficient Data for Analysis"
     
@@ -1677,19 +1712,19 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
 
     action = "WAIT"
     status_sinhala = "ප්‍රවේශම් වන්න. වෙළඳපල අවිනිශ්චිතයි."
-    sl, tp = 0, 0
+    sl, tp1, tp2, tp3 = 0, 0, 0, 0
     
     if signal_dir == "bull":
         action = "BUY"
         status_sinhala = "වෙළඳපල ගැනුම්කරුවන් අත. (Market is Bullish)"
-        sl, tp = calculate_advanced_sl_tp(df, "BUY", curr_p, atr, tf_type, sigs)
+        sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df, "BUY", curr_p, atr, tf_type, sigs, theory_signals)
     elif signal_dir == "bear":
         action = "SELL"
         status_sinhala = "වෙළඳපල විකුණුම්කරුවන් අත. (Market is Bearish)"
-        sl, tp = calculate_advanced_sl_tp(df, "SELL", curr_p, atr, tf_type, sigs)
+        sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df, "SELL", curr_p, atr, tf_type, sigs, theory_signals)
 
     analysis_text = f"""
-    ♾️ **INFINITE ALGO ENGINE V27.0 (AI-POWERED SCANNER)**
+    ♾️ **INFINITE ALGO ENGINE V28.0 (AI-POWERED SCANNER)**
     
     📊 **වෙළඳපල විශ්ලේෂණය ({tf}):**
     • Trade Type: {trade_mode}
@@ -1701,16 +1736,16 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     💡 **නිගමනය:**
     {status_sinhala}
     
-    DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP={tp:.5f}
+    DATA: ENTRY={curr_p:.5f} | SL={sl:.5f} | TP1={tp1:.5f} | TP2={tp2:.5f} | TP3={tp3:.5f}
     """
     return analysis_text
 
 # --- 8. HYBRID AI ENGINE WITH CONFIRMATION (uses new AI call) ---
-def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, df):
+def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, df, theory_signals):
     if sigs is None:
         return "Error: Insufficient Signal Data", "System Error", None, None
     
-    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf, df)
+    algo_result = infinite_algorithmic_engine(pair, asset_data['price'], sigs, news_items, atr, tf, df, theory_signals)
     
     current_usage = user_info.get("UsageCount", 0)
     max_limit = user_info.get("HybridLimit", 30)
@@ -1789,14 +1824,15 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
         try:
             df_tf = get_cached_historical_data(get_yf_symbol(symbol_orig), tf, period=period_map[tf])
             if df_tf is not None and len(df_tf) > 50:
-                sigs, _, _, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
+                sigs, _, _, _, theory = calculate_advanced_signals(df_tf, tf, news_items=None)
                 if sigs:
                     tf_signals[tf] = {
                         "trend": sigs['TREND'][0],
                         "smc": sigs['SMC'][0],
                         "rsi": sigs['RSI'][0],
                         "signal": sigs['SK'][1].upper(),
-                        "confidence": sigs['SK'][0]
+                        "confidence": sigs['SK'][0],
+                        "theory": theory
                     }
         except Exception as e:
             print(f"Error fetching {tf} data for {pair}: {e}")
@@ -1815,7 +1851,9 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     **Direction:** {trade['dir']}
     **Entry:** {trade['entry']:.5f}
     **Stop Loss:** {trade['sl']:.5f}
-    **Take Profit:** {trade['tp']:.5f}
+    **Take Profit 1:** {trade['tp1']:.5f}
+    **Take Profit 2:** {trade['tp2']:.5f}
+    **Take Profit 3:** {trade['tp3']:.5f}
     **Confidence:** {trade['conf']}%
     **Current Live Price:** {live_price:.5f}
     
@@ -1914,7 +1952,7 @@ def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info, a
                 df_up_to_now = df.iloc[:i+1].copy()
                 if len(df_up_to_now) < 50:
                     continue
-                sigs, atr, conf, _ = calculate_advanced_signals(df_up_to_now, interval, news_items=None)
+                sigs, atr, conf, _, theory = calculate_advanced_signals(df_up_to_now, interval, news_items=None)
                 if sigs and abs(conf) > min_accuracy:
                     direction = "BUY" if conf > 0 else "SELL"
                     # Get AI trade setup using data up to now
@@ -2014,7 +2052,7 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                     continue
                 
                 # Use algorithmic signals to get direction and confidence quickly
-                sigs, atr, conf, _ = calculate_advanced_signals(df, tf, news_items=None)
+                sigs, atr, conf, _, theory = calculate_advanced_signals(df, tf, news_items=None)
                 if sigs and abs(conf) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
                     direction = "BUY" if conf > 0 else "SELL"
@@ -2051,8 +2089,8 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
     
     return all_trades
 
-# --- FORECAST CHART FUNCTION (unchanged) ---
-def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
+# --- FORECAST CHART FUNCTION (with multiple TP levels) ---
+def create_forecast_chart(historical_df, entry_price, sl, tp1, tp2, tp3, forecast_text, sinhala_summary):
     hist = historical_df.tail(30).copy()
     last_date = hist.index[-1]
     if isinstance(last_date, pd.Timestamp):
@@ -2069,14 +2107,12 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
     else:
         future_dates = list(range(len(hist), len(hist)+15))
     
-    if tp > entry_price:
-        target = tp
+    if tp1 > entry_price:
         direction = "bullish"
     else:
-        target = tp
         direction = "bearish"
     
-    forecast_prices = np.linspace(entry_price, target, len(future_dates))
+    forecast_prices = np.linspace(entry_price, tp3, len(future_dates))
     
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
@@ -2100,8 +2136,12 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
                   annotation_text="Entry", annotation_position="bottom right")
     fig.add_hline(y=sl, line_dash="dash", line_color="#ff4b4b",
                   annotation_text="SL", annotation_position="bottom right")
-    fig.add_hline(y=tp, line_dash="dash", line_color="#00ff00",
-                  annotation_text="TP", annotation_position="top right")
+    fig.add_hline(y=tp1, line_dash="dash", line_color="#00ff00",
+                  annotation_text="TP1", annotation_position="top right")
+    fig.add_hline(y=tp2, line_dash="dash", line_color="#00cc00",
+                  annotation_text="TP2", annotation_position="top right")
+    fig.add_hline(y=tp3, line_dash="dash", line_color="#009900",
+                  annotation_text="TP3", annotation_position="top right")
     
     if forecast_text and forecast_text != 'N/A':
         fig.add_annotation(
@@ -2122,11 +2162,27 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
             ay=-30
         )
     
+    # Add Sinhala summary as a subtitle
+    fig.add_annotation(
+        x=0.5,
+        y=1.1,
+        xref="paper",
+        yref="paper",
+        text=f"🇱🇰 {sinhala_summary}",
+        showarrow=False,
+        font=dict(size=14, color="#00ff99"),
+        align="center",
+        bgcolor="rgba(30,30,30,0.9)",
+        bordercolor="#00ff99",
+        borderwidth=1,
+        borderpad=8
+    )
+    
     fig.update_layout(
-        title=f"AI Forecast & Projection ({direction.capitalize()})",
+        title=f"AI Forecast & Partial Close Levels ({direction.capitalize()})",
         template="plotly_dark",
-        height=400,
-        margin=dict(l=0, r=0, t=40, b=0),
+        height=500,
+        margin=dict(l=0, r=0, t=80, b=0),
         xaxis_title="Time",
         yaxis_title="Price",
         hovermode="x unified",
@@ -2137,8 +2193,8 @@ def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
     )
     return fig
 
-# NEW: Small chart for trade card
-def create_mini_chart(df, entry_price, sl, tp):
+# NEW: Small chart for trade card (showing entry, SL, TP1, TP2, TP3)
+def create_mini_chart(df, entry_price, sl, tp1, tp2, tp3):
     """Create a small line chart for trade card."""
     hist = df.tail(20).copy()
     fig = go.Figure()
@@ -2151,7 +2207,9 @@ def create_mini_chart(df, entry_price, sl, tp):
     ))
     fig.add_hline(y=entry_price, line_dash="dash", line_color="#ffff00", line_width=1)
     fig.add_hline(y=sl, line_dash="dash", line_color="#ff4b4b", line_width=1)
-    fig.add_hline(y=tp, line_dash="dash", line_color="#00ff00", line_width=1)
+    fig.add_hline(y=tp1, line_dash="dash", line_color="#00ff00", line_width=1)
+    fig.add_hline(y=tp2, line_dash="dash", line_color="#00cc00", line_width=1)
+    fig.add_hline(y=tp3, line_dash="dash", line_color="#009900", line_width=1)
     fig.update_layout(
         template="plotly_dark",
         height=100,
@@ -2480,7 +2538,7 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
         update_progress(0.3, "Calculating signals...")
         current_price = df['Close'].iloc[-1]
         # Get simple signal direction
-        sigs, atr, conf, _ = calculate_advanced_signals(df, tf, news_items=None)
+        sigs, atr, conf, _, theory = calculate_advanced_signals(df, tf, news_items=None)
         direction = "BUY" if conf > 0 else "SELL" if conf < 0 else "NEUTRAL"
         if direction == "NEUTRAL":
             direction = "BUY"  # default to buy for forecast
@@ -2495,7 +2553,7 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
             return None, "AI analysis failed", None
         
         update_progress(0.9, "Creating forecast chart...")
-        chart = create_forecast_chart(df, ai_trade['entry'], ai_trade['sl'], ai_trade['tp'], ai_trade['forecast'])
+        chart = create_forecast_chart(df, ai_trade['entry'], ai_trade['sl'], ai_trade['tp1'], ai_trade['tp2'], ai_trade['tp3'], ai_trade['forecast'], ai_trade.get('sinhala_summary', ''))
         
         progress_bar.progress(1.0, "Done")
         time.sleep(0.5)
@@ -2527,7 +2585,7 @@ def analyze_news_impact(news_items, target_pair, user_info):
 
 # --- 7. MAIN APPLICATION ---
 if not st.session_state.logged_in:
-    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v27.0 (AI-Powered Scanner)</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v28.0 (AI-Powered Scanner)</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -2748,11 +2806,11 @@ else:
                 live = get_live_price(data['pair'])
                 if live:
                     if data['dir'] == "BUY":
-                        progress = (live - data['entry']) / (data['tp'] - data['entry'])
+                        progress = (live - data['entry']) / (data['tp3'] - data['entry'])
                     else:
-                        progress = (data['entry'] - live) / (data['entry'] - data['tp'])
+                        progress = (data['entry'] - live) / (data['entry'] - data['tp3'])
                     progress = max(0, min(1, progress))
-                    st.progress(progress, text="Progress to Target")
+                    st.progress(progress, text="Progress to Final Target")
                 st.markdown(f"**Sinhala Summary:** {data.get('sinhala_summary', 'N/A')}")
         
         # Generate technical chart (only in expert mode)
@@ -2903,6 +2961,14 @@ else:
                         
                         conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
                         
+                        # Theory badges
+                        theory = sig.get('theory_signals', {})
+                        theory_badges = ""
+                        for th, val in theory.items():
+                            if th in ['SMC', 'ICT', 'FIB', 'ELLIOTT']:
+                                cls = "theory-bull" if val == "bull" else "theory-bear" if val == "bear" else "theory-neutral"
+                                theory_badges += f"<span class='theory-badge {cls}'>{th}</span> "
+                        
                         col1, col2, col3, col4 = st.columns([3,1,1,2])
                         with col1:
                             color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
@@ -2910,10 +2976,12 @@ else:
                             st.markdown(f"""
                             <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
                                 <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
-                                Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                                Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
+                                Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f}<br>
+                                TP1: {sig['tp1']:.4f} | TP2: {sig['tp2']:.4f} | TP3: {sig['tp3']:.4f}<br>
+                                Live: {sig['live_price']:.4f} | AI News Conf: {sig['conf']}% | Engine Conf: {sig.get('engine_conf', 'N/A')}%<br>
                                 <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
-                                <small>🇱🇰 {sig.get('sinhala_summary', '')}</small>
+                                <small>🇱🇰 {sig.get('sinhala_summary', '')}</small><br>
+                                {theory_badges}
                             </div>
                             """, unsafe_allow_html=True)
                         with col2:
@@ -2935,7 +3003,7 @@ else:
                                 period = get_period_for_tf(tf)
                                 df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), tf, period=period)
                                 if df_hist is not None:
-                                    mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
+                                    mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp1'], sig['tp2'], sig['tp3'])
                                     st.plotly_chart(mini_chart, use_container_width=True)
                             except:
                                 st.write("Chart N/A")
@@ -2975,8 +3043,11 @@ else:
                             df_hist,
                             st.session_state.selected_trade['entry'],
                             st.session_state.selected_trade['sl'],
-                            st.session_state.selected_trade['tp'],
-                            forecast_text
+                            st.session_state.selected_trade['tp1'],
+                            st.session_state.selected_trade['tp2'],
+                            st.session_state.selected_trade['tp3'],
+                            forecast_text,
+                            st.session_state.selected_trade.get('sinhala_summary', '')
                         )
                         st.session_state.deep_forecast_chart = chart
                     else:
@@ -3042,17 +3113,17 @@ else:
                     live = get_live_price(pair)
                     live_display = f"{live:.4f}" if live else "N/A"
                     
-                    # Calculate progress towards target (0 = entry, 1 = TP)
+                    # Calculate progress towards target (0 = entry, 1 = TP3)
                     progress = 0.5  # default
                     direction_text = ""
                     if live is not None:
                         try:
                             entry = float(trade['Entry'])
-                            tp = float(trade['TP'])
+                            tp3 = float(trade['TP'])  # TP stored in ongoing trades is the main TP? We need to adapt. For now, assume TP is the final target.
+                            # We don't have partial TPs in ongoing trades sheet, so we'll just use the stored TP.
                             if trade['Direction'] == "BUY":
-                                # For BUY: progress = (live - entry) / (tp - entry)
-                                if tp > entry:
-                                    progress = (live - entry) / (tp - entry)
+                                if tp3 > entry:
+                                    progress = (live - entry) / (tp3 - entry)
                                 # Determine direction
                                 if live < entry:
                                     direction_text = "⚠️ Moving towards **STOP LOSS**"
@@ -3061,10 +3132,8 @@ else:
                                 else:
                                     direction_text = "⚖️ At entry level"
                             else:  # SELL
-                                # For SELL: progress = (entry - live) / (entry - tp)
-                                if entry > tp:
-                                    progress = (entry - live) / (entry - tp)
-                                # Determine direction
+                                if entry > tp3:
+                                    progress = (entry - live) / (entry - tp3)
                                 if live > entry:
                                     direction_text = "⚠️ Moving towards **STOP LOSS**"
                                 elif live < entry:
@@ -3080,8 +3149,6 @@ else:
                     
                     # Get forecast from trade
                     forecast = trade.get('Forecast', 'No forecast available')
-                    confirmation = trade.get('confirmation', 'N/A')
-                    reason = trade.get('reason', '')
                     
                     col1, col2 = st.columns([5,1])
                     with col1:
@@ -3096,11 +3163,6 @@ else:
                         # Progress bar
                         st.progress(progress, text="Progress to Target")
                         st.caption(direction_text)
-                        # AI News Confirmation
-                        if confirmation != 'N/A':
-                            st.info(f"🔮 AI News Confirmation: {confirmation} - {reason}")
-                        else:
-                            st.info(f"🔮 AI News Confirmation: No news analysis available - Using technical signals")
                         st.caption(f"📊 Engine Forecast: {forecast}")
                     
                     with col2:
@@ -3271,7 +3333,7 @@ else:
 
     # Footer
     st.markdown("---")
-    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v27.0 (AI-Powered Scanner) | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
+    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v28.0 (AI-Powered Scanner) | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
 
     if auto_refresh:
         time.sleep(60)
