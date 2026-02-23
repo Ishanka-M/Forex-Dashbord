@@ -1072,19 +1072,18 @@ def calculate_advanced_signals(df, tf, news_items=None):
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence, score_breakdown
 
-# --- 5. ADVANCED SL/TP CALCULATION USING SMC + ICT + ELLIOTT WAVE ---
+# --- 5. ADVANCED SL/TP CALCULATION USING SMC + ICT + ELLIOTT WAVE + FIBONACCI ---
 def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
     """
-    Calculate SL and TP using SMC, ICT, and Elliott Wave concepts:
-    - SL placed below recent swing low (for BUY) or above recent swing high (for SELL), adjusted by ATR.
-    - TP targets determined by combination of:
-        * SMC: order blocks, breaker blocks, liquidity levels
-        * ICT: fair value gaps (FVGs)
-        * Elliott Wave: wave extensions (Wave 3, Wave 5)
+    Calculate SL and TP using SMC, ICT, Elliott Wave, and Fibonacci concepts.
+    Compares multiple candidates and selects the optimal level based on confluence and distance.
     """
     # Get recent swing levels (last 5 candles for structure)
     recent_low = df['Low'].tail(5).min()
     recent_high = df['High'].tail(5).max()
+    
+    # Get recent range for Fibonacci extensions
+    recent_range = recent_high - recent_low
     
     # Determine base SL distance from ATR (structure-based)
     if tf_type == 'scalp':
@@ -1094,78 +1093,118 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
     
     atr_distance = atr * base_sl_mult
     
-    # Initialize TP target (will be modified based on SMC/ICT/Elliott)
-    tp = None
+    # --- SL Calculation (compare structure vs ATR) ---
+    if direction == "BUY":
+        # Structure-based SL: below recent low
+        structure_sl = recent_low - (recent_low * 0.001)  # just below recent low
+        structure_distance = entry - structure_sl
+        # ATR-based SL
+        atr_sl = entry - atr_distance
+        atr_sl_distance = atr_distance
+        # Choose the most conservative SL (largest distance for BUY means lowest price)
+        if structure_sl < atr_sl:
+            sl = structure_sl
+            sl_distance = structure_distance
+        else:
+            sl = atr_sl
+            sl_distance = atr_sl_distance
+    else:  # SELL
+        structure_sl = recent_high + (recent_high * 0.001)  # just above recent high
+        structure_distance = structure_sl - entry
+        atr_sl = entry + atr_distance
+        atr_sl_distance = atr_distance
+        if structure_sl > atr_sl:
+            sl = structure_sl
+            sl_distance = structure_distance
+        else:
+            sl = atr_sl
+            sl_distance = atr_sl_distance
+    
+    # --- TP Calculation (compare multiple candidates) ---
+    tp_candidates = []
     
     if direction == "BUY":
-        # SL calculation
-        structure_distance = (entry - recent_low) * 1.1
-        sl_distance = max(atr_distance, structure_distance)
-        sl = entry - sl_distance
+        # 1. SMC: recent high
+        smc_tp = df['High'].tail(20).max()
+        tp_candidates.append(smc_tp)
         
-        # ---- TP target using SMC/ICT/Elliott ----
-        # 1. SMC: look for order blocks above (bearish candles that were broken)
-        # Simplified: find recent high as initial target
-        target_high = df['High'].tail(20).max()
-        tp_candidates = [target_high]
-        
-        # 2. ICT: look for fair value gaps above
+        # 2. ICT: Fair Value Gaps above
         for i in range(2, len(df)-1):
             if df['Low'].iloc[i] > df['High'].iloc[i+1]:  # bullish FVG
                 fvg_top = df['Low'].iloc[i]  # top of FVG
                 if fvg_top > entry:
                     tp_candidates.append(fvg_top)
         
-        # 3. Elliott Wave: if in Wave 3, expect extension beyond recent high
+        # 3. Elliott Wave extensions
         ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
         if "Wave 3" in ew_status:
-            # Add a calculated extension (e.g., 1.618 * recent range)
-            recent_range = recent_high - recent_low
-            extension = recent_high + 1.618 * recent_range
-            tp_candidates.append(extension)
+            # Fibonacci extension 1.618 of recent range
+            fib_1618 = recent_high + 1.618 * recent_range
+            tp_candidates.append(fib_1618)
         elif "Wave 5" in ew_status:
-            # Wave 5 often exceeds Wave 3 high
+            # Wave 5 often extends 1.272 of Wave 3
             if len(df) > 100:
-                wave3_high = df['High'].tail(100).max()  # rough estimate
-                tp_candidates.append(wave3_high * 1.02)  # slight extension
+                wave3_high = df['High'].tail(100).max()
+                fib_1272 = wave3_high + 0.272 * recent_range
+                tp_candidates.append(fib_1272)
         
-        # Choose the highest candidate as TP (for BUY)
-        tp = max(tp_candidates) if tp_candidates else entry * 1.02
+        # 4. Fibonacci extensions from entry
+        fib_levels = [1.272, 1.382, 1.618]
+        for level in fib_levels:
+            fib_tp = entry + level * recent_range
+            tp_candidates.append(fib_tp)
         
+        # Remove duplicates and sort ascending
+        unique_candidates = sorted(set(tp_candidates))
+        
+        # Select the best TP: closest to entry among those above entry
+        valid_candidates = [c for c in unique_candidates if c > entry]
+        if valid_candidates:
+            tp = min(valid_candidates, key=lambda x: abs(x - entry))
+        else:
+            tp = entry * 1.02  # fallback
+    
     else:  # SELL
-        # SL calculation
-        structure_distance = (recent_high - entry) * 1.1
-        sl_distance = max(atr_distance, structure_distance)
-        sl = entry + sl_distance
+        # 1. SMC: recent low
+        smc_tp = df['Low'].tail(20).min()
+        tp_candidates.append(smc_tp)
         
-        # ---- TP target using SMC/ICT/Elliott ----
-        target_low = df['Low'].tail(20).min()
-        tp_candidates = [target_low]
-        
-        # ICT: bearish FVGs below
+        # 2. ICT: Fair Value Gaps below
         for i in range(2, len(df)-1):
             if df['High'].iloc[i] < df['Low'].iloc[i+1]:  # bearish FVG
                 fvg_bottom = df['High'].iloc[i]  # bottom of FVG
                 if fvg_bottom < entry:
                     tp_candidates.append(fvg_bottom)
         
-        # Elliott Wave
+        # 3. Elliott Wave extensions
         ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
         if "Wave C" in ew_status:
-            recent_range = recent_high - recent_low
-            extension = recent_low - 1.618 * recent_range
-            tp_candidates.append(extension)
+            fib_1618 = recent_low - 1.618 * recent_range
+            tp_candidates.append(fib_1618)
         elif "Wave A" in ew_status:
             if len(df) > 100:
                 wave_a_low = df['Low'].tail(100).min()
                 tp_candidates.append(wave_a_low)
         
-        # Choose the lowest candidate as TP (for SELL)
-        tp = min(tp_candidates) if tp_candidates else entry * 0.98
+        # 4. Fibonacci extensions from entry
+        fib_levels = [1.272, 1.382, 1.618]
+        for level in fib_levels:
+            fib_tp = entry - level * recent_range
+            tp_candidates.append(fib_tp)
+        
+        # Remove duplicates and sort descending
+        unique_candidates = sorted(set(tp_candidates), reverse=True)
+        
+        # Select the best TP: closest to entry among those below entry
+        valid_candidates = [c for c in unique_candidates if c < entry]
+        if valid_candidates:
+            tp = max(valid_candidates, key=lambda x: abs(x - entry))  # closest below entry
+        else:
+            tp = entry * 0.98  # fallback
     
     return sl, tp
-    
-    # ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ + PUTER (KEY ROTATION) ====================
+
+# ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ + PUTER (KEY ROTATION) ====================
 
 def call_gemini(prompt):
     """Try Gemini API with key rotation (7 keys). Returns response text or None."""
@@ -1408,23 +1447,91 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     if progress_callback:
         progress_callback(1.0, "Done")
     
-    # If AI didn't provide TP, use advanced SMC/ICT/Elliott calculation
-    if parsed["TP"] == "N/A" or float(parsed["TP"]) <= 0:
-        # Determine tf_type from primary_tf
-        tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
-        # Get signals for current timeframe
-        sigs, _, _, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
-        sl, tp = calculate_advanced_sl_tp(df_hist, direction, current_price, atr, tf_type, sigs)
-        parsed["SL"] = str(sl)
-        parsed["TP"] = str(tp)
+    # --- Entry Optimization (compare AI entry with OB/FVG) ---
+    # Get signals for current timeframe to find best entry levels
+    sigs, _, _, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
+    
+    optimized_entry = None
+    entry_source = "AI"
+    
+    if direction == "BUY":
+        # Look for bullish OB or FVG near AI entry
+        best_level = None
+        best_distance = float('inf')
+        
+        # Check recent bullish order blocks (last 10 candles)
+        for i in range(10, len(df_hist)-1):
+            # Simple OB detection: bearish candle followed by bullish breakout
+            if df_hist['Close'].iloc[i-1] < df_hist['Open'].iloc[i-1]:  # bearish candle
+                if df_hist['Close'].iloc[i] > df_hist['High'].iloc[i-1]:  # breakout
+                    ob_level = df_hist['High'].iloc[i-1]  # top of OB
+                    if ob_level < current_price * 1.01:  # within 1% of current price
+                        dist = abs(ob_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_level = ob_level
+        
+        # Check FVGs
+        for i in range(2, len(df_hist)-1):
+            if df_hist['Low'].iloc[i] > df_hist['High'].iloc[i+1]:  # bullish FVG
+                fvg_level = df_hist['Low'].iloc[i]  # top of FVG
+                if fvg_level < current_price * 1.01:
+                    dist = abs(fvg_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                    if dist < best_distance:
+                        best_distance = dist
+                        best_level = fvg_level
+        
+        if best_level and best_distance < (current_price * 0.002):  # within 0.2%
+            optimized_entry = best_level
+            entry_source = "SMC/ICT"
+    
+    else:  # SELL
+        best_level = None
+        best_distance = float('inf')
+        
+        # Bearish order blocks
+        for i in range(10, len(df_hist)-1):
+            if df_hist['Close'].iloc[i-1] > df_hist['Open'].iloc[i-1]:  # bullish candle
+                if df_hist['Close'].iloc[i] < df_hist['Low'].iloc[i-1]:  # breakdown
+                    ob_level = df_hist['Low'].iloc[i-1]  # bottom of OB
+                    if ob_level > current_price * 0.99:
+                        dist = abs(ob_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                        if dist < best_distance:
+                            best_distance = dist
+                            best_level = ob_level
+        
+        # Bearish FVGs
+        for i in range(2, len(df_hist)-1):
+            if df_hist['High'].iloc[i] < df_hist['Low'].iloc[i+1]:  # bearish FVG
+                fvg_level = df_hist['High'].iloc[i]  # bottom of FVG
+                if fvg_level > current_price * 0.99:
+                    dist = abs(fvg_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                    if dist < best_distance:
+                        best_distance = dist
+                        best_level = fvg_level
+        
+        if best_level and best_distance < (current_price * 0.002):
+            optimized_entry = best_level
+            entry_source = "SMC/ICT"
+    
+    # Use optimized entry if found, otherwise use AI entry
+    final_entry = optimized_entry if optimized_entry is not None else (float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+    
+    # TP optimization (using the new calculate_advanced_sl_tp)
+    tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
+    sl, tp = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs)
+    
+    # Override AI SL/TP with optimized ones
+    final_sl = sl
+    final_tp = tp
     
     trade = {
         "pair": pair,
         "tf": primary_tf,
         "dir": direction,
-        "entry": float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price,
-        "sl": float(parsed["SL"]) if parsed["SL"] != "N/A" else (current_price * 0.99 if direction == "BUY" else current_price * 1.01),
-        "tp": float(parsed["TP"]) if parsed["TP"] != "N/A" else (current_price * 1.01 if direction == "BUY" else current_price * 0.99),
+        "entry": final_entry,
+        "sl": final_sl,
+        "tp": final_tp,
         "conf": confidence,
         "price": current_price,
         "live_price": get_live_price(pair) or current_price,
@@ -1433,7 +1540,8 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
         "confirmation": confirmation,
         "reason": reason,
         "provider": provider,
-        "sinhala_summary": sinhala_summary
+        "sinhala_summary": sinhala_summary,
+        "entry_source": entry_source  # for debugging/info
     }
     return trade
 
@@ -2054,6 +2162,8 @@ def create_technical_chart(df, tf):
     fig.update_layout(height=800, template='plotly_dark', showlegend=False)
     fig.update_xaxes(rangeslider_visible=False)
     return fig
+
+
 
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - FINAL CORRECTED VERSION
 def create_theory_chart(df, tf):
@@ -2891,6 +3001,7 @@ else:
                             <small>Tracked since: {trade['Timestamp']}</small>
                         </div>
                         """, unsafe_allow_html=True)
+                        # Progress bar
                         st.progress(progress, text="Progress to Target")
                         st.caption(direction_text)
                     
@@ -3067,4 +3178,3 @@ else:
     if auto_refresh:
         time.sleep(60)
         st.rerun()
-    
