@@ -1164,8 +1164,8 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         tp = min(tp_candidates) if tp_candidates else entry * 0.98
     
     return sl, tp
-
-# ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ + PUTER (KEY ROTATION) ====================
+    
+    # ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ + PUTER (KEY ROTATION) ====================
 
 def call_gemini(prompt):
     """Try Gemini API with key rotation (7 keys). Returns response text or None."""
@@ -1643,8 +1643,8 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     else:
         return "Deep analysis failed.", "Error", None, None
 
-# ==================== BACKTEST FUNCTION ====================
-def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info):
+# ==================== BACKTEST FUNCTION (CORRECTED) ====================
+def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info, assets_dict):
     """
     Run backtest over historical data.
     For each asset in selected market, for each day in range (or each candle), simulate trades.
@@ -1654,9 +1654,9 @@ def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info):
     """
     assets_list = []
     if market_choice == "All":
-        assets_list = assets["Forex"] + assets["Crypto"] + assets["Metals"]
+        assets_list = assets_dict["Forex"] + assets_dict["Crypto"] + assets_dict["Metals"]
     else:
-        assets_list = assets[market_choice]
+        assets_list = assets_dict[market_choice]
     
     # For simplicity, use daily timeframe for backtest
     interval = "1d"
@@ -1698,6 +1698,7 @@ def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info):
                     # Get AI trade setup using data up to now
                     news_items = get_market_news(symbol)  # note: news is current, not historical
                     # We'll use current news as approximation (hard to get historical news)
+                    # For backtest, we pass user_info (which may be None) but get_ai_trade_setup handles it
                     ai_trade = get_ai_trade_setup(
                         clean_pair_to_yf_symbol(symbol).replace("=X","").replace("-USD","").replace("-USDT",""),
                         interval,
@@ -1705,7 +1706,7 @@ def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info):
                         current_price,
                         df_up_to_now,
                         news_items,
-                        user_info
+                        user_info  # Pass the current user_info (may be None, but function handles)
                     )
                     if ai_trade and ai_trade['confirmation'] == "APPROVE":
                         # Simulate trade: enter at next day's open? For simplicity, enter at current close, exit at next close.
@@ -1735,7 +1736,8 @@ def run_backtest(market_choice, start_date, end_date, min_accuracy, user_info):
     progress_bar.empty()
     
     win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-    profit_factor = total_profit / abs(total_profit) if total_profit != 0 else 0  # simplified
+    # Simplified profit factor (total profit / absolute total profit) - not accurate, but placeholder
+    profit_factor = total_profit / abs(total_profit) if total_profit != 0 else 0
     
     return {
         "results": results,
@@ -2052,8 +2054,6 @@ def create_technical_chart(df, tf):
     fig.update_layout(height=800, template='plotly_dark', showlegend=False)
     fig.update_xaxes(rangeslider_visible=False)
     return fig
-
-
 
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - FINAL CORRECTED VERSION
 def create_theory_chart(df, tf):
@@ -2845,6 +2845,24 @@ else:
                     live = get_live_price(pair)
                     live_display = f"{live:.4f}" if live else "N/A"
                     
+                    # Calculate progress towards target (0 = entry, 1 = TP)
+                    progress = 0.5  # default
+                    if live is not None:
+                        try:
+                            entry = float(trade['Entry'])
+                            tp = float(trade['TP'])
+                            if trade['Direction'] == "BUY":
+                                # For BUY: progress = (live - entry) / (tp - entry)
+                                if tp > entry:
+                                    progress = (live - entry) / (tp - entry)
+                            else:  # SELL
+                                # For SELL: progress = (entry - live) / (entry - tp)
+                                if entry > tp:
+                                    progress = (entry - live) / (entry - tp)
+                            progress = max(0, min(1, progress))
+                        except:
+                            progress = 0.5
+                    
                     col1, col2 = st.columns([5,1])
                     with col1:
                         st.markdown(f"""
@@ -2855,6 +2873,8 @@ else:
                             <small>Tracked since: {trade['Timestamp']}</small>
                         </div>
                         """, unsafe_allow_html=True)
+                        # Progress bar
+                        st.progress(progress, text="Progress to Target")
                     with col2:
                         if not st.session_state.beginner_mode:
                             if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
@@ -2998,7 +3018,8 @@ else:
         
         if st.button("🚀 Run Backtest", type="primary"):
             with st.spinner("Running backtest... This may take a while."):
-                results = run_backtest(market_choice, start_date, end_date, min_acc, user_info)
+                # Pass the global assets dictionary to the function
+                results = run_backtest(market_choice, start_date, end_date, min_acc, st.session_state.user, assets)
                 st.session_state.backtest_results = results
         
         if st.session_state.backtest_results:
@@ -3027,3 +3048,4 @@ else:
     if auto_refresh:
         time.sleep(60)
         st.rerun()
+    
