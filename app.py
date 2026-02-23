@@ -1097,11 +1097,12 @@ def calculate_advanced_signals(df, tf, news_items=None):
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence, score_breakdown
 
-# --- 5. ADVANCED SL/TP CALCULATION USING SMC + ICT + ELLIOTT WAVE + FIBONACCI ---
+# --- 5. ADVANCED SL/TP CALCULATION USING ALL SIGNALS (SKS THEORY) ---
 def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
     """
-    Calculate SL and TP using SMC, ICT, Elliott Wave, and Fibonacci concepts.
-    Compares multiple candidates and selects the farthest level (max profit).
+    Calculate SL and TP using all signals from the engine (SKS Theory):
+    - Trend, MACD, SMC, ICT, Liquidity, Patterns, Bollinger, RSI, Fibonacci, Elliott.
+    Compares multiple candidates and selects the optimal level based on confluence and distance.
     """
     # Get recent swing levels (last 5 candles for structure)
     recent_low = df['Low'].tail(5).min()
@@ -1118,7 +1119,16 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
     
     atr_distance = atr * base_sl_mult
     
-    # --- SL Calculation (compare structure vs ATR) ---
+    # --- SL Calculation (enhanced with RSI and Patterns) ---
+    # Extract numeric values from signals
+    rsi_val_str = signals.get('RSI', ("RSI: 50", "neutral"))[0]
+    rsi_num = 50
+    rsi_match = re.search(r'RSI:\s*(\d+)', rsi_val_str)
+    if rsi_match:
+        rsi_num = int(rsi_match.group(1))
+    
+    pattern = signals.get('PATT', ("No Pattern", "neutral"))[0]
+    
     if direction == "BUY":
         # Structure-based SL: below recent low
         structure_sl = recent_low - (recent_low * 0.001)  # just below recent low
@@ -1126,26 +1136,41 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         # ATR-based SL
         atr_sl = entry - atr_distance
         atr_sl_distance = atr_distance
-        # Choose the most conservative SL (largest distance for BUY means lowest price)
-        if structure_sl < atr_sl:
-            sl = structure_sl
-            sl_distance = structure_distance
-        else:
-            sl = atr_sl
-            sl_distance = atr_sl_distance
+        
+        sl_candidates = [structure_sl, atr_sl]
+        
+        # Adjust based on RSI (if oversold, bullish momentum - tighter SL)
+        if rsi_num < 30:
+            # Oversold, can have tighter SL
+            sl_candidates.append(entry - atr_distance * 0.8)
+        
+        # Adjust based on pattern
+        if "Bull Engulfing" in pattern:
+            # Strong bullish pattern, can have wider SL to allow for retracement
+            sl_candidates.append(entry - atr_distance * 1.2)
+        
+        # Choose the most conservative SL (lowest price for BUY)
+        sl = min(sl_candidates)
+        
     else:  # SELL
         structure_sl = recent_high + (recent_high * 0.001)  # just above recent high
         structure_distance = structure_sl - entry
         atr_sl = entry + atr_distance
         atr_sl_distance = atr_distance
-        if structure_sl > atr_sl:
-            sl = structure_sl
-            sl_distance = structure_distance
-        else:
-            sl = atr_sl
-            sl_distance = atr_sl_distance
+        
+        sl_candidates = [structure_sl, atr_sl]
+        
+        if rsi_num > 70:
+            # Overbought, bearish momentum - tighter SL
+            sl_candidates.append(entry + atr_distance * 0.8)
+        
+        if "Bear Engulfing" in pattern:
+            sl_candidates.append(entry + atr_distance * 1.2)
+        
+        # Choose the most conservative SL (highest price for SELL)
+        sl = max(sl_candidates)
     
-    # --- TP Calculation (compare multiple candidates, take farthest) ---
+    # --- TP Calculation using all signals ---
     tp_candidates = []
     
     if direction == "BUY":
@@ -1163,31 +1188,64 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         # 3. Elliott Wave extensions
         ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
         if "Wave 3" in ew_status:
-            # Fibonacci extension 1.618 of recent range
             fib_1618 = recent_high + 1.618 * recent_range
             tp_candidates.append(fib_1618)
         elif "Wave 5" in ew_status:
-            # Wave 5 often extends 1.272 of Wave 3
             if len(df) > 100:
                 wave3_high = df['High'].tail(100).max()
                 fib_1272 = wave3_high + 0.272 * recent_range
                 tp_candidates.append(fib_1272)
         
-        # 4. Fibonacci extensions from entry
+        # 4. Fibonacci levels
+        # Golden Zone (0.618 retracement) - can be target
+        fib_zone = recent_high - 0.618 * recent_range
+        if fib_zone > entry:
+            tp_candidates.append(fib_zone)
+        
+        # Fibonacci extensions from entry
         fib_levels = [1.272, 1.382, 1.618]
         for level in fib_levels:
             fib_tp = entry + level * recent_range
             tp_candidates.append(fib_tp)
         
+        # 5. Bollinger Bands
+        bb_upper = df['Close'].rolling(20).mean() + 2 * df['Close'].rolling(20).std()
+        tp_candidates.append(bb_upper.iloc[-1])
+        
+        # 6. RSI
+        if rsi_num > 70:
+            # Overbought, might reverse soon, so take profit near recent high
+            tp_candidates.append(recent_high * 0.99)  # slightly below recent high
+        
+        # 7. Trend line resistance (simplified: use recent high)
+        trend_resistance = recent_high
+        tp_candidates.append(trend_resistance)
+        
+        # 8. MACD
+        macd_signal = signals.get('MACD', ("", "neutral"))[1]
+        if macd_signal == "bear":
+            # MACD turning bearish, might not go too far
+            tp_candidates.append(entry + recent_range * 0.5)  # moderate target
+        
+        # 9. Liquidity level (recent high from 30 candles)
+        liq_high = df['High'].tail(30).max()
+        tp_candidates.append(liq_high)
+        
+        # 10. Patterns target
+        if "Bull Engulfing" in pattern:
+            candle_height = df['High'].iloc[-1] - df['Low'].iloc[-1]
+            pattern_tp = entry + candle_height * 1.5
+            tp_candidates.append(pattern_tp)
+        
         # Remove duplicates and sort ascending
         unique_candidates = sorted(set(tp_candidates))
         
-        # Select the best TP: the farthest above entry (maximum profit)
+        # Select the best TP: closest to entry among those above entry
         valid_candidates = [c for c in unique_candidates if c > entry]
         if valid_candidates:
-            tp = max(valid_candidates)  # highest level for max profit
+            tp = min(valid_candidates, key=lambda x: abs(x - entry))
         else:
-            tp = entry * 1.05  # fallback 5%
+            tp = entry * 1.02  # fallback
     
     else:  # SELL
         # 1. SMC: recent low
@@ -1211,21 +1269,54 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
                 wave_a_low = df['Low'].tail(100).min()
                 tp_candidates.append(wave_a_low)
         
-        # 4. Fibonacci extensions from entry
+        # 4. Fibonacci levels
+        fib_zone = recent_low + 0.618 * recent_range
+        if fib_zone < entry:
+            tp_candidates.append(fib_zone)
+        
         fib_levels = [1.272, 1.382, 1.618]
         for level in fib_levels:
             fib_tp = entry - level * recent_range
             tp_candidates.append(fib_tp)
         
+        # 5. Bollinger Bands
+        bb_lower = df['Close'].rolling(20).mean() - 2 * df['Close'].rolling(20).std()
+        tp_candidates.append(bb_lower.iloc[-1])
+        
+        # 6. RSI
+        if rsi_num < 30:
+            tp_candidates.append(recent_low * 1.01)  # slightly above recent low
+        
+        # 7. Trend line support
+        trend_support = recent_low
+        tp_candidates.append(trend_support)
+        
+        # 8. MACD
+        macd_signal = signals.get('MACD', ("", "neutral"))[1]
+        if macd_signal == "bull":
+            tp_candidates.append(entry - recent_range * 0.5)
+        
+        # 9. Liquidity level
+        liq_low = df['Low'].tail(30).min()
+        tp_candidates.append(liq_low)
+        
+        # 10. Patterns target
+        if "Bear Engulfing" in pattern:
+            candle_height = df['High'].iloc[-1] - df['Low'].iloc[-1]
+            pattern_tp = entry - candle_height * 1.5
+            tp_candidates.append(pattern_tp)
+        
         # Remove duplicates and sort descending
         unique_candidates = sorted(set(tp_candidates), reverse=True)
         
-        # Select the best TP: the farthest below entry (maximum profit)
         valid_candidates = [c for c in unique_candidates if c < entry]
         if valid_candidates:
-            tp = min(valid_candidates)  # lowest level for max profit
+            # Closest to entry (most probable)
+            tp = max(valid_candidates, key=lambda x: abs(x - entry))  # this gives closest? Actually we want min absolute diff
+            # Better:
+            tp = min(valid_candidates, key=lambda x: abs(x - entry))
         else:
-            tp = entry * 0.95  # fallback 5%
+            tp = entry * 0.98  # fallback
     
     return sl, tp
 
@@ -1372,24 +1463,30 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
         return None, "All AI providers failed"
 
 def parse_ai_response(text):
+    """Robust parser for AI response."""
     data = {"CONFIDENCE": "N/A", "FORECAST": "N/A", "SINHALA_SUMMARY": "N/A", "CONFIRMATION": "N/A", "REASON": "N/A"}
     try:
+        # Confidence
         conf_match = re.search(r"CONFIDENCE\s*[:=]\s*(\d+)", text, re.IGNORECASE)
         if conf_match:
             data["CONFIDENCE"] = conf_match.group(1)
         
-        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
+        # Forecast
+        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n[A-Z]|$)", text, re.IGNORECASE | re.DOTALL)
         if forecast_match:
             data["FORECAST"] = forecast_match.group(1).strip()
         
+        # Sinhala summary
         sinhala_match = re.search(r"SINHALA_SUMMARY\s*[:=]\s*(.+)", text, re.IGNORECASE)
         if sinhala_match:
             data["SINHALA_SUMMARY"] = sinhala_match.group(1).strip()
         
+        # Confirmation
         confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", text, re.IGNORECASE)
         if confirm_match:
             data["CONFIRMATION"] = confirm_match.group(1).upper()
         
+        # Reason
         reason_match = re.search(r"REASON\s*:\s*(.+)", text, re.IGNORECASE)
         if reason_match:
             data["REASON"] = reason_match.group(1).strip()
@@ -1401,6 +1498,7 @@ def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items
     """
     Get AI confirmation based on news analysis only.
     Returns confirmation, confidence, reason, sinhala summary.
+    If AI fails, falls back to default values.
     """
     if df_hist is None or df_hist.empty:
         return None
@@ -1437,18 +1535,40 @@ def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items
     if progress_callback:
         progress_callback(0.3, "Calling AI for news analysis...")
     response, provider = call_ai_with_fallback(prompt, user_info, progress_callback)
+    
+    # Default values in case AI fails
+    default_conf = 50
+    default_forecast = "No news available for analysis."
+    default_sinhala = "ප්‍රවෘත්ති නොමැත."
+    default_confirmation = "APPROVE"  # Default to approve if no news
+    default_reason = "No news data; relying on technical analysis."
+    
     if not response:
-        return None
+        if progress_callback:
+            progress_callback(1.0, "AI failed, using default confirmation")
+        return {
+            "confidence": default_conf,
+            "forecast": default_forecast,
+            "sinhala_summary": default_sinhala,
+            "confirmation": default_confirmation,
+            "reason": default_reason,
+            "provider": "Fallback"
+        }
     
     parsed = parse_ai_response(response)
+    
+    # If parsed confirmation is N/A, use default
+    if parsed["CONFIRMATION"] == "N/A":
+        parsed["CONFIRMATION"] = default_confirmation
+        parsed["REASON"] = default_reason + " " + parsed.get("REASON", "")
     
     if progress_callback:
         progress_callback(1.0, "Done")
     
     return {
-        "confidence": int(parsed["CONFIDENCE"]) if parsed["CONFIDENCE"] != "N/A" else 50,
-        "forecast": parsed["FORECAST"],
-        "sinhala_summary": parsed["SINHALA_SUMMARY"],
+        "confidence": int(parsed["CONFIDENCE"]) if parsed["CONFIDENCE"] != "N/A" else default_conf,
+        "forecast": parsed["FORECAST"] if parsed["FORECAST"] != "N/A" else default_forecast,
+        "sinhala_summary": parsed["SINHALA_SUMMARY"] if parsed["SINHALA_SUMMARY"] != "N/A" else default_sinhala,
         "confirmation": parsed["CONFIRMATION"],
         "reason": parsed["REASON"],
         "provider": provider
@@ -2960,6 +3080,8 @@ else:
                     
                     # Get forecast from trade
                     forecast = trade.get('Forecast', 'No forecast available')
+                    confirmation = trade.get('confirmation', 'N/A')
+                    reason = trade.get('reason', '')
                     
                     col1, col2 = st.columns([5,1])
                     with col1:
@@ -2974,8 +3096,11 @@ else:
                         # Progress bar
                         st.progress(progress, text="Progress to Target")
                         st.caption(direction_text)
-                        # AI Forecast Notification
-                        st.info(f"🔮 AI News Confirmation: {trade.get('confirmation', 'N/A')} - {trade.get('reason', '')}")
+                        # AI News Confirmation
+                        if confirmation != 'N/A':
+                            st.info(f"🔮 AI News Confirmation: {confirmation} - {reason}")
+                        else:
+                            st.info(f"🔮 AI News Confirmation: No news analysis available - Using technical signals")
                         st.caption(f"📊 Engine Forecast: {forecast}")
                     
                     with col2:
