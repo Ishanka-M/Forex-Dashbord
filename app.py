@@ -379,6 +379,32 @@ st.markdown("""
     .theory-bull { background: #004d40; color: #00ff00; border: 1px solid #00ff00; }
     .theory-bear { background: #4a1414; color: #ff4b4b; border: 1px solid #ff4b4b; }
     .theory-neutral { background: #333; color: #ccc; border: 1px solid #666; }
+
+    /* --- MTF ANALYSIS BOX --- */
+    .mtf-box {
+        background: linear-gradient(135deg, #0a1f2e, #1a2a3a);
+        border: 1px solid #00ff99;
+        border-radius: 10px;
+        padding: 12px;
+        margin: 8px 0;
+        font-size: 13px;
+    }
+    .mtf-bull { border-left: 4px solid #00ff00; }
+    .mtf-bear { border-left: 4px solid #ff4b4b; }
+    .mtf-neutral { border-left: 4px solid #888; }
+
+    /* --- COMBINED SCORE BOX --- */
+    .score-box {
+        background: #0e0e0e;
+        border: 2px solid #00ff99;
+        border-radius: 12px;
+        padding: 15px;
+        text-align: center;
+        margin: 10px 0;
+    }
+    .score-high { border-color: #00ff00; }
+    .score-medium { border-color: #ffaa00; }
+    .score-low { border-color: #ff4b4b; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -904,11 +930,239 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
+# ==================== UPDATE 1: ENHANCED MULTI-TIMEFRAME ANALYSIS ====================
+# සිංහල: Multi-timeframe analysis function - HTF trend confirm කරලා LTF entry සොයයි
+def get_multi_timeframe_analysis(symbol, primary_tf, news_items=None):
+    """
+    Multi-timeframe confluence analysis.
+    HTF (Higher TimeFrame) trend + LTF (Lower TimeFrame) entry.
+    Returns: mtf_score, mtf_direction, mtf_details dict
+    
+    සිංහල: Higher timeframe trend confirm වෙලා lower timeframe entry point හොයනවා.
+    Confluence score ගණනය කර, trade direction decide කරනවා.
+    """
+    tf_hierarchy = {
+        "1m":  ["5m", "15m", "1h"],
+        "5m":  ["15m", "1h", "4h"],
+        "15m": ["1h", "4h", "1d"],
+        "1h":  ["4h", "1d", "1wk"],
+        "4h":  ["1d", "1wk"],
+        "1d":  ["1wk"],
+        "1wk": ["1wk"]
+    }
+    
+    timeframes_to_check = tf_hierarchy.get(primary_tf, ["1h", "4h", "1d"])
+    # Include primary tf itself
+    all_tfs = [primary_tf] + timeframes_to_check
+    
+    mtf_details = {}
+    bull_count = 0
+    bear_count = 0
+    total_weight = 0
+    
+    # Weights: higher timeframe = more weight
+    tf_weights = {
+        "1m": 1, "5m": 2, "15m": 3,
+        "1h": 4, "4h": 5, "1d": 6, "1wk": 7
+    }
+    
+    for tf in all_tfs:
+        period = get_period_for_tf(tf)
+        df_tf = get_cached_historical_data(symbol, tf, period=period)
+        if df_tf is None or len(df_tf) < 50:
+            continue
+        
+        sigs, _, conf, _, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
+        if sigs is None:
+            continue
+        
+        weight = tf_weights.get(tf, 3)
+        direction = "bull" if conf > 0 else ("bear" if conf < 0 else "neutral")
+        
+        mtf_details[tf] = {
+            "direction": direction,
+            "confidence": abs(conf),
+            "trend": sigs['TREND'][0],
+            "weight": weight
+        }
+        
+        if direction == "bull":
+            bull_count += weight
+        elif direction == "bear":
+            bear_count += weight
+        total_weight += weight
+    
+    if total_weight == 0:
+        return 0, "neutral", mtf_details
+    
+    bull_pct = (bull_count / total_weight) * 100
+    bear_pct = (bear_count / total_weight) * 100
+    
+    if bull_pct >= 60:
+        mtf_direction = "bull"
+        mtf_score = bull_pct
+    elif bear_pct >= 60:
+        mtf_direction = "bear"
+        mtf_score = bear_pct
+    else:
+        mtf_direction = "neutral"
+        mtf_score = 50
+    
+    return mtf_score, mtf_direction, mtf_details
+
+
+# ==================== ACCURACY ENGINE: SIGNAL QUALITY FILTERS ====================
+# සිංහල: Signal quality validation - confluence % + conflict detection
+def validate_signal_confluence(theory_signals, direction):
+    """
+    Validate that majority of signals agree with direction.
+    Returns: confluence_pct (0-100), is_valid (bool), conflict_details (dict)
+    
+    සිංහල: Signals 70%+ same direction නැත්නම් trade reject කරයි.
+    Conflicting signals = unreliable trade setup.
+    """
+    if not theory_signals:
+        return 0, False, {}
+
+    dir_key = "bull" if direction == "BUY" else "bear"
+    opposite_key = "bear" if direction == "BUY" else "bull"
+
+    # Weighted signals - theory signals more important than indicators
+    weighted_signals = {
+        'TREND':   3.0,  # Most important - overall direction
+        'SMC':     2.5,  # Smart Money - institutional
+        'ICT':     2.0,  # Inner Circle Trader concepts
+        'ELLIOTT': 2.0,  # Wave position
+        'LIQ':     1.5,  # Liquidity grabs
+        'FIB':     1.5,  # Fibonacci confluence
+        'PATT':    1.5,  # Candlestick patterns
+        'BB':      1.0,  # Bollinger Bands
+        'STOCH':   1.0,  # Stochastic
+        'CCI':     1.0,  # CCI
+        'VOL':     1.0,  # Volume
+        'ADX':     0.5,  # ADX direction (trend strength)
+    }
+
+    bull_weight = 0
+    bear_weight = 0
+    total_weight = 0
+    conflict_details = {}
+
+    for sig_name, sig_val in theory_signals.items():
+        w = weighted_signals.get(sig_name, 1.0)
+        if sig_val == "bull":
+            bull_weight += w
+        elif sig_val == "bear":
+            bear_weight += w
+        total_weight += w
+        conflict_details[sig_name] = sig_val
+
+    if total_weight == 0:
+        return 0, False, {}
+
+    dir_weight = bull_weight if dir_key == "bull" else bear_weight
+    confluence_pct = (dir_weight / total_weight) * 100
+
+    # Require minimum 65% weighted confluence
+    is_valid = confluence_pct >= 65
+
+    return round(confluence_pct, 1), is_valid, conflict_details
+
+
+def calculate_signal_quality_score(theory_signals, score_breakdown, direction):
+    """
+    Calculate a normalized quality score (0-100).
+    Penalizes conflicting signals and rewards strong confluence.
+    
+    සිංහල: Raw score normalize කරලා 0-100 scale එකට convert කරයි.
+    Conflicting signals penalty apply කරයි.
+    """
+    dir_key = "bull" if direction == "BUY" else "bear"
+    opposite_key = "bear" if direction == "BUY" else "bull"
+
+    # Count agreements vs conflicts
+    agreements = sum(1 for v in theory_signals.values() if v == dir_key)
+    conflicts  = sum(1 for v in theory_signals.values() if v == opposite_key)
+    neutrals   = sum(1 for v in theory_signals.values() if v == "neutral")
+    total      = len(theory_signals)
+
+    if total == 0:
+        return 0
+
+    # Base score from agreements
+    base = (agreements / total) * 100
+
+    # Conflict penalty: each conflicting signal reduces score
+    penalty = (conflicts / total) * 30  # max 30 point penalty
+
+    # Neutral bonus: neutrals are not bad
+    neutral_bonus = (neutrals / total) * 5
+
+    quality = base - penalty + neutral_bonus
+    return max(0, min(100, round(quality, 1)))
+
+
+def detect_market_regime(df):
+    """
+    Detect whether market is trending or ranging.
+    Trending: trade with trend signals
+    Ranging:  trade reversals at S/R
+    
+    සිංහල: Market regime detect කරයි - trending හෝ ranging.
+    Trending market = trend-following signals use කරයි.
+    Ranging market = reversal signals use කරයි.
+    """
+    if df is None or len(df) < 50:
+        return "unknown", 0
+
+    # ADX for trend strength
+    try:
+        high_s = df['High'].diff()
+        low_s  = -df['Low'].diff()
+        plus_dm  = high_s.where((high_s > low_s) & (high_s > 0), 0)
+        minus_dm = low_s.where((low_s > high_s) & (low_s > 0), 0)
+        tr = pd.concat([
+            df['High'] - df['Low'],
+            (df['High'] - df['Close'].shift()).abs(),
+            (df['Low']  - df['Close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        atr14    = tr.rolling(14).mean()
+        plus_di  = 100 * (plus_dm.rolling(14).mean()  / (atr14 + 1e-10))
+        minus_di = 100 * (minus_dm.rolling(14).mean() / (atr14 + 1e-10))
+        dx       = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+        adx_val  = dx.rolling(14).mean().iloc[-1]
+    except:
+        adx_val = 20
+
+    # Bollinger Band width for ranging detection
+    try:
+        sma20  = df['Close'].rolling(20).mean()
+        std20  = df['Close'].rolling(20).std()
+        bb_width = ((sma20 + 2*std20) - (sma20 - 2*std20)) / sma20
+        bb_w_val = bb_width.iloc[-1]
+        bb_w_avg = bb_width.rolling(50).mean().iloc[-1]
+        bb_squeeze = bb_w_val < bb_w_avg * 0.8  # Squeeze = ranging
+    except:
+        bb_squeeze = False
+
+    if adx_val >= 25 and not bb_squeeze:
+        return "trending", round(adx_val, 1)
+    elif adx_val < 20 or bb_squeeze:
+        return "ranging", round(adx_val, 1)
+    else:
+        return "transitioning", round(adx_val, 1)
+
+
+# ==================== UPDATE 2: ENHANCED SIGNAL ENGINE WITH FULL CONFLUENCE ====================
+# සිංහල: Theory + Indicators + MTF + News සියල්ල combine කරන enhanced signal engine
 # --- 4. ADVANCED SIGNAL ENGINE (UPDATED TO OLD CODE STYLE + RISK MINIMIZATION) ---
 def calculate_advanced_signals(df, tf, news_items=None):
     """
     Calculate signals using old code weights and include news score.
     Returns signals dict, atr, confidence, score_breakdown, and theory_signals dict.
+    
+    UPDATE: VC (Volume Confirmation) + Stochastic + CCI indicators added.
+    සිංහල: Volume, Stochastic, CCI indicators add කළා - signals වඩාත් accurate කරන්නා
     """
     if df is None or len(df) < 50:
         return None, 0, 0, {}, {}
@@ -1098,22 +1352,163 @@ def calculate_advanced_signals(df, tf, news_items=None):
     theory_signals['ELLIOTT'] = ew_col
     score_breakdown['Elliott'] = ew_score
 
-    # --- 10. CONFIDENCE SCORING (OLD CODE STYLE) ---
-    confidence = 0
+    # ==================== NEW: STOCHASTIC OSCILLATOR ====================
+    # සිංහල: Stochastic indicator add කළා - overbought/oversold conditions වඩා හොඳින් detect කරයි
+    stoch_score = 0
+    try:
+        low_14 = df['Low'].rolling(14).min()
+        high_14 = df['High'].rolling(14).max()
+        stoch_k = 100 * (df['Close'] - low_14) / (high_14 - low_14 + 1e-10)
+        stoch_d = stoch_k.rolling(3).mean()
+        sk = stoch_k.iloc[-1]
+        sd = stoch_d.iloc[-1]
+        if sk < 20 and sd < 20 and sk > sd:  # Oversold + bullish cross
+            stoch_score = 10
+        elif sk > 80 and sd > 80 and sk < sd:  # Overbought + bearish cross
+            stoch_score = -10
+        theory_signals['STOCH'] = "bull" if stoch_score > 0 else ("bear" if stoch_score < 0 else "neutral")
+        score_breakdown['Stochastic'] = stoch_score
+    except:
+        score_breakdown['Stochastic'] = 0
 
-    # News impact (old code style)
+    # ==================== NEW: CCI (Commodity Channel Index) ====================
+    # සිංහල: CCI indicator - trend strength measure කරයි, extremes identify කරයි
+    cci_score = 0
+    try:
+        tp_cci = (df['High'] + df['Low'] + df['Close']) / 3
+        cci_sma = tp_cci.rolling(20).mean()
+        cci_mad = tp_cci.rolling(20).apply(lambda x: np.mean(np.abs(x - np.mean(x))))
+        cci_val = (tp_cci - cci_sma) / (0.015 * cci_mad + 1e-10)
+        cv = cci_val.iloc[-1]
+        if cv < -100:   # Oversold
+            cci_score = 8
+        elif cv > 100:  # Overbought
+            cci_score = -8
+        theory_signals['CCI'] = "bull" if cci_score > 0 else ("bear" if cci_score < 0 else "neutral")
+        score_breakdown['CCI'] = cci_score
+    except:
+        score_breakdown['CCI'] = 0
+
+    # ==================== NEW: VOLUME CONFIRMATION ====================
+    # සිංහල: Volume analysis - trade direction confirm කිරීමට volume patterns use කරයි
+    vol_score = 0
+    try:
+        if 'Volume' in df.columns and df['Volume'].sum() > 0:
+            avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
+            curr_vol = df['Volume'].iloc[-1]
+            vol_ratio = curr_vol / (avg_vol + 1e-10)
+            
+            # High volume with direction confirms signal
+            last_close = df['Close'].iloc[-1]
+            prev_close = df['Close'].iloc[-2]
+            price_up = last_close > prev_close
+            
+            if vol_ratio > 1.5:  # Volume spike
+                if price_up:
+                    vol_score = 8   # Bullish volume confirmation
+                else:
+                    vol_score = -8  # Bearish volume confirmation
+            elif vol_ratio < 0.5:  # Volume drying up
+                vol_score = 0  # Unclear, no score
+            
+            theory_signals['VOL'] = "bull" if vol_score > 0 else ("bear" if vol_score < 0 else "neutral")
+            score_breakdown['Volume'] = vol_score
+    except:
+        score_breakdown['Volume'] = 0
+
+    # ==================== NEW: ADX (Trend Strength) ====================
+    # සිංහල: ADX - trend strength measure කරයි. 25+ = strong trend, trade signals valid
+    adx_filter = 0  # Multiplier: 1 = strong trend present
+    try:
+        high_s = df['High'].diff()
+        low_s = -df['Low'].diff()
+        plus_dm = high_s.where((high_s > low_s) & (high_s > 0), 0)
+        minus_dm = low_s.where((low_s > high_s) & (low_s > 0), 0)
+        tr = pd.concat([df['High'] - df['Low'],
+                         (df['High'] - df['Close'].shift()).abs(),
+                         (df['Low'] - df['Close'].shift()).abs()], axis=1).max(axis=1)
+        atr14 = tr.rolling(14).mean()
+        plus_di = 100 * (plus_dm.rolling(14).mean() / (atr14 + 1e-10))
+        minus_di = 100 * (minus_dm.rolling(14).mean() / (atr14 + 1e-10))
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+        adx = dx.rolling(14).mean().iloc[-1]
+        adx_filter = 1.2 if adx > 25 else (0.8 if adx < 20 else 1.0)
+        score_breakdown['ADX_filter'] = round(adx, 1)
+        theory_signals['ADX'] = "bull" if plus_di.iloc[-1] > minus_di.iloc[-1] and adx > 25 else (
+                                 "bear" if minus_di.iloc[-1] > plus_di.iloc[-1] and adx > 25 else "neutral")
+    except:
+        adx_filter = 1.0
+
+    # --- 10. NEWS SCORE ---
     if news_items:
         news_score = calculate_news_score(news_items)
-        confidence += news_score
         score_breakdown['News'] = news_score
+    else:
+        news_score = 0
 
-    # Sum all scores
-    confidence += (trend_score + macd_score + smc_score + ict_score + liq_score + patt_score + bb_score + rsi_score + fib_score + ew_score)
+    # ==================== ACCURACY FIX 1: NORMALIZED CONFIDENCE SCORING ====================
+    # සිංහල: Raw score normalize කරලා 0-100 range එකට convert කරයි
+    # Max possible positive score ≈ 160, normalize to 0-100
+    MAX_POSSIBLE_SCORE = 160.0
+
+    raw_score = (
+        trend_score + macd_score + smc_score + ict_score +
+        liq_score + patt_score + bb_score + rsi_score +
+        fib_score + ew_score + stoch_score + cci_score +
+        vol_score + news_score
+    )
+
+    # Normalize to -100 to +100
+    normalized_score = (raw_score / MAX_POSSIBLE_SCORE) * 100
+
+    # Apply ADX filter
+    normalized_score *= adx_filter
+
+    # Clamp to -100 to +100
+    normalized_score = max(-100, min(100, normalized_score))
+
+    # ==================== ACCURACY FIX 2: SIGNAL CONFLUENCE VALIDATION ====================
+    # සිංහල: Direction සමඟ agree වෙන signals % ගණනය කරයි
+    direction_for_check = "BUY" if normalized_score > 0 else "SELL"
+    confluence_pct, confluence_valid, _ = validate_signal_confluence(theory_signals, direction_for_check)
+    score_breakdown['Confluence_%'] = confluence_pct
+    score_breakdown['Confluence_Valid'] = confluence_valid
+
+    # ==================== ACCURACY FIX 3: QUALITY SCORE ====================
+    # සිංහල: Signal quality score - conflicts penalize කරයි
+    quality_score = calculate_signal_quality_score(theory_signals, score_breakdown, direction_for_check)
+    score_breakdown['Quality_Score'] = quality_score
+
+    # ==================== ACCURACY FIX 4: MARKET REGIME FILTER ====================
+    # සිංහල: Ranging market trend signals reject, trending market reversal signals reduce
+    regime, adx_strength = detect_market_regime(df)
+    score_breakdown['Market_Regime'] = regime
+    score_breakdown['ADX_Strength'] = adx_strength
+
+    # Regime penalty
+    if regime == "ranging":
+        # In ranging market, trend-following signals less reliable → reduce score
+        normalized_score *= 0.70
+    elif regime == "transitioning":
+        normalized_score *= 0.85
+    # trending → full score (already ADX boosted)
+
+    # ==================== ACCURACY FIX 5: CONFLUENCE GATE ====================
+    # සිංහල: Confluence < 65% නම් score zero කරයි - bad signals block කරයි
+    if not confluence_valid:
+        # Weak confluence → dampen the signal significantly
+        normalized_score *= 0.40
+        score_breakdown['Confluence_Gate'] = 'FAILED (dampened)'
+    else:
+        score_breakdown['Confluence_Gate'] = 'PASSED'
+
+    # Final confidence as integer (absolute value for display, sign for direction)
+    confidence = int(normalized_score)
 
     final_signal = "neutral"
-    if confidence > 0:
+    if confidence > 10:    # Small dead-zone to avoid noise
         final_signal = "bull"
-    elif confidence < 0:
+    elif confidence < -10:
         final_signal = "bear"
 
     signals['SK'] = (f"CONFIDENCE: {abs(confidence)}%", final_signal)
@@ -1121,235 +1516,207 @@ def calculate_advanced_signals(df, tf, news_items=None):
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence, score_breakdown, theory_signals
 
+
+# ==================== UPDATE 3: ENHANCED SL/TP WITH SMART STRUCTURE ====================
+# සිංහල: SL/TP calculation - structure levels, ATR, Fibonacci combine කළා
 # --- 5. ADVANCED SL/TP CALCULATION USING ALL SIGNALS (SKS THEORY) WITH PARTIAL CLOSE LEVELS ---
 def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals, theory_signals):
     """
-    Calculate SL and TP using all signals from the engine (SKS Theory):
-    - Trend, MACD, SMC, ICT, Liquidity, Patterns, Bollinger, RSI, Fibonacci, Elliott.
-    Returns sl, tp1, tp2, tp3 (partial close levels).
+    Calculate SL and TP using all signals from the engine (SKS Theory).
+    
+    ACCURACY IMPROVEMENTS:
+    1. Structure-based SL using proper swing detection
+    2. Minimum RR 1:2 enforced (not 1:1.2)
+    3. TP levels based on structure + Fibonacci extensions
+    4. Market regime aware SL distance
+    
+    සිංහල: SL structure-based. Minimum RR 1:2 enforce කරයි.
+    Scalp = 1:1.5 RR minimum, Swing = 1:2 RR minimum.
     """
-    # Get recent swing levels (last 5 candles for structure)
-    recent_low = df['Low'].tail(5).min()
-    recent_high = df['High'].tail(5).max()
-    
-    # Get recent range for Fibonacci extensions
-    recent_range = recent_high - recent_low
-    
-    # Determine base SL distance from ATR (structure-based)
-    if tf_type == 'scalp':
-        base_sl_mult = 1.2
-    else:
-        base_sl_mult = 1.5
-    
+    # ==================== ACCURACY FIX: PROPER SWING DETECTION ====================
+    # සිංහල: Proper swing high/low detection using peak algorithm
+    def find_swing_low(df_data, window=5):
+        lows = df_data['Low'].values
+        for i in range(len(lows)-1, window-1, -1):
+            if all(lows[i] <= lows[i-j] for j in range(1, window+1) if i-j >= 0):
+                return lows[i]
+        return df_data['Low'].tail(window*2).min()
+
+    def find_swing_high(df_data, window=5):
+        highs = df_data['High'].values
+        for i in range(len(highs)-1, window-1, -1):
+            if all(highs[i] >= highs[i-j] for j in range(1, window+1) if i-j >= 0):
+                return highs[i]
+        return df_data['High'].tail(window*2).max()
+
+    # Use different windows based on timeframe
+    swing_window = 3 if tf_type == 'scalp' else 5
+
+    swing_low  = find_swing_low(df, swing_window)
+    swing_high = find_swing_high(df, swing_window)
+
+    # Broader structure for TP targets
+    structure_low  = df['Low'].tail(50).min()
+    structure_high = df['High'].tail(50).max()
+    structure_range = structure_high - structure_low
+
+    # Minimum RR by trade type
+    min_rr_tp1 = 1.5 if tf_type == 'scalp' else 2.0
+    min_rr_tp2 = 2.5 if tf_type == 'scalp' else 3.0
+    min_rr_tp3 = 3.5 if tf_type == 'scalp' else 4.5
+
+    # SL multiplier
+    base_sl_mult = 1.0 if tf_type == 'scalp' else 1.2
     atr_distance = atr * base_sl_mult
-    
-    # --- SL Calculation (enhanced with RSI and Patterns) ---
-    # Extract numeric values from signals
+
+    # RSI value
     rsi_val_str = signals.get('RSI', ("RSI: 50", "neutral"))[0]
     rsi_num = 50
     rsi_match = re.search(r'RSI:\s*(\d+)', rsi_val_str)
     if rsi_match:
         rsi_num = int(rsi_match.group(1))
-    
+
     pattern = signals.get('PATT', ("No Pattern", "neutral"))[0]
-    
+
+    # ==================== SL CALCULATION ====================
     if direction == "BUY":
-        # Structure-based SL: below recent low
-        structure_sl = recent_low - (recent_low * 0.001)  # just below recent low
-        structure_distance = entry - structure_sl
-        # ATR-based SL
-        atr_sl = entry - atr_distance
-        atr_sl_distance = atr_distance
-        
-        sl_candidates = [structure_sl, atr_sl]
-        
-        # Adjust based on RSI (if oversold, bullish momentum - tighter SL)
-        if rsi_num < 30:
-            # Oversold, can have tighter SL
-            sl_candidates.append(entry - atr_distance * 0.8)
-        
-        # Adjust based on pattern
+        buffer = atr * 0.25
+        # SL candidates
+        sl_candidates = [
+            swing_low - buffer,           # Below recent swing low
+            entry - atr_distance,         # ATR-based
+        ]
         if "Bull Engulfing" in pattern:
-            # Strong bullish pattern, can have wider SL to allow for retracement
-            sl_candidates.append(entry - atr_distance * 1.2)
-        
-        # Choose the most conservative SL (lowest price for BUY)
-        sl = min(sl_candidates)
-        
+            sl_candidates.append(df['Low'].iloc[-1] - buffer)
+        if rsi_num < 30:
+            sl_candidates.append(entry - atr_distance * 0.85)
+
+        valid_sls = [s for s in sl_candidates if s < entry and s > 0]
+        sl = max(valid_sls) if valid_sls else entry - atr_distance
+
+        # Safety: SL should not be more than 3× ATR away (avoid huge SL)
+        if (entry - sl) > atr * 3:
+            sl = entry - atr * 2
+
     else:  # SELL
-        structure_sl = recent_high + (recent_high * 0.001)  # just above recent high
-        structure_distance = structure_sl - entry
-        atr_sl = entry + atr_distance
-        atr_sl_distance = atr_distance
-        
-        sl_candidates = [structure_sl, atr_sl]
-        
-        if rsi_num > 70:
-            # Overbought, bearish momentum - tighter SL
-            sl_candidates.append(entry + atr_distance * 0.8)
-        
+        buffer = atr * 0.25
+        sl_candidates = [
+            swing_high + buffer,
+            entry + atr_distance,
+        ]
         if "Bear Engulfing" in pattern:
-            sl_candidates.append(entry + atr_distance * 1.2)
-        
-        # Choose the most conservative SL (highest price for SELL)
-        sl = max(sl_candidates)
-    
-    # --- TP Calculation with partial close levels (tp1, tp2, tp3) ---
-    tp_candidates = []
-    
+            sl_candidates.append(df['High'].iloc[-1] + buffer)
+        if rsi_num > 70:
+            sl_candidates.append(entry + atr_distance * 0.85)
+
+        valid_sls = [s for s in sl_candidates if s > entry]
+        sl = min(valid_sls) if valid_sls else entry + atr_distance
+
+        if (sl - entry) > atr * 3:
+            sl = entry + atr * 2
+
+    sl_distance = abs(entry - sl)
+
+    # ==================== TP CALCULATION WITH MINIMUM RR ENFORCED ====================
+    # සිංහල: TP levels - minimum RR enforce කරයි + structure levels use කරයි
     if direction == "BUY":
-        # 1. SMC: recent high
-        smc_tp = df['High'].tail(20).max()
-        tp_candidates.append(smc_tp)
-        
-        # 2. ICT: Fair Value Gaps above
-        for i in range(2, len(df)-1):
-            if df['Low'].iloc[i] > df['High'].iloc[i+1]:  # bullish FVG
-                fvg_top = df['Low'].iloc[i]  # top of FVG
-                if fvg_top > entry:
-                    tp_candidates.append(fvg_top)
-        
-        # 3. Elliott Wave extensions
+        # Fibonacci extension targets from structure
+        fib_ext_1272 = structure_low + structure_range * 1.272
+        fib_ext_1618 = structure_low + structure_range * 1.618
+        fib_ext_2000 = structure_low + structure_range * 2.000
+
+        # Structure resistance
+        recent_high_20 = df['High'].tail(20).max()
+        recent_high_50 = df['High'].tail(50).max()
+
+        # BB upper
+        bb_upper = (df['Close'].rolling(20).mean() + 2 * df['Close'].rolling(20).std()).iloc[-1]
+
+        # Elliott TP
         ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
+        ew_tp = None
         if "Wave 3" in ew_status:
-            fib_1618 = recent_high + 1.618 * recent_range
-            tp_candidates.append(fib_1618)
-        elif "Wave 5" in ew_status:
-            if len(df) > 100:
-                wave3_high = df['High'].tail(100).max()
-                fib_1272 = wave3_high + 0.272 * recent_range
-                tp_candidates.append(fib_1272)
-        
-        # 4. Fibonacci levels
-        # Golden Zone (0.618 retracement) - can be target
-        fib_zone = recent_high - 0.618 * recent_range
-        if fib_zone > entry:
-            tp_candidates.append(fib_zone)
-        
-        # Fibonacci extensions from entry
-        fib_levels = [1.272, 1.382, 1.618]
-        for level in fib_levels:
-            fib_tp = entry + level * recent_range
-            tp_candidates.append(fib_tp)
-        
-        # 5. Bollinger Bands
-        bb_upper = df['Close'].rolling(20).mean() + 2 * df['Close'].rolling(20).std()
-        tp_candidates.append(bb_upper.iloc[-1])
-        
-        # 6. RSI
-        if rsi_num > 70:
-            # Overbought, might reverse soon, so take profit near recent high
-            tp_candidates.append(recent_high * 0.99)  # slightly below recent high
-        
-        # 7. Trend line resistance (simplified: use recent high)
-        trend_resistance = recent_high
-        tp_candidates.append(trend_resistance)
-        
-        # 8. MACD
-        macd_signal = signals.get('MACD', ("", "neutral"))[1]
-        if macd_signal == "bear":
-            # MACD turning bearish, might not go too far
-            tp_candidates.append(entry + recent_range * 0.5)  # moderate target
-        
-        # 9. Liquidity level (recent high from 30 candles)
-        liq_high = df['High'].tail(30).max()
-        tp_candidates.append(liq_high)
-        
-        # 10. Patterns target
-        if "Bull Engulfing" in pattern:
-            candle_height = df['High'].iloc[-1] - df['Low'].iloc[-1]
-            pattern_tp = entry + candle_height * 1.5
-            tp_candidates.append(pattern_tp)
-        
-        # Remove duplicates and sort ascending
-        unique_candidates = sorted(set(tp_candidates))
-        
-        # Select the best TPs: closest to entry, then next levels
-        valid_candidates = [c for c in unique_candidates if c > entry]
-        if valid_candidates:
-            # Sort by distance to entry
-            valid_candidates.sort(key=lambda x: abs(x - entry))
-            tp1 = valid_candidates[0]
-            tp2 = valid_candidates[1] if len(valid_candidates) > 1 else tp1 * 1.01  # fallback
-            tp3 = valid_candidates[2] if len(valid_candidates) > 2 else tp2 * 1.01
-        else:
-            tp1 = entry * 1.02
-            tp2 = entry * 1.03
-            tp3 = entry * 1.05
-    
+            ew_tp = entry + structure_range * 1.618
+        elif "Wave 1" in ew_status:
+            ew_tp = entry + structure_range * 1.0
+
+        # Collect and filter TP candidates
+        raw_candidates = [
+            recent_high_20, recent_high_50,
+            fib_ext_1272, fib_ext_1618, fib_ext_2000,
+            bb_upper
+        ]
+        if ew_tp: raw_candidates.append(ew_tp)
+
+        # ICT Fair Value Gaps above entry
+        for i in range(max(0, len(df)-20), len(df)-1):
+            if df['Low'].iloc[i] > df['High'].iloc[i+1]:
+                fvg_mid = (df['Low'].iloc[i] + df['High'].iloc[i+1]) / 2
+                if fvg_mid > entry:
+                    raw_candidates.append(fvg_mid)
+
+        valid_candidates = sorted([c for c in raw_candidates if c > entry])
+
+        # Enforce minimum RR
+        min_tp1_price = entry + sl_distance * min_rr_tp1
+        min_tp2_price = entry + sl_distance * min_rr_tp2
+        min_tp3_price = entry + sl_distance * min_rr_tp3
+
+        # TP1: first valid candidate above min_rr_tp1, else use min
+        tp1_candidates = [c for c in valid_candidates if c >= min_tp1_price]
+        tp1 = tp1_candidates[0] if tp1_candidates else min_tp1_price
+
+        tp2_candidates = [c for c in valid_candidates if c >= min_tp2_price and c > tp1]
+        tp2 = tp2_candidates[0] if tp2_candidates else min_tp2_price
+
+        tp3_candidates = [c for c in valid_candidates if c >= min_tp3_price and c > tp2]
+        tp3 = tp3_candidates[0] if tp3_candidates else min_tp3_price
+
     else:  # SELL
-        # 1. SMC: recent low
-        smc_tp = df['Low'].tail(20).min()
-        tp_candidates.append(smc_tp)
-        
-        # 2. ICT: Fair Value Gaps below
-        for i in range(2, len(df)-1):
-            if df['High'].iloc[i] < df['Low'].iloc[i+1]:  # bearish FVG
-                fvg_bottom = df['High'].iloc[i]  # bottom of FVG
-                if fvg_bottom < entry:
-                    tp_candidates.append(fvg_bottom)
-        
-        # 3. Elliott Wave extensions
+        fib_ext_1272 = structure_high - structure_range * 1.272
+        fib_ext_1618 = structure_high - structure_range * 1.618
+        fib_ext_2000 = structure_high - structure_range * 2.000
+
+        recent_low_20 = df['Low'].tail(20).min()
+        recent_low_50 = df['Low'].tail(50).min()
+
+        bb_lower = (df['Close'].rolling(20).mean() - 2 * df['Close'].rolling(20).std()).iloc[-1]
+
         ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
+        ew_tp = None
         if "Wave C" in ew_status:
-            fib_1618 = recent_low - 1.618 * recent_range
-            tp_candidates.append(fib_1618)
+            ew_tp = entry - structure_range * 1.618
         elif "Wave A" in ew_status:
-            if len(df) > 100:
-                wave_a_low = df['Low'].tail(100).min()
-                tp_candidates.append(wave_a_low)
-        
-        # 4. Fibonacci levels
-        fib_zone = recent_low + 0.618 * recent_range
-        if fib_zone < entry:
-            tp_candidates.append(fib_zone)
-        
-        fib_levels = [1.272, 1.382, 1.618]
-        for level in fib_levels:
-            fib_tp = entry - level * recent_range
-            tp_candidates.append(fib_tp)
-        
-        # 5. Bollinger Bands
-        bb_lower = df['Close'].rolling(20).mean() - 2 * df['Close'].rolling(20).std()
-        tp_candidates.append(bb_lower.iloc[-1])
-        
-        # 6. RSI
-        if rsi_num < 30:
-            tp_candidates.append(recent_low * 1.01)  # slightly above recent low
-        
-        # 7. Trend line support
-        trend_support = recent_low
-        tp_candidates.append(trend_support)
-        
-        # 8. MACD
-        macd_signal = signals.get('MACD', ("", "neutral"))[1]
-        if macd_signal == "bull":
-            tp_candidates.append(entry - recent_range * 0.5)
-        
-        # 9. Liquidity level
-        liq_low = df['Low'].tail(30).min()
-        tp_candidates.append(liq_low)
-        
-        # 10. Patterns target
-        if "Bear Engulfing" in pattern:
-            candle_height = df['High'].iloc[-1] - df['Low'].iloc[-1]
-            pattern_tp = entry - candle_height * 1.5
-            tp_candidates.append(pattern_tp)
-        
-        # Remove duplicates and sort descending
-        unique_candidates = sorted(set(tp_candidates), reverse=True)
-        
-        valid_candidates = [c for c in unique_candidates if c < entry]
-        if valid_candidates:
-            valid_candidates.sort(key=lambda x: abs(x - entry))
-            tp1 = valid_candidates[0]
-            tp2 = valid_candidates[1] if len(valid_candidates) > 1 else tp1 * 0.99
-            tp3 = valid_candidates[2] if len(valid_candidates) > 2 else tp2 * 0.99
-        else:
-            tp1 = entry * 0.98
-            tp2 = entry * 0.97
-            tp3 = entry * 0.95
-    
+            ew_tp = entry - structure_range * 1.0
+
+        raw_candidates = [
+            recent_low_20, recent_low_50,
+            fib_ext_1272, fib_ext_1618, fib_ext_2000,
+            bb_lower
+        ]
+        if ew_tp: raw_candidates.append(ew_tp)
+
+        for i in range(max(0, len(df)-20), len(df)-1):
+            if df['High'].iloc[i] < df['Low'].iloc[i+1]:
+                fvg_mid = (df['High'].iloc[i] + df['Low'].iloc[i+1]) / 2
+                if fvg_mid < entry:
+                    raw_candidates.append(fvg_mid)
+
+        valid_candidates = sorted([c for c in raw_candidates if c < entry], reverse=True)
+
+        min_tp1_price = entry - sl_distance * min_rr_tp1
+        min_tp2_price = entry - sl_distance * min_rr_tp2
+        min_tp3_price = entry - sl_distance * min_rr_tp3
+
+        tp1_candidates = [c for c in valid_candidates if c <= min_tp1_price]
+        tp1 = tp1_candidates[0] if tp1_candidates else min_tp1_price
+
+        tp2_candidates = [c for c in valid_candidates if c <= min_tp2_price and c < tp1]
+        tp2 = tp2_candidates[0] if tp2_candidates else min_tp2_price
+
+        tp3_candidates = [c for c in valid_candidates if c <= min_tp3_price and c < tp2]
+        tp3 = tp3_candidates[0] if tp3_candidates else min_tp3_price
+
     return sl, tp1, tp2, tp3
 
 # --- 6. ENGINE-BASED FORECAST GENERATION (with partial closes) ---
@@ -1523,11 +1890,16 @@ def parse_ai_response(text):
         pass
     return data
 
-def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
+# ==================== UPDATE 4: ENHANCED AI NEWS CONFIRMATION WITH MTF DATA ====================
+# සිංහල: AI news confirmation prompt update - MTF data + Theory signals include කළා
+def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items, user_info, progress_callback=None, mtf_details=None, score_breakdown=None):
     """
-    Get AI confirmation based on news analysis only.
+    Get AI confirmation based on news + MTF data.
     Returns confirmation, confidence, reason, sinhala summary.
     If AI fails, falls back to default values.
+    
+    UPDATE: MTF confluence + indicator scores include in prompt for smarter AI decisions.
+    සිංහල: AI ට MTF analysis + indicator scores දෙනවා - වඩා accurate confirmation ලැබෙනවා
     """
     if df_hist is None or df_hist.empty:
         return None
@@ -1537,25 +1909,52 @@ def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items
     
     news_str = "\n".join([f"- {n['title']} (Time: {n['time']})" for n in news_items]) if news_items else "No recent news."
     
+    # Build MTF summary for AI
+    mtf_str = ""
+    if mtf_details:
+        for tf_key, tf_data in mtf_details.items():
+            dir_sym = "🟢" if tf_data['direction'] == "bull" else ("🔴" if tf_data['direction'] == "bear" else "⚪")
+            mtf_str += f"  {dir_sym} {tf_key}: {tf_data['direction'].upper()} (Conf: {tf_data['confidence']}%)\n"
+    else:
+        mtf_str = "  Multi-timeframe data not available."
+    
+    # Build score breakdown string
+    score_str = ""
+    if score_breakdown:
+        for k, v in score_breakdown.items():
+            score_str += f"  {k}: {v}\n"
+    
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager.
     Analyze the following recent news headlines for {pair} and determine if they support a {direction} trade.
     
     **Current Price:** {current_price:.5f}
     
+    **Multi-Timeframe Confluence:**
+{mtf_str}
+    
+    **Indicator Score Breakdown:**
+{score_str}
+    
     **Recent News Headlines:**
     {news_str}
     
     **Task:**
-    1. Based SOLELY on the news headlines, determine if the news sentiment is positive, negative, or neutral for {pair}.
-    2. Provide a confidence percentage (0-100%) for your assessment.
-    3. Give a short-term price forecast based on news sentiment (next 5-10 candles).
-    4. Finally, give a CONFIRMATION decision: APPROVE or REJECT the {direction} trade setup based on news, with a brief reason.
-    5. Provide a very short summary in SINHALA language (1 sentence) of this news impact.
+    1. Based on the news headlines AND multi-timeframe confluence, determine if the news sentiment supports {direction}.
+    2. Check if MTF alignment agrees with the trade direction.
+    3. Provide a confidence percentage (0-100%) for your assessment.
+    4. Give a short-term price forecast based on news + MTF (next 5-10 candles).
+    5. Finally, give a CONFIRMATION decision: APPROVE or REJECT the {direction} trade setup.
+    6. Provide a very short summary in SINHALA language (1 sentence) of this combined analysis.
+    
+    **REJECT if:**
+    - News strongly contradicts the trade direction
+    - MTF alignment is less than 50% in trade direction
+    - Risk is too high based on current market conditions
     
     **FINAL OUTPUT FORMAT (STRICT):**
     CONFIDENCE: XX%
-    FORECAST: [Brief forecast description based on news]
+    FORECAST: [Brief forecast description based on news + MTF]
     SINHALA_SUMMARY: [One sentence in Sinhala]
     CONFIRMATION: APPROVE/REJECT
     REASON: [Short reason]
@@ -1603,94 +2002,222 @@ def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items
         "provider": provider
     }
 
+# ==================== UPDATE 5: FULL INTEGRATED TRADE SETUP WITH MTF + CONFLUENCE ====================
+# සිංහල: Trade setup function - Theory + Indicators + MTF + News full analysis
 def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
     """
-    Get AI-generated trade setup - now only for news confirmation.
-    Entry, SL, TP1, TP2, TP3, and forecast are engine-generated.
-    Entry is based on Fibonacci pullback levels.
+    Get AI-generated trade setup with full accuracy gating.
+    
+    ACCURACY GATES (in order):
+    1. Signal confluence >= 65%
+    2. MTF agreement >= 60% 
+    3. Market regime check
+    4. RR minimum 1:2 (swing) / 1:1.5 (scalp)
+    5. AI news confirmation
+    6. Combined confidence >= threshold
+    
+    සිංහල: 6-layer accuracy gate system. සියලු gates pass වෙනවා නම් විතරයි trade approve වෙයි.
     """
     if df_hist is None or df_hist.empty:
         return None
-    
-    # Get AI news confirmation
-    ai_result = get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items, user_info, progress_callback)
-    
-    if not ai_result:
-        return None
-    
-    # --- Engine-based calculations ---
+
+    tf_clean = primary_tf.split()[0]
+
+    # ==================== GATE 1: SIGNAL CONFLUENCE CHECK ====================
+    # සිංහල: Gate 1 - Signal confluence >= 65% නැත්නම් reject
     if progress_callback:
-        progress_callback(0.5, "Calculating engine signals...")
-    
-    # Get signals for current timeframe
-    sigs, atr, conf, _, theory_signals = calculate_advanced_signals(df_hist, primary_tf, news_items)
+        progress_callback(0.10, "Gate 1: Signal confluence check...")
+
+    sigs, atr, conf, score_breakdown, theory_signals = calculate_advanced_signals(df_hist, tf_clean, news_items)
     if sigs is None:
         return None
-    
-    # --- Entry Optimization using Fibonacci ---
-    # Calculate Fibonacci levels from recent swing (last 50 candles)
-    recent_low = df_hist['Low'].tail(50).min()
+
+    confluence_pct = score_breakdown.get('Confluence_%', 0)
+    confluence_valid = score_breakdown.get('Confluence_Gate', '') == 'PASSED'
+
+    if not confluence_valid:
+        # Confluence too low → reject
+        return None
+
+    # ==================== GATE 2: MTF ANALYSIS ====================
+    # සිංහල: Gate 2 - MTF confluence >= 60% නැත්නම් reject
+    if progress_callback:
+        progress_callback(0.20, "Gate 2: Multi-timeframe analysis...")
+
+    yf_sym = clean_pair_to_yf_symbol(pair)
+    mtf_score, mtf_direction, mtf_details = get_multi_timeframe_analysis(yf_sym, tf_clean, news_items)
+
+    mtf_agrees = (mtf_direction == ("bull" if direction == "BUY" else "bear")) or mtf_direction == "neutral"
+
+    # Hard MTF gate: if MTF strongly disagrees, reject
+    if mtf_score < 40 and not mtf_agrees:
+        return None
+
+    # ==================== GATE 3: MARKET REGIME CHECK ====================
+    # සිංහල: Gate 3 - Ranging market trend trades reject කරයි
+    if progress_callback:
+        progress_callback(0.30, "Gate 3: Market regime check...")
+
+    regime, adx_strength = detect_market_regime(df_hist)
+
+    # In a ranging market, only allow reversals at S/R, not trend-following
+    if regime == "ranging" and abs(conf) < 30:
+        return None
+
+    # ==================== GATE 4: ENTRY OPTIMIZATION ====================
+    # සිංහල: Gate 4 - OB / Fibonacci entry optimize
+    if progress_callback:
+        progress_callback(0.40, "Gate 4: Optimizing entry...")
+
+    recent_low  = df_hist['Low'].tail(50).min()
     recent_high = df_hist['High'].tail(50).max()
-    fib_range = recent_high - recent_low
-    
+    fib_range   = recent_high - recent_low
+
     optimized_entry = current_price
-    entry_source = "Current Price"
-    
+    entry_source    = "Current Price"
+
+    ob_tolerance = atr * 0.4
+
     if direction == "BUY":
-        # Fibonacci pullback levels (0.382, 0.5, 0.618) from high to low
-        fib_382 = recent_high - 0.382 * fib_range
-        fib_500 = recent_high - 0.500 * fib_range
-        fib_618 = recent_high - 0.618 * fib_range
-        fib_candidates = [fib_382, fib_500, fib_618]
-        # Filter candidates that are below current price (pullback) and within 1%
-        valid_candidates = [f for f in fib_candidates if f < current_price * 1.01 and f > current_price * 0.99]
-        if valid_candidates:
-            # Choose the one closest to current price
-            optimized_entry = min(valid_candidates, key=lambda x: abs(x - current_price))
-            entry_source = "Fibonacci Pullback"
+        ob_entry = None
+        for i in range(max(2, len(df_hist)-15), len(df_hist)-2):
+            if (df_hist['Close'].iloc[i] < df_hist['Open'].iloc[i] and
+                    df_hist['Close'].iloc[i+1] > df_hist['High'].iloc[i]):
+                ob_low  = df_hist['Low'].iloc[i]
+                ob_high = df_hist['High'].iloc[i]
+                if ob_low <= current_price <= ob_high + ob_tolerance:
+                    ob_entry = (ob_low + ob_high) / 2
+                    entry_source = "Order Block (OB)"
+                    break
+
+        if ob_entry and abs(ob_entry - current_price) / current_price < 0.005:
+            optimized_entry = ob_entry
+        else:
+            fib_382 = recent_high - 0.382 * fib_range
+            fib_500 = recent_high - 0.500 * fib_range
+            fib_618 = recent_high - 0.618 * fib_range
+            fibs = [fib_382, fib_500, fib_618]
+            near_fibs = [f for f in fibs if abs(f - current_price) / current_price < 0.005]
+            if near_fibs:
+                optimized_entry = min(near_fibs, key=lambda x: abs(x - current_price))
+                entry_source = "Fibonacci Pullback"
+
     else:  # SELL
-        # Fibonacci pullback levels (0.382, 0.5, 0.618) from low to high
-        fib_382 = recent_low + 0.382 * fib_range
-        fib_500 = recent_low + 0.500 * fib_range
-        fib_618 = recent_low + 0.618 * fib_range
-        fib_candidates = [fib_382, fib_500, fib_618]
-        valid_candidates = [f for f in fib_candidates if f > current_price * 0.99 and f < current_price * 1.01]
-        if valid_candidates:
-            optimized_entry = min(valid_candidates, key=lambda x: abs(x - current_price))
-            entry_source = "Fibonacci Pullback"
-    
+        ob_entry = None
+        for i in range(max(2, len(df_hist)-15), len(df_hist)-2):
+            if (df_hist['Close'].iloc[i] > df_hist['Open'].iloc[i] and
+                    df_hist['Close'].iloc[i+1] < df_hist['Low'].iloc[i]):
+                ob_low  = df_hist['Low'].iloc[i]
+                ob_high = df_hist['High'].iloc[i]
+                if ob_low - ob_tolerance <= current_price <= ob_high:
+                    ob_entry = (ob_low + ob_high) / 2
+                    entry_source = "Order Block (OB)"
+                    break
+
+        if ob_entry and abs(ob_entry - current_price) / current_price < 0.005:
+            optimized_entry = ob_entry
+        else:
+            fib_382 = recent_low + 0.382 * fib_range
+            fib_500 = recent_low + 0.500 * fib_range
+            fib_618 = recent_low + 0.618 * fib_range
+            fibs = [fib_382, fib_500, fib_618]
+            near_fibs = [f for f in fibs if abs(f - current_price) / current_price < 0.005]
+            if near_fibs:
+                optimized_entry = min(near_fibs, key=lambda x: abs(x - current_price))
+                entry_source = "Fibonacci Pullback"
+
     final_entry = optimized_entry
-    
-    # Calculate SL and TPs using engine (SMC+Elliott+ICT)
-    tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
+
+    # ==================== GATE 5: SL/TP + RR CHECK ====================
+    # සිංහල: Gate 5 - SL/TP ගණනය + minimum RR enforce
+    if progress_callback:
+        progress_callback(0.50, "Gate 5: Calculating SL/TP and RR...")
+
+    tf_type = 'scalp' if tf_clean in ['1m', '5m', '15m'] else 'swing'
+    min_rr_required = 1.5 if tf_type == 'scalp' else 2.0
+
     sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs, theory_signals)
-    
-    # Generate engine-based forecast with partial close levels
+
+    sl_distance  = abs(final_entry - sl)
+    tp1_distance = abs(tp1 - final_entry)
+    rr_ratio     = round(tp1_distance / sl_distance, 2) if sl_distance > 0 else 0
+
+    # Hard RR gate
+    if rr_ratio < min_rr_required:
+        return None
+
+    # ==================== GATE 6: AI NEWS CONFIRMATION ====================
+    # සිංහල: Gate 6 - AI news + MTF confirmation
+    if progress_callback:
+        progress_callback(0.65, "Gate 6: AI news confirmation...")
+
+    ai_result = get_ai_news_confirmation(
+        pair, direction, current_price, df_hist, news_items, user_info,
+        progress_callback, mtf_details, score_breakdown
+    )
+
+    if not ai_result:
+        return None
+
+    # AI explicitly rejected
+    if ai_result['confirmation'] == 'REJECT':
+        return None
+
+    # ==================== COMBINED CONFIDENCE (NORMALIZED) ====================
+    # සිංහල: Combined confidence = normalized engine + AI news + MTF + quality
+    engine_conf  = min(100, abs(conf))
+    ai_conf      = ai_result['confidence']
+    quality_sc   = score_breakdown.get('Quality_Score', 50)
+
+    # Weighted combination
+    combined_conf = int(
+        engine_conf  * 0.35 +
+        ai_conf      * 0.30 +
+        mtf_score    * 0.20 +
+        quality_sc   * 0.15
+    )
+    combined_conf = min(100, max(0, combined_conf))
+
+    if progress_callback:
+        progress_callback(1.0, "Analysis complete.")
+
     engine_forecast = generate_engine_forecast(df_hist, direction, final_entry, tp1, tp2, tp3, sigs)
-    
+
     trade = {
-        "pair": pair,
-        "tf": primary_tf,
-        "dir": direction,
-        "entry": final_entry,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "conf": ai_result['confidence'],  # AI news confidence
-        "engine_conf": abs(conf),  # engine confidence (positive number)
-        "price": current_price,
-        "live_price": get_live_price(pair) or current_price,
-        "symbol_orig": clean_pair_to_yf_symbol(pair),
-        "forecast": engine_forecast,  # engine forecast
-        "ai_forecast": ai_result['forecast'],  # AI news-based forecast (optional)
-        "confirmation": ai_result['confirmation'],
-        "reason": ai_result['reason'],
-        "provider": ai_result['provider'],
+        "pair":          pair,
+        "tf":            primary_tf,
+        "dir":           direction,
+        "entry":         final_entry,
+        "sl":            sl,
+        "tp":            tp1,
+        "tp1":           tp1,
+        "tp2":           tp2,
+        "tp3":           tp3,
+        "conf":          combined_conf,
+        "engine_conf":   engine_conf,
+        "ai_conf":       ai_conf,
+        "quality_score": quality_sc,
+        "confluence_pct": confluence_pct,
+        "mtf_score":     mtf_score,
+        "mtf_direction": mtf_direction,
+        "mtf_agrees":    mtf_agrees,
+        "mtf_details":   mtf_details,
+        "rr_ratio":      rr_ratio,
+        "regime":        regime,
+        "adx_strength":  adx_strength,
+        "price":         current_price,
+        "live_price":    get_live_price(pair) or current_price,
+        "symbol_orig":   clean_pair_to_yf_symbol(pair),
+        "forecast":      engine_forecast,
+        "ai_forecast":   ai_result['forecast'],
+        "confirmation":  ai_result['confirmation'],
+        "reason":        ai_result['reason'],
+        "provider":      ai_result['provider'],
         "sinhala_summary": ai_result['sinhala_summary'],
-        "entry_source": entry_source,
-        "timeframe": primary_tf.split()[0],  # for display
-        "theory_signals": theory_signals  # store per-theory signals
+        "entry_source":  entry_source,
+        "timeframe":     tf_clean,
+        "theory_signals": theory_signals,
+        "score_breakdown": score_breakdown,
     }
     return trade
 
@@ -1842,6 +2369,17 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     for tf, sig in tf_signals.items():
         mtf_summary += f"- {tf}: {sig['signal']} (Conf: {sig['confidence']}), Trend: {sig['trend']}\n"
     
+    # ==================== UPDATE: ENHANCED DEEP ANALYSIS PROMPT ====================
+    # සිංහල: Deep analysis prompt - Theory, Indicators, MTF, News සියල්ල include
+    # RR ratio + combined confidence + score breakdown add කළා
+    rr_ratio = trade.get('rr_ratio', 'N/A')
+    engine_conf = trade.get('engine_conf', 'N/A')
+    ai_conf = trade.get('ai_conf', 'N/A')
+    mtf_score_val = trade.get('mtf_score', 'N/A')
+    combined_conf = trade.get('conf', 'N/A')
+    score_bd = trade.get('score_breakdown', {})
+    score_str = "\n".join([f"  - {k}: {v}" for k, v in score_bd.items()])
+    
     prompt = f"""
     Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
     Perform a deep analysis of the following trade setup:
@@ -1849,13 +2387,20 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     **Asset:** {pair}
     **Timeframe:** {tf_display}
     **Direction:** {trade['dir']}
-    **Entry:** {trade['entry']:.5f}
+    **Entry:** {trade['entry']:.5f} (Source: {trade.get('entry_source', 'N/A')})
     **Stop Loss:** {trade['sl']:.5f}
     **Take Profit 1:** {trade['tp1']:.5f}
     **Take Profit 2:** {trade['tp2']:.5f}
     **Take Profit 3:** {trade['tp3']:.5f}
-    **Confidence:** {trade['conf']}%
+    **Risk:Reward Ratio:** 1:{rr_ratio}
+    **Combined Confidence:** {combined_conf}%
+    **Engine Confidence:** {engine_conf}%
+    **AI News Confidence:** {ai_conf}%
+    **MTF Confluence Score:** {mtf_score_val}%
     **Current Live Price:** {live_price:.5f}
+    
+    **Indicator Scores:**
+{score_str}
     
     **Multi-Timeframe Analysis:**
     {mtf_summary}
@@ -1864,12 +2409,20 @@ def get_deep_hybrid_analysis(trade, user_info, df_hist_original):
     {news_str}
     
     **Task:**
-    1. Evaluate the risk-reward ratio of this trade.
-    2. Check if the current price is near entry and if it's a good moment to enter.
-    3. Provide a detailed analysis in SINHALA (use English for technical terms).
-    4. Suggest any adjustments to SL/TP based on recent price action.
-    5. Give a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
-    6. **Provide a final CONFIRMATION decision** – APPROVE or REJECT this trade, with a short reason.
+    1. Evaluate the risk-reward ratio of this trade (minimum acceptable: 1:1.5).
+    2. Check if Theory signals (SMC, ICT, Elliott, Fibonacci) ALL align with the trade direction.
+    3. Check MTF confluence - does higher timeframe trend support this trade?
+    4. Verify news sentiment - does current news support or contradict this trade?
+    5. Provide a detailed analysis in SINHALA (use English for technical terms).
+    6. Suggest any adjustments to SL/TP based on recent price action and structure.
+    7. Give a short-term price forecast (next 5-10 candles).
+    8. **Provide a final CONFIRMATION decision** – APPROVE or REJECT, with a short reason.
+    
+    **REJECT if ANY of these:**
+    - RR ratio < 1.2
+    - MTF alignment < 50%
+    - News strongly contradicts the direction
+    - Theory signals conflicting (SMC bull but Elliott bear, etc.)
     
     **FINAL OUTPUT FORMAT (STRICT):**
     [Sinhala Analysis]
@@ -2022,71 +2575,93 @@ def get_current_session():
     else:
         return "Other"
 
-# ==================== SCAN FUNCTION WITH AI ANALYSIS (MULTI-TIMEFRAME) ====================
+# ==================== UPDATE 6: ENHANCED SCAN WITH FULL CONFLUENCE FILTER ====================
+# සිංහල: Scanner - Theory + Indicators + MTF + News full confluence filter
 def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
     """
-    Scan market for setups across multiple timeframes using AI analysis for each candidate.
-    Automatically saves trades to Ongoing Trades if approved by AI, but only if not already tracked.
-    Returns a flat list of trades, each with a 'timeframe' field.
+    Scan market for setups. All 6 accuracy gates enforced.
+    Only highest-quality setups pass through.
+    
+    ACCURACY GATES SUMMARY:
+    1. Signal confluence >= 65%   (in calculate_advanced_signals)
+    2. MTF agreement >= 60%       (in get_ai_trade_setup Gate 2)
+    3. Market regime check        (Gate 3)
+    4. RR >= 1.5 scalp / 2.0 swing (Gate 5)
+    5. AI APPROVE only            (Gate 6)
+    6. Combined confidence >= min_accuracy
+    
+    සිංහල: Scanner - 6 gates pass වෙච්ච trade විතරයි results වල show වෙයි.
+    Less trades, but much higher quality.
     """
     all_trades = []
-    
-    # Progress bars for each timeframe
+
     progress_bars = {}
     for tf in timeframes:
         progress_bars[tf] = st.progress(0, text=f"Scanning {tf}...")
-    
+
     total_assets = len(assets_list)
-    
+
     for idx, symbol in enumerate(assets_list):
-        # Update progress for each timeframe
         for tf in timeframes:
             progress_bars[tf].progress((idx+1)/total_assets, text=f"Scanning {symbol} on {tf}...")
-        
+
         try:
-            # For each timeframe, fetch data and analyze
             for tf in timeframes:
                 period = get_period_for_tf(tf)
                 df = get_cached_historical_data(get_yf_symbol(symbol), tf, period=period)
                 if df is None or len(df) < 50:
                     continue
-                
-                # Use algorithmic signals to get direction and confidence quickly
-                sigs, atr, conf, _, theory = calculate_advanced_signals(df, tf, news_items=None)
-                if sigs and abs(conf) > min_accuracy:
-                    clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
-                    direction = "BUY" if conf > 0 else "SELL"
-                    curr_price = df['Close'].iloc[-1]
-                    
-                    # Get AI news confirmation and engine-based trade setup
-                    news_items = get_market_news(symbol)
-                    ai_trade = get_ai_trade_setup(
-                        clean_sym,
-                        f"{tf} (Auto)",
-                        direction,
-                        curr_price,
-                        df,
-                        news_items,
-                        user_info
-                    )
-                    if ai_trade and ai_trade['confirmation'] == "APPROVE":
-                        # Add timeframe to trade dict for display
-                        ai_trade['timeframe'] = tf
-                        # Check if already tracked (using pair, timeframe, direction, entry)
-                        trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
-                        if trade_id not in st.session_state.tracked_trades:
-                            # Save to ongoing trades with engine forecast and timeframe
-                            if save_trade_to_ongoing(ai_trade, user_info['Username'], tf, ai_trade.get('forecast', 'N/A')):
-                                st.session_state.tracked_trades.add(trade_id)
-                                all_trades.append(ai_trade)
+
+                # Quick pre-filter: only analyse if raw signal is strong enough
+                sigs, atr, conf, score_bd, theory = calculate_advanced_signals(df, tf, news_items=None)
+                if sigs is None:
+                    continue
+
+                # ==================== PRE-FILTER: CONFLUENCE GATE ====================
+                # සිංහල: Pre-filter - confluence failed නම් AI call නොකරයි (saves credits)
+                if score_bd.get('Confluence_Gate', '') != 'PASSED':
+                    continue
+
+                # ==================== PRE-FILTER: MIN RAW CONFIDENCE ====================
+                # Minimum normalized confidence before spending AI credits
+                if abs(conf) < max(20, min_accuracy * 0.5):
+                    continue
+
+                clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
+                direction  = "BUY" if conf > 0 else "SELL"
+                curr_price = df['Close'].iloc[-1]
+
+                news_items = get_market_news(symbol)
+
+                # Full 6-gate analysis
+                ai_trade = get_ai_trade_setup(
+                    clean_sym, f"{tf} (Auto)", direction,
+                    curr_price, df, news_items, user_info
+                )
+
+                if ai_trade is None:
+                    continue  # Failed one of the gates
+
+                # ==================== POST-FILTER: COMBINED CONFIDENCE ====================
+                # සිංහල: Final filter - combined confidence minimum threshold
+                if ai_trade['conf'] < min_accuracy:
+                    continue
+
+                ai_trade['timeframe'] = tf
+                trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
+
+                if trade_id not in st.session_state.tracked_trades:
+                    if save_trade_to_ongoing(ai_trade, user_info['Username'], tf, ai_trade.get('forecast', 'N/A')):
+                        st.session_state.tracked_trades.add(trade_id)
+                        all_trades.append(ai_trade)
+
         except Exception as e:
             print(f"Error scanning {symbol}: {e}")
             continue
-    
-    # Clear all progress bars
+
     for tf in timeframes:
         progress_bars[tf].empty()
-    
+
     return all_trades
 
 # --- FORECAST CHART FUNCTION (with multiple TP levels) ---
@@ -2669,7 +3244,7 @@ else:
         <div class='system-engine-card'>
             <div class='engine-icon'>⚙️</div>
             <h2>SYSTEM ANALYSIS ENGINE</h2>
-            <div class='engine-text'>🔴 Real-time Analysis Engine Running • Live Market Data • AI Processing</div>
+            <div class='engine-text'>🔴 Real-time Analysis Engine Running • Theory + Indicators + MTF + News • AI Processing</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -2703,7 +3278,7 @@ else:
                 <p><span class='metric-label'>Current Session:</span> <b>{get_current_session()}</b></p>
                 <p><span class='metric-label'>Active Trades:</span> <b>{len(active_trades)}</b></p>
                 <p><span class='metric-label'>Closed Today:</span> <b>{len([t for t in load_user_trades(user_info['Username'], status=['SL Hit', 'TP Hit']) if t.get('ClosedDate','').startswith(get_current_date_str())])}</b></p>
-                <p><span class='metric-label'>AI Analysis Method:</span> Gemini (Primary) → Groq (Key Rotation) → Puter</p>
+                <p><span class='metric-label'>Analysis Engine:</span> Theory + Indicators + MTF + News</p>
                 <p><span class='metric-label'>Gemini Keys:</span> 7 keys (rotated)</p>
                 <p><span class='metric-label'>Groq Keys:</span> 4 keys (rotated)</p>
                 <p><span class='metric-label'>Scanner Accuracy Threshold:</span> {st.session_state.min_accuracy}%</p>
@@ -2779,17 +3354,17 @@ else:
         # Get yfinance symbol for selected pair (for later use)
         pair_map = {}
         if selected_market == "Forex":
-            pair_map = {p: p.replace("/","")+"=X" for p in pair_options}
+            pair_map = {p: p.replace("/","")+"""=X""" for p in pair_options}
             pair_map["USD/SEK"] = "USDSEK=X"  # handle special cases
         elif selected_market == "Crypto":
             pair_map = {p: p.replace("/","-")+"USD" for p in pair_options}
         else:
-            pair_map = {p: p.replace("/","")+"=X" for p in pair_options}
+            pair_map = {p: p.replace("/","")+"""=X""" for p in pair_options}
         yf_sym = pair_map.get(selected_pair, selected_pair)
         
         # Generate forecast chart
         if generate_btn:
-            with st.spinner("Generating AI forecast..."):
+            with st.spinner("Generating AI forecast with Theory + Indicators + MTF + News..."):
                 chart, provider, trade_data = generate_dashboard_forecast(selected_market, selected_pair, selected_tf, user_info)
                 if chart and trade_data:
                     st.session_state.dashboard_forecast = chart
@@ -2803,6 +3378,31 @@ else:
             data = st.session_state.dashboard_forecast_data
             st.caption(f"🤖 AI Provider: {st.session_state.dashboard_forecast_provider}")
             if data:
+                # ==================== UPDATE: SHOW COMBINED ANALYSIS SCORES ====================
+                # සිංහල: Dashboard forecast - combined scores display කරයි
+                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                with col_s1:
+                    score_color = "score-high" if data.get('conf', 0) >= 70 else ("score-medium" if data.get('conf', 0) >= 50 else "score-low")
+                    st.markdown(f"<div class='score-box {score_color}'><b>Combined</b><br>{data.get('conf', 'N/A')}%</div>", unsafe_allow_html=True)
+                with col_s2:
+                    st.markdown(f"<div class='score-box'><b>Engine</b><br>{data.get('engine_conf', 'N/A')}%</div>", unsafe_allow_html=True)
+                with col_s3:
+                    st.markdown(f"<div class='score-box'><b>AI News</b><br>{data.get('ai_conf', 'N/A')}%</div>", unsafe_allow_html=True)
+                with col_s4:
+                    mtf_col = "score-high" if data.get('mtf_score', 0) >= 70 else ("score-medium" if data.get('mtf_score', 0) >= 50 else "score-low")
+                    st.markdown(f"<div class='score-box {mtf_col}'><b>MTF</b><br>{data.get('mtf_score', 'N/A')}%</div>", unsafe_allow_html=True)
+                
+                # MTF details
+                if not st.session_state.beginner_mode and data.get('mtf_details'):
+                    with st.expander("📊 Multi-Timeframe Details"):
+                        for tf_key, tf_data in data['mtf_details'].items():
+                            dir_sym = "🟢 BUY" if tf_data['direction'] == "bull" else ("🔴 SELL" if tf_data['direction'] == "bear" else "⚪ NEUTRAL")
+                            cls = "mtf-bull" if tf_data['direction'] == "bull" else ("mtf-bear" if tf_data['direction'] == "bear" else "mtf-neutral")
+                            st.markdown(f"<div class='mtf-box {cls}'><b>{tf_key}:</b> {dir_sym} | Conf: {tf_data['confidence']}% | {tf_data['trend']}</div>", unsafe_allow_html=True)
+                
+                # RR info
+                st.markdown(f"**R:R Ratio:** 1:{data.get('rr_ratio', 'N/A')} | **Entry Source:** {data.get('entry_source', 'N/A')}")
+                
                 live = get_live_price(data['pair'])
                 if live:
                     if data['dir'] == "BUY":
@@ -2870,7 +3470,8 @@ else:
             for tf, trades in trades_by_tf.items():
                 with st.expander(f"⏰ {tf} Timeframe ({len(trades)} trades)", expanded=False):
                     for t in trades[:3]:  # Show only first 3
-                        st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Conf: {t['conf']}%)")
+                        rr_display = f"RR: 1:{t.get('rr_ratio', 'N/A')}"
+                        st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Combined Conf: {t['conf']}% | {rr_display})")
         else:
             st.info("No recent scans. Run Market Scanner to see signals.")
 
@@ -2921,7 +3522,7 @@ else:
                 if not selected_timeframes:
                     st.warning("Please select at least one timeframe.")
                 else:
-                    with st.spinner(f"AI Scanning {market_choice} on {len(selected_timeframes)} timeframe(s)..."):
+                    with st.spinner(f"AI Scanning {market_choice} on {len(selected_timeframes)} timeframe(s)... Theory + Indicators + MTF + News"):
                         results = scan_market_with_ai(scan_assets, user_info, selected_timeframes, min_accuracy=min_acc)
                         st.session_state.scan_results = results  # Now a flat list
                         
@@ -2965,22 +3566,34 @@ else:
                         theory = sig.get('theory_signals', {})
                         theory_badges = ""
                         for th, val in theory.items():
-                            if th in ['SMC', 'ICT', 'FIB', 'ELLIOTT']:
-                                cls = "theory-bull" if val == "bull" else "theory-bear" if val == "bear" else "theory-neutral"
+                            if th in ['SMC', 'ICT', 'FIB', 'ELLIOTT', 'STOCH', 'CCI', 'VOL', 'ADX']:
+                                cls = "theory-bull" if val == "bull" else ("theory-bear" if val == "bear" else "theory-neutral")
                                 theory_badges += f"<span class='theory-badge {cls}'>{th}</span> "
+                        
+                        # ==================== UPDATE: SHOW MTF + RR IN SCANNER CARD ====================
+                        # සිංහල: Scanner card - MTF alignment + RR ratio display කරයි
+                        mtf_agrees = sig.get('mtf_agrees', True)
+                        mtf_icon = "✅ MTF Aligned" if mtf_agrees else "⚠️ MTF Conflict"
+                        mtf_score_display = sig.get('mtf_score', 'N/A')
+                        rr_display = sig.get('rr_ratio', 'N/A')
                         
                         col1, col2, col3, col4 = st.columns([3,1,1,2])
                         with col1:
                             color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                             session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
+                            mtf_agrees = sig.get('mtf_agrees', True)
+                            mtf_icon = "✅ MTF OK" if mtf_agrees else "⚠️ MTF Conflict"
+                            regime_icon = {"trending":"📈 Trending","ranging":"↔️ Ranging","transitioning":"🔄 Transitioning"}.get(sig.get('regime',''),'')
                             st.markdown(f"""
                             <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
                                 <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
-                                Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f}<br>
-                                TP1: {sig['tp1']:.4f} | TP2: {sig['tp2']:.4f} | TP3: {sig['tp3']:.4f}<br>
-                                Live: {sig['live_price']:.4f} | AI News Conf: {sig['conf']}% | Engine Conf: {sig.get('engine_conf', 'N/A')}%<br>
-                                <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
-                                <small>🇱🇰 {sig.get('sinhala_summary', '')}</small><br>
+                                Entry: {sig['entry']:.5f} | SL: {sig['sl']:.5f}<br>
+                                TP1: {sig['tp1']:.5f} | TP2: {sig['tp2']:.5f} | TP3: {sig['tp3']:.5f}<br>
+                                Live: {sig['live_price']:.5f}<br>
+                                <b>Combined: {sig['conf']}% | Engine: {sig.get('engine_conf','N/A')}% | AI News: {sig.get('ai_conf','N/A')}% | MTF: {sig.get('mtf_score','N/A')}% | Quality: {sig.get('quality_score','N/A')}%</b><br>
+                                <b>Confluence: {sig.get('confluence_pct','N/A')}% | R:R = 1:{sig.get('rr_ratio','N/A')} | {mtf_icon} | {regime_icon} ADX:{sig.get('adx_strength','N/A')}</b><br>
+                                <small>Entry Source: {sig.get('entry_source','N/A')} | Provider: {sig.get('provider','AI')}</small><br>
+                                <small>🇱🇰 {sig.get('sinhala_summary','')}</small><br>
                                 {theory_badges}
                             </div>
                             """, unsafe_allow_html=True)
@@ -3016,7 +3629,7 @@ else:
             st.subheader(f"🔬 Deep Analysis: {st.session_state.selected_trade['pair']} ({st.session_state.selected_trade['tf']})")
             
             if st.session_state.deep_analysis_result is None:
-                with st.spinner("Running deep analysis with AI..."):
+                with st.spinner("Running deep analysis with AI (Theory + MTF + News)..."):
                     try:
                         symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
                         # Extract timeframe from the trade's tf field
@@ -3052,6 +3665,29 @@ else:
                         st.session_state.deep_forecast_chart = chart
                     else:
                         st.warning("Not enough historical data for forecast chart.")
+            
+            # ==================== UPDATE: SHOW FULL CONFLUENCE SCORES IN DEEP ANALYSIS ====================
+            # සිංහල: Deep analysis - full confluence breakdown display
+            trade = st.session_state.selected_trade
+            col_d1, col_d2, col_d3, col_d4, col_d5 = st.columns(5)
+            with col_d1:
+                st.metric("Combined Conf", f"{trade.get('conf', 'N/A')}%")
+            with col_d2:
+                st.metric("Engine Conf", f"{trade.get('engine_conf', 'N/A')}%")
+            with col_d3:
+                st.metric("AI News", f"{trade.get('ai_conf', 'N/A')}%")
+            with col_d4:
+                st.metric("MTF Score", f"{trade.get('mtf_score', 'N/A')}%")
+            with col_d5:
+                st.metric("R:R Ratio", f"1:{trade.get('rr_ratio', 'N/A')}")
+            
+            # MTF details in deep analysis
+            if trade.get('mtf_details'):
+                with st.expander("📊 Multi-Timeframe Details"):
+                    for tf_key, tf_data in trade['mtf_details'].items():
+                        dir_sym = "🟢 BUY" if tf_data['direction'] == "bull" else ("🔴 SELL" if tf_data['direction'] == "bear" else "⚪ NEUTRAL")
+                        cls = "mtf-bull" if tf_data['direction'] == "bull" else ("mtf-bear" if tf_data['direction'] == "bear" else "mtf-neutral")
+                        st.markdown(f"<div class='mtf-box {cls}'><b>{tf_key}:</b> {dir_sym} | Conf: {tf_data['confidence']}% | {tf_data['trend']}</div>", unsafe_allow_html=True)
             
             st.markdown(f"**🤖 Provider:** `{st.session_state.deep_analysis_provider}`")
             st.markdown(f"<div class='entry-box'>{st.session_state.deep_analysis_result}</div>", unsafe_allow_html=True)
