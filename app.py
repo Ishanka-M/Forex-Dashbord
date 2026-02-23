@@ -372,7 +372,7 @@ st.markdown("""
 # --- Initialize Session State ---
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
-if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
+if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A", "FORECAST": "N/A"}
 if "scan_results" not in st.session_state: st.session_state.scan_results = []  # Now a flat list
 if "forecast_chart" not in st.session_state: st.session_state.forecast_chart = None
 if "selected_trade" not in st.session_state: st.session_state.selected_trade = None
@@ -553,7 +553,7 @@ def get_ongoing_sheet():
         try:
             sheet = spreadsheet.worksheet("Ongoing_Trades")
         except gspread.WorksheetNotFound:
-            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=12)
+            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=13)
             headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
             sheet.append_row(headers)
         return sheet, client
@@ -592,7 +592,8 @@ def load_user_trades(username, status=None):
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
-            records = sheet.get_all_records()
+            expected_headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
+            records = sheet.get_all_records(expected_headers=expected_headers)
             user_trades = []
             for idx, record in enumerate(records):
                 if record.get('User') == username:
@@ -660,7 +661,8 @@ def check_and_update_trades(username):
     if not sheet:
         return []
     try:
-        records = sheet.get_all_records()
+        expected_headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
+        records = sheet.get_all_records(expected_headers=expected_headers)
         for idx, record in enumerate(records):
             if record.get('User') == username and record.get('Status') == 'Active':
                 pair = record['Pair']
@@ -1222,7 +1224,38 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
     
     return sl, tp
 
-# ==================== AI FUNCTIONS WITH GEMINI FIRST + GROQ + PUTER (KEY ROTATION) ====================
+# --- 6. ENGINE-BASED FORECAST GENERATION ---
+def generate_engine_forecast(df, direction, entry, tp, signals):
+    """
+    Generate a forecast string based on engine analysis.
+    Uses recent price action, trend, and target levels.
+    """
+    # Get current price
+    current_price = df['Close'].iloc[-1]
+    
+    # Get trend from signals
+    trend = signals.get('TREND', ("Neutral", "neutral"))[0]
+    
+    # Get Elliott Wave status
+    ew_status = signals.get('ELLIOTT', ("Wave Analysis", "neutral"))[0]
+    
+    # Calculate distance to TP
+    if direction == "BUY":
+        distance_to_tp = ((tp - current_price) / current_price) * 100
+        if distance_to_tp > 0:
+            forecast = f"📈 Bullish: Expected to rise towards {tp:.5f} (≈{distance_to_tp:.2f}% gain). {trend}. {ew_status}."
+        else:
+            forecast = f"⚠️ Price already above TP? Current: {current_price:.5f}, TP: {tp:.5f}. {trend}."
+    else:  # SELL
+        distance_to_tp = ((current_price - tp) / current_price) * 100
+        if distance_to_tp > 0:
+            forecast = f"📉 Bearish: Expected to fall towards {tp:.5f} (≈{distance_to_tp:.2f}% gain). {trend}. {ew_status}."
+        else:
+            forecast = f"⚠️ Price already below TP? Current: {current_price:.5f}, TP: {tp:.5f}. {trend}."
+    
+    return forecast
+
+# ==================== AI FUNCTIONS (NOW ONLY FOR NEWS CONFIRMATION) ====================
 
 def call_gemini(prompt):
     """Try Gemini API with key rotation (7 keys). Returns response text or None."""
@@ -1334,230 +1367,194 @@ def call_ai_with_fallback(prompt, user_info=None, progress_callback=None):
         return None, "All AI providers failed"
 
 def parse_ai_response(text):
-    data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A", "FORECAST": "N/A"}
+    data = {"CONFIDENCE": "N/A", "FORECAST": "N/A", "SINHALA_SUMMARY": "N/A", "CONFIRMATION": "N/A", "REASON": "N/A"}
     try:
-        entry_match = re.search(r"ENTRY\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        sl_match = re.search(r"SL\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        tp_match = re.search(r"TP\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
-        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
+        conf_match = re.search(r"CONFIDENCE\s*[:=]\s*(\d+)", text, re.IGNORECASE)
+        if conf_match:
+            data["CONFIDENCE"] = conf_match.group(1)
         
-        if entry_match:
-            val = entry_match.group(1).strip().rstrip('.,')
-            if val:
-                data["ENTRY"] = val
-        if sl_match:
-            val = sl_match.group(1).strip().rstrip('.,')
-            if val:
-                data["SL"] = val
-        if tp_match:
-            val = tp_match.group(1).strip().rstrip('.,')
-            if val:
-                data["TP"] = val
+        forecast_match = re.search(r"FORECAST\s*[:=]\s*(.*?)(?=\n|$)", text, re.IGNORECASE | re.DOTALL)
         if forecast_match:
             data["FORECAST"] = forecast_match.group(1).strip()
+        
+        sinhala_match = re.search(r"SINHALA_SUMMARY\s*[:=]\s*(.+)", text, re.IGNORECASE)
+        if sinhala_match:
+            data["SINHALA_SUMMARY"] = sinhala_match.group(1).strip()
+        
+        confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", text, re.IGNORECASE)
+        if confirm_match:
+            data["CONFIRMATION"] = confirm_match.group(1).upper()
+        
+        reason_match = re.search(r"REASON\s*:\s*(.+)", text, re.IGNORECASE)
+        if reason_match:
+            data["REASON"] = reason_match.group(1).strip()
     except:
         pass
     return data
 
-def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
+def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
     """
-    Get AI-generated trade setup including entry, SL, TP, confidence, forecast, confirmation,
-    and a short Sinhala summary. Now includes multi-timeframe analysis.
+    Get AI confirmation based on news analysis only.
+    Returns confirmation, confidence, reason, sinhala summary.
     """
     if df_hist is None or df_hist.empty:
         return None
     
     if progress_callback:
-        progress_callback(0.1, "Calculating market stats...")
-    # Calculate some basic stats for prompt
-    high_52w = df_hist['High'].tail(252).max() if len(df_hist) > 252 else df_hist['High'].max()
-    low_52w = df_hist['Low'].tail(252).min() if len(df_hist) > 252 else df_hist['Low'].min()
-    atr = (df_hist['High'] - df_hist['Low']).rolling(14).mean().iloc[-1]
+        progress_callback(0.1, "Preparing news data...")
     
-    news_str = "\n".join([f"- {n['title']}" for n in news_items]) if news_items else "No recent news."
-    
-    # --- Multi-Timeframe Analysis ---
-    if progress_callback:
-        progress_callback(0.2, "Performing multi-timeframe analysis...")
-    symbol_orig = clean_pair_to_yf_symbol(pair)
-    timeframes = ["15m", "1h", "4h", "1d"]
-    tf_signals = {}
-    for tf in timeframes:
-        period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
-        try:
-            df_tf = get_cached_historical_data(get_yf_symbol(symbol_orig), tf, period=period_map[tf])
-            if df_tf is not None and len(df_tf) > 50:
-                sigs, _, conf, _ = calculate_advanced_signals(df_tf, tf, news_items=None)
-                if sigs:
-                    tf_signals[tf] = {
-                        "trend": sigs['TREND'][0],
-                        "signal": sigs['SK'][1].upper(),
-                        "confidence": abs(conf)
-                    }
-        except Exception as e:
-            print(f"Error fetching {tf} data for {pair}: {e}")
-            continue
-    
-    mtf_summary = ""
-    if tf_signals:
-        mtf_summary = "\n**Multi-Timeframe Analysis:**\n"
-        for tf, sig in tf_signals.items():
-            mtf_summary += f"- {tf}: {sig['signal']} (Conf: {sig['confidence']}%), Trend: {sig['trend']}\n"
-    else:
-        mtf_summary = "\n**Multi-Timeframe Analysis:** Insufficient data for other timeframes.\n"
+    news_str = "\n".join([f"- {n['title']} (Time: {n['time']})" for n in news_items]) if news_items else "No recent news."
     
     prompt = f"""
-    Act as a Senior Hedge Fund Risk Manager & Technical Analyst.
-    Analyze {pair} on {primary_tf} timeframe for a potential {direction} trade.
+    Act as a Senior Hedge Fund Risk Manager.
+    Analyze the following recent news headlines for {pair} and determine if they support a {direction} trade.
     
-    **Current Market Data:**
-    - Current Price: {current_price:.5f}
-    - 52-Week High: {high_52w:.5f}
-    - 52-Week Low: {low_52w:.5f}
-    - ATR (14): {atr:.5f}
+    **Current Price:** {current_price:.5f}
     
     **Recent News Headlines:**
     {news_str}
-    {mtf_summary}
+    
     **Task:**
-    1. Determine if a {direction} trade is valid based on technical and fundamental analysis, considering the multi-timeframe context.
-    2. Provide a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
-    3. Provide a confidence percentage (0-100%) for this forecast.
-    4. Finally, give a CONFIRMATION decision: APPROVE or REJECT the trade setup with a brief reason.
-    5. Provide a very short summary in SINHALA language (1 sentence) of this trade setup.
+    1. Based SOLELY on the news headlines, determine if the news sentiment is positive, negative, or neutral for {pair}.
+    2. Provide a confidence percentage (0-100%) for your assessment.
+    3. Give a short-term price forecast based on news sentiment (next 5-10 candles).
+    4. Finally, give a CONFIRMATION decision: APPROVE or REJECT the {direction} trade setup based on news, with a brief reason.
+    5. Provide a very short summary in SINHALA language (1 sentence) of this news impact.
     
     **FINAL OUTPUT FORMAT (STRICT):**
     CONFIDENCE: XX%
-    FORECAST: [Brief forecast description]
+    FORECAST: [Brief forecast description based on news]
     SINHALA_SUMMARY: [One sentence in Sinhala]
     CONFIRMATION: APPROVE/REJECT
     REASON: [Short reason]
     """
     
     if progress_callback:
-        progress_callback(0.3, "Calling AI...")
+        progress_callback(0.3, "Calling AI for news analysis...")
     response, provider = call_ai_with_fallback(prompt, user_info, progress_callback)
     if not response:
         return None
     
     parsed = parse_ai_response(response)
     
-    # Extract confidence
-    conf_match = re.search(r"CONFIDENCE\s*[:=]\s*(\d+)", response, re.IGNORECASE)
-    confidence = int(conf_match.group(1)) if conf_match else 50
-    
-    # Extract confirmation and reason
-    confirm_match = re.search(r"CONFIRMATION\s*:\s*(APPROVE|REJECT)", response, re.IGNORECASE)
-    reason_match = re.search(r"REASON\s*:\s*(.+)", response, re.IGNORECASE)
-    confirmation = confirm_match.group(1).upper() if confirm_match else "N/A"
-    reason = reason_match.group(1).strip() if reason_match else ""
-    
-    # Extract Sinhala summary
-    sinhala_match = re.search(r"SINHALA_SUMMARY\s*:\s*(.+)", response, re.IGNORECASE)
-    sinhala_summary = sinhala_match.group(1).strip() if sinhala_match else ""
-    
     if progress_callback:
         progress_callback(1.0, "Done")
     
-    # --- Entry Optimization (compare AI entry with OB/FVG) ---
-    # Get signals for current timeframe to find best entry levels
-    sigs, _, _, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
+    return {
+        "confidence": int(parsed["CONFIDENCE"]) if parsed["CONFIDENCE"] != "N/A" else 50,
+        "forecast": parsed["FORECAST"],
+        "sinhala_summary": parsed["SINHALA_SUMMARY"],
+        "confirmation": parsed["CONFIRMATION"],
+        "reason": parsed["REASON"],
+        "provider": provider
+    }
+
+def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news_items, user_info, progress_callback=None):
+    """
+    Get AI-generated trade setup - now only for news confirmation.
+    Entry, SL, TP, and forecast are engine-generated.
+    """
+    if df_hist is None or df_hist.empty:
+        return None
     
+    # Get AI news confirmation
+    ai_result = get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items, user_info, progress_callback)
+    
+    if not ai_result:
+        return None
+    
+    # --- Engine-based calculations ---
+    if progress_callback:
+        progress_callback(0.5, "Calculating engine signals...")
+    
+    # Get signals for current timeframe
+    sigs, atr, conf, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
+    
+    # Entry optimization (using SMC/ICT)
     optimized_entry = None
-    entry_source = "AI"
+    entry_source = "AI"  # but we'll override
     
     if direction == "BUY":
-        # Look for bullish OB or FVG near AI entry
         best_level = None
         best_distance = float('inf')
-        
         # Check recent bullish order blocks (last 10 candles)
         for i in range(10, len(df_hist)-1):
-            # Simple OB detection: bearish candle followed by bullish breakout
             if df_hist['Close'].iloc[i-1] < df_hist['Open'].iloc[i-1]:  # bearish candle
                 if df_hist['Close'].iloc[i] > df_hist['High'].iloc[i-1]:  # breakout
                     ob_level = df_hist['High'].iloc[i-1]  # top of OB
-                    if ob_level < current_price * 1.01:  # within 1% of current price
-                        dist = abs(ob_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                    if ob_level < current_price * 1.01:
+                        dist = abs(ob_level - current_price)
                         if dist < best_distance:
                             best_distance = dist
                             best_level = ob_level
-        
         # Check FVGs
         for i in range(2, len(df_hist)-1):
             if df_hist['Low'].iloc[i] > df_hist['High'].iloc[i+1]:  # bullish FVG
                 fvg_level = df_hist['Low'].iloc[i]  # top of FVG
                 if fvg_level < current_price * 1.01:
-                    dist = abs(fvg_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                    dist = abs(fvg_level - current_price)
                     if dist < best_distance:
                         best_distance = dist
                         best_level = fvg_level
-        
-        if best_level and best_distance < (current_price * 0.002):  # within 0.2%
+        if best_level and best_distance < (current_price * 0.002):
             optimized_entry = best_level
             entry_source = "SMC/ICT"
-    
-    else:  # SELL
+    else:
         best_level = None
         best_distance = float('inf')
-        
-        # Bearish order blocks
         for i in range(10, len(df_hist)-1):
             if df_hist['Close'].iloc[i-1] > df_hist['Open'].iloc[i-1]:  # bullish candle
                 if df_hist['Close'].iloc[i] < df_hist['Low'].iloc[i-1]:  # breakdown
                     ob_level = df_hist['Low'].iloc[i-1]  # bottom of OB
                     if ob_level > current_price * 0.99:
-                        dist = abs(ob_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                        dist = abs(ob_level - current_price)
                         if dist < best_distance:
                             best_distance = dist
                             best_level = ob_level
-        
-        # Bearish FVGs
         for i in range(2, len(df_hist)-1):
             if df_hist['High'].iloc[i] < df_hist['Low'].iloc[i+1]:  # bearish FVG
                 fvg_level = df_hist['High'].iloc[i]  # bottom of FVG
                 if fvg_level > current_price * 0.99:
-                    dist = abs(fvg_level - float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+                    dist = abs(fvg_level - current_price)
                     if dist < best_distance:
                         best_distance = dist
                         best_level = fvg_level
-        
         if best_level and best_distance < (current_price * 0.002):
             optimized_entry = best_level
             entry_source = "SMC/ICT"
     
-    # Use optimized entry if found, otherwise use AI entry
-    final_entry = optimized_entry if optimized_entry is not None else (float(parsed["ENTRY"]) if parsed["ENTRY"] != "N/A" else current_price)
+    final_entry = optimized_entry if optimized_entry is not None else current_price
     
-    # TP optimization (using the new calculate_advanced_sl_tp)
+    # Calculate SL and TP using engine
     tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
     sl, tp = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs)
     
-    # Override AI SL/TP with optimized ones
-    final_sl = sl
-    final_tp = tp
+    # Generate engine-based forecast
+    engine_forecast = generate_engine_forecast(df_hist, direction, final_entry, tp, sigs)
     
     trade = {
         "pair": pair,
         "tf": primary_tf,
         "dir": direction,
         "entry": final_entry,
-        "sl": final_sl,
-        "tp": final_tp,
-        "conf": confidence,
+        "sl": sl,
+        "tp": tp,
+        "conf": ai_result['confidence'],  # AI news confidence
         "price": current_price,
         "live_price": get_live_price(pair) or current_price,
-        "symbol_orig": symbol_orig,
-        "forecast": parsed["FORECAST"],
-        "confirmation": confirmation,
-        "reason": reason,
-        "provider": provider,
-        "sinhala_summary": sinhala_summary,
-        "entry_source": entry_source  # for debugging/info
+        "symbol_orig": clean_pair_to_yf_symbol(pair),
+        "forecast": engine_forecast,  # engine forecast
+        "ai_forecast": ai_result['forecast'],  # AI news-based forecast (optional)
+        "confirmation": ai_result['confirmation'],
+        "reason": ai_result['reason'],
+        "provider": ai_result['provider'],
+        "sinhala_summary": ai_result['sinhala_summary'],
+        "entry_source": entry_source,
+        "timeframe": primary_tf.split()[0]  # for display
     }
     return trade
 
-# --- 6. INFINITE ALGORITHMIC ENGINE (UPDATED WITH SMC/ICT/ELLIOTT SL/TP) ---
+# --- 7. INFINITE ALGORITHMIC ENGINE (UPDATED WITH SMC/ICT/ELLIOTT SL/TP) ---
 def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     if sigs is None:
         return "Insufficient Data for Analysis"
@@ -1603,7 +1600,7 @@ def infinite_algorithmic_engine(pair, curr_p, sigs, news_items, atr, tf, df):
     """
     return analysis_text
 
-# --- 7. HYBRID AI ENGINE WITH CONFIRMATION (uses new AI call) ---
+# --- 8. HYBRID AI ENGINE WITH CONFIRMATION (uses new AI call) ---
 def get_hybrid_analysis(pair, asset_data, sigs, news_items, atr, user_info, tf, df):
     if sigs is None:
         return "Error: Insufficient Signal Data", "System Error", None, None
@@ -1918,7 +1915,7 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                     direction = "BUY" if conf > 0 else "SELL"
                     curr_price = df['Close'].iloc[-1]
                     
-                    # Get AI analysis for this candidate
+                    # Get AI news confirmation and engine-based trade setup
                     news_items = get_market_news(symbol)
                     ai_trade = get_ai_trade_setup(
                         clean_sym,
@@ -1935,7 +1932,7 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                         # Check if already tracked (using pair, timeframe, direction, entry)
                         trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
                         if trade_id not in st.session_state.tracked_trades:
-                            # Save to ongoing trades with forecast and timeframe
+                            # Save to ongoing trades with engine forecast and timeframe
                             if save_trade_to_ongoing(ai_trade, user_info['Username'], tf, ai_trade.get('forecast', 'N/A')):
                                 st.session_state.tracked_trades.add(trade_id)
                                 all_trades.append(ai_trade)
@@ -2386,7 +2383,7 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
         update_progress(0.5, "Fetching news...")
         news_items = get_market_news(yf_sym)
         
-        update_progress(0.7, "Calling AI for trade setup...")
+        update_progress(0.7, "Calling AI for news confirmation...")
         ai_trade = get_ai_trade_setup(clean_pair, tf, direction, current_price, df, news_items, user_info, update_progress)
         if not ai_trade:
             progress_bar.empty()
@@ -2993,7 +2990,8 @@ else:
                         st.progress(progress, text="Progress to Target")
                         st.caption(direction_text)
                         # AI Forecast Notification
-                        st.info(f"🔮 AI Forecast: {forecast}")
+                        st.info(f"🔮 AI News Confirmation: {trade.get('confirmation', 'N/A')} - {trade.get('reason', '')}")
+                        st.caption(f"📊 Engine Forecast: {forecast}")
                     
                     with col2:
                         if not st.session_state.beginner_mode:
