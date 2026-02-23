@@ -1421,19 +1421,13 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     {mtf_summary}
     **Task:**
     1. Determine if a {direction} trade is valid based on technical and fundamental analysis, considering the multi-timeframe context.
-    2. Provide precise Entry, Stop Loss, and Take Profit levels.
-    3. Use concepts like support/resistance, Fibonacci, and recent swings to set logical SL/TP.
-    4. Ensure risk-reward ratio is at least 1:2 for scalp, 1:3 for swing.
-    5. Provide a confidence percentage (0-100%).
-    6. Give a short-term price forecast (next 5-10 candles).
-    7. Finally, give a CONFIRMATION decision: APPROVE or REJECT the trade setup with a brief reason.
-    8. Provide a very short summary in SINHALA language (1 sentence) of this trade setup.
+    2. Provide a short-term price forecast (next 5-10 candles) in terms of direction and approximate targets.
+    3. Provide a confidence percentage (0-100%) for this forecast.
+    4. Finally, give a CONFIRMATION decision: APPROVE or REJECT the trade setup with a brief reason.
+    5. Provide a very short summary in SINHALA language (1 sentence) of this trade setup.
     
     **FINAL OUTPUT FORMAT (STRICT):**
     CONFIDENCE: XX%
-    ENTRY: xxxxx
-    SL: xxxxx
-    TP: xxxxx
     FORECAST: [Brief forecast description]
     SINHALA_SUMMARY: [One sentence in Sinhala]
     CONFIRMATION: APPROVE/REJECT
