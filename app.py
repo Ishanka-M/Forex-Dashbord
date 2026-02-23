@@ -606,6 +606,7 @@ def save_trade_to_ongoing(trade, username, timeframe, forecast):
     if sheet:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            tp_value = trade.get('tp', trade.get('tp1', 0))
             row = [
                 username,
                 now,
