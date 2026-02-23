@@ -553,15 +553,15 @@ def get_ongoing_sheet():
         try:
             sheet = spreadsheet.worksheet("Ongoing_Trades")
         except gspread.WorksheetNotFound:
-            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=11)
-            headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes"]
+            sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=12)
+            headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
             sheet.append_row(headers)
         return sheet, client
     except Exception as e:
         st.error(f"Ongoing Trades sheet error: {e}")
         return None, None
 
-def save_trade_to_ongoing(trade, username):
+def save_trade_to_ongoing(trade, username, timeframe, forecast):
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
@@ -577,7 +577,9 @@ def save_trade_to_ongoing(trade, username):
                 trade['conf'],
                 "Active",
                 "",
-                ""
+                "",
+                forecast,
+                timeframe
             ]
             sheet.append_row(row)
             return True
@@ -637,11 +639,13 @@ def delete_trade_by_row_number(row_number):
             pair = trade_dict.get('Pair', '')
             direction = trade_dict.get('Direction', '')
             entry_str = trade_dict.get('Entry', '0').replace(',', '')
+            timeframe = trade_dict.get('Timeframe', '')
             try:
                 entry = float(entry_str)
-                # Since we don't have timeframe, we can't reconstruct exact trade_id.
-                # We'll leave tracked_trades as is; user may need to clear session to see deleted trades again.
-                pass
+                # Reconstruct trade_id
+                trade_id = f"{pair}_{timeframe}_{direction}_{entry:.5f}"
+                if trade_id in st.session_state.tracked_trades:
+                    st.session_state.tracked_trades.remove(trade_id)
             except:
                 pass
         # Delete the row
@@ -1937,7 +1941,8 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                         # Check if already tracked (using pair, timeframe, direction, entry)
                         trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
                         if trade_id not in st.session_state.tracked_trades:
-                            if save_trade_to_ongoing(ai_trade, user_info['Username']):
+                            # Save to ongoing trades with forecast and timeframe
+                            if save_trade_to_ongoing(ai_trade, user_info['Username'], tf, ai_trade.get('forecast', 'N/A')):
                                 st.session_state.tracked_trades.add(trade_id)
                                 all_trades.append(ai_trade)
         except Exception as e:
@@ -2169,8 +2174,6 @@ def create_technical_chart(df, tf):
     fig.update_layout(height=800, template='plotly_dark', showlegend=False)
     fig.update_xaxes(rangeslider_visible=False)
     return fig
-
-
 
 # NEW: Theory Chart (SMC, ICT, Liquidity, Support/Resistance, Fibonacci, Elliott Wave) - FINAL CORRECTED VERSION
 def create_theory_chart(df, tf):
@@ -2920,11 +2923,24 @@ else:
         with col2:
             end_date = st.date_input("End Date", value=datetime.now())
         
+        # Timeframe filter
+        if active_trades:
+            # Get unique timeframes from active trades
+            all_timeframes = sorted(set([t.get('Timeframe', 'Unknown') for t in active_trades]))
+            timeframe_options = ["All"] + all_timeframes
+            selected_tf_filter = st.selectbox("Filter by Timeframe", options=timeframe_options, index=0)
+        else:
+            selected_tf_filter = "All"
+        
         tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
         
         with tab1:
             if active_trades:
-                for trade in active_trades:
+                filtered_trades = active_trades
+                if selected_tf_filter != "All":
+                    filtered_trades = [t for t in active_trades if t.get('Timeframe', 'Unknown') == selected_tf_filter]
+                
+                for trade in filtered_trades:
                     color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
                     pair = trade['Pair']
                     live = get_live_price(pair)
@@ -2966,11 +2982,14 @@ else:
                     else:
                         direction_text = "❌ Live price unavailable"
                     
+                    # Get forecast from trade
+                    forecast = trade.get('Forecast', 'No forecast available')
+                    
                     col1, col2 = st.columns([5,1])
                     with col1:
                         st.markdown(f"""
                         <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b><br>
+                            <b>{trade['Pair']} | {trade['Direction']}</b> | <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span><br>
                             Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
                             Live: {live_display} | Confidence: {trade['Confidence']}%<br>
                             <small>Tracked since: {trade['Timestamp']}</small>
@@ -2979,6 +2998,8 @@ else:
                         # Progress bar
                         st.progress(progress, text="Progress to Target")
                         st.caption(direction_text)
+                        # AI Forecast Notification
+                        st.info(f"🔮 AI Forecast: {forecast}")
                     
                     with col2:
                         if not st.session_state.beginner_mode:
@@ -3013,7 +3034,7 @@ else:
                     with col1:
                         st.markdown(f"""
                         <div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b> - <span style='color:{color};'>{trade['Status']}</span><br>
+                            <b>{trade['Pair']} | {trade['Direction']}</b> | <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span><br>
                             Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
                             Confidence: {trade['Confidence']}%<br>
                             <small>Tracked: {trade['Timestamp']} | Closed: {trade.get('ClosedDate', 'N/A')}</small>
