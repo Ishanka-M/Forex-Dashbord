@@ -553,6 +553,7 @@ def get_ongoing_sheet():
         try:
             sheet = spreadsheet.worksheet("Ongoing_Trades")
         except gspread.WorksheetNotFound:
+            # Create with 12 columns (including Forecast and Timeframe)
             sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=13)
             headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
             sheet.append_row(headers)
@@ -592,15 +593,20 @@ def load_user_trades(username, status=None):
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
-            expected_headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
-            records = sheet.get_all_records(expected_headers=expected_headers)
+            # Get all records without expected_headers to avoid missing column errors
+            all_records = sheet.get_all_records()
             user_trades = []
-            for idx, record in enumerate(records):
+            for idx, record in enumerate(all_records):
                 if record.get('User') == username:
                     if status is None or record.get('Status') == status or (isinstance(status, list) and record.get('Status') in status):
-                        record_copy = record.copy()
-                        record_copy['row_num'] = idx + 2
-                        user_trades.append(record_copy)
+                        # Add row number
+                        record['row_num'] = idx + 2
+                        # Ensure optional fields exist
+                        if 'Forecast' not in record:
+                            record['Forecast'] = 'N/A'
+                        if 'Timeframe' not in record:
+                            record['Timeframe'] = 'N/A'
+                        user_trades.append(record)
             return user_trades
         except Exception as e:
             st.error(f"Error loading trades: {e}")
@@ -661,9 +667,8 @@ def check_and_update_trades(username):
     if not sheet:
         return []
     try:
-        expected_headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
-        records = sheet.get_all_records(expected_headers=expected_headers)
-        for idx, record in enumerate(records):
+        all_records = sheet.get_all_records()
+        for idx, record in enumerate(all_records):
             if record.get('User') == username and record.get('Status') == 'Active':
                 pair = record['Pair']
                 live = get_live_price(pair)
