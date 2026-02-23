@@ -373,7 +373,7 @@ st.markdown("""
 if "logged_in" not in st.session_state: st.session_state.logged_in = False
 if "active_provider" not in st.session_state: st.session_state.active_provider = "Waiting for analysis..."
 if "ai_parsed_data" not in st.session_state: st.session_state.ai_parsed_data = {"ENTRY": "N/A", "SL": "N/A", "TP": "N/A"}
-if "scan_results" not in st.session_state: st.session_state.scan_results = {"swing": [], "scalp": []}
+if "scan_results" not in st.session_state: st.session_state.scan_results = []  # Now a flat list
 if "forecast_chart" not in st.session_state: st.session_state.forecast_chart = None
 if "selected_trade" not in st.session_state: st.session_state.selected_trade = None
 if "deep_analysis_result" not in st.session_state: st.session_state.deep_analysis_result = None
@@ -517,6 +517,20 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
     except Exception as e:
         print(f"Error downloading {symbol} {interval}: {e}")
         return None
+
+# --- Helper to get period for a given timeframe ---
+def get_period_for_tf(tf):
+    """Return yfinance period string for a given timeframe."""
+    period_map = {
+        "1m": "1d",
+        "5m": "5d",
+        "15m": "1mo",
+        "1h": "3mo",
+        "4h": "6mo",
+        "1d": "1y",
+        "1wk": "5y"
+    }
+    return period_map.get(tf, "1mo")
 
 # --- Google Sheets Functions (User DB) ---
 def get_user_sheet():
@@ -1870,78 +1884,71 @@ def get_current_session():
     else:
         return "Other"
 
-# ==================== SCAN FUNCTION WITH AI ANALYSIS ====================
-def scan_market_with_ai(assets_list, user_info, min_accuracy=40):
+# ==================== SCAN FUNCTION WITH AI ANALYSIS (MULTI-TIMEFRAME) ====================
+def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
     """
-    Scan market for swing and scalp setups using AI analysis for each candidate.
+    Scan market for setups across multiple timeframes using AI analysis for each candidate.
     Automatically saves trades to Ongoing Trades if approved by AI, but only if not already tracked.
+    Returns a flat list of trades, each with a 'timeframe' field.
     """
-    swing_list = []
-    scalp_list = []
+    all_trades = []
     
-    # Progress bars
-    swing_progress = st.progress(0, text="Scanning Swing (4H)...")
-    scalp_progress = st.progress(0, text="Scanning Scalp (15M)...")
+    # Progress bars for each timeframe
+    progress_bars = {}
+    for tf in timeframes:
+        progress_bars[tf] = st.progress(0, text=f"Scanning {tf}...")
     
-    # Swing scan (4H)
-    total_swing = len(assets_list)
+    total_assets = len(assets_list)
+    
     for idx, symbol in enumerate(assets_list):
-        swing_progress.progress((idx+1)/total_swing, text=f"Scanning {symbol} for Swing...")
+        # Update progress for each timeframe
+        for tf in timeframes:
+            progress_bars[tf].progress((idx+1)/total_assets, text=f"Scanning {symbol} on {tf}...")
+        
         try:
-            df_sw = get_cached_historical_data(get_yf_symbol(symbol), "4h", period="6mo")
-            if df_sw is not None and len(df_sw) > 50:
+            # For each timeframe, fetch data and analyze
+            for tf in timeframes:
+                period = get_period_for_tf(tf)
+                df = get_cached_historical_data(get_yf_symbol(symbol), tf, period=period)
+                if df is None or len(df) < 50:
+                    continue
+                
                 # Use algorithmic signals to get direction and confidence quickly
-                sigs_sw, atr_sw, conf_sw, _ = calculate_advanced_signals(df_sw, "4h", news_items=None)
-                if abs(conf_sw) > min_accuracy:
+                sigs, atr, conf, _ = calculate_advanced_signals(df, tf, news_items=None)
+                if sigs and abs(conf) > min_accuracy:
                     clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
-                    direction = "BUY" if conf_sw > 0 else "SELL"
-                    curr_price = df_sw['Close'].iloc[-1]
+                    direction = "BUY" if conf > 0 else "SELL"
+                    curr_price = df['Close'].iloc[-1]
                     
                     # Get AI analysis for this candidate
                     news_items = get_market_news(symbol)
-                    ai_trade = get_ai_trade_setup(clean_sym, "4H (Swing)", direction, curr_price, df_sw, news_items, user_info)
+                    ai_trade = get_ai_trade_setup(
+                        clean_sym,
+                        f"{tf} (Auto)",
+                        direction,
+                        curr_price,
+                        df,
+                        news_items,
+                        user_info
+                    )
                     if ai_trade and ai_trade['confirmation'] == "APPROVE":
-                        # Check if already tracked
-                        trade_id = f"{clean_sym}_4H (Swing)_{direction}_{ai_trade['entry']:.5f}"
+                        # Add timeframe to trade dict for display
+                        ai_trade['timeframe'] = tf
+                        # Check if already tracked (using pair, timeframe, direction, entry)
+                        trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
                         if trade_id not in st.session_state.tracked_trades:
                             if save_trade_to_ongoing(ai_trade, user_info['Username']):
                                 st.session_state.tracked_trades.add(trade_id)
-                                swing_list.append(ai_trade)
-                        # If already tracked, do not add to swing_list
+                                all_trades.append(ai_trade)
         except Exception as e:
-            print(f"Error scanning {symbol} for swing: {e}")
+            print(f"Error scanning {symbol}: {e}")
             continue
     
-    swing_progress.empty()
+    # Clear all progress bars
+    for tf in timeframes:
+        progress_bars[tf].empty()
     
-    # Scalp scan (15M)
-    total_scalp = len(assets_list)
-    for idx, symbol in enumerate(assets_list):
-        scalp_progress.progress((idx+1)/total_scalp, text=f"Scanning {symbol} for Scalp...")
-        try:
-            df_sc = get_cached_historical_data(get_yf_symbol(symbol), "15m", period="1mo")
-            if df_sc is not None and len(df_sc) > 50:
-                sigs_sc, atr_sc, conf_sc, _ = calculate_advanced_signals(df_sc, "15m", news_items=None)
-                if abs(conf_sc) > min_accuracy:
-                    clean_sym = symbol.replace("=X","").replace("-USD","").replace("-USDT","")
-                    direction = "BUY" if conf_sc > 0 else "SELL"
-                    curr_price = df_sc['Close'].iloc[-1]
-                    
-                    news_items = get_market_news(symbol)
-                    ai_trade = get_ai_trade_setup(clean_sym, "15M (Scalp)", direction, curr_price, df_sc, news_items, user_info)
-                    if ai_trade and ai_trade['confirmation'] == "APPROVE":
-                        trade_id = f"{clean_sym}_15M (Scalp)_{direction}_{ai_trade['entry']:.5f}"
-                        if trade_id not in st.session_state.tracked_trades:
-                            if save_trade_to_ongoing(ai_trade, user_info['Username']):
-                                st.session_state.tracked_trades.add(trade_id)
-                                scalp_list.append(ai_trade)
-        except Exception as e:
-            print(f"Error scanning {symbol} for scalp: {e}")
-            continue
-    
-    scalp_progress.empty()
-    
-    return {"swing": swing_list, "scalp": scalp_list}
+    return all_trades
 
 # --- FORECAST CHART FUNCTION (unchanged) ---
 def create_forecast_chart(historical_df, entry_price, sl, tp, forecast_text):
@@ -2356,8 +2363,7 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
     clean_pair = yf_sym.replace("=X", "").replace("-USD", "").replace("-USDT", "")
     
     # Determine period based on tf
-    period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
-    period = period_map.get(tf, "1mo")
+    period = get_period_for_tf(tf)
     
     # Create a progress bar
     progress_bar = st.progress(0, text="Starting forecast generation...")
@@ -2654,8 +2660,7 @@ else:
         if not st.session_state.beginner_mode:
             if 'tech_btn' in locals() and tech_btn:
                 with st.spinner("Generating technical analysis chart..."):
-                    period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
-                    period = period_map.get(selected_tf, "1mo")
+                    period = get_period_for_tf(selected_tf)
                     df_tech = get_cached_historical_data(yf_sym, selected_tf, period=period)
                     if df_tech is not None and len(df_tech) > 50:
                         tech_chart = create_technical_chart(df_tech, selected_tf)
@@ -2669,8 +2674,7 @@ else:
             # Generate theory chart (SMC/ICT etc.)
             if 'theory_btn' in locals() and theory_btn:
                 with st.spinner("Generating theory chart (SMC, ICT, Fibonacci, Elliott)..."):
-                    period_map = {"15m": "1mo", "1h": "3mo", "4h": "6mo", "1d": "1y"}
-                    period = period_map.get(selected_tf, "1mo")
+                    period = get_period_for_tf(selected_tf)
                     df_theory = get_cached_historical_data(yf_sym, selected_tf, period=period)
                     if df_theory is not None and len(df_theory) > 50:
                         theory_chart = create_theory_chart(df_theory, selected_tf)
@@ -2697,37 +2701,52 @@ else:
         
         # Recent scanner signals
         st.markdown("### 🔥 Recent Scanner Signals")
-        if st.session_state.scan_results['swing'] or st.session_state.scan_results['scalp']:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Swing (4H)**")
-                for t in st.session_state.scan_results['swing'][:3]:
-                    st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Conf: {t['conf']}%)")
-            with col2:
-                st.markdown("**Scalp (15M)**")
-                for t in st.session_state.scan_results['scalp'][:3]:
-                    st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Conf: {t['conf']}%)")
+        if st.session_state.scan_results:
+            # Group by timeframe for display
+            trades_by_tf = {}
+            for t in st.session_state.scan_results:
+                tf = t.get('timeframe', 'Unknown')
+                if tf not in trades_by_tf:
+                    trades_by_tf[tf] = []
+                trades_by_tf[tf].append(t)
+            
+            for tf, trades in trades_by_tf.items():
+                with st.expander(f"⏰ {tf} Timeframe ({len(trades)} trades)", expanded=False):
+                    for t in trades[:3]:  # Show only first 3
+                        st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Conf: {t['conf']}%)")
         else:
             st.info("No recent scans. Run Market Scanner to see signals.")
 
     elif app_mode == "Market Scanner":
-        st.title("📡 AI-Powered Market Scanner (Auto-Track Enabled)")
+        st.title("📡 AI-Powered Market Scanner (Multi-Timeframe)")
         
-        st.markdown("<div class='scan-header'><h3>🔍 Select Markets to Scan</h3></div>", unsafe_allow_html=True)
-        market_choice = st.selectbox(
-            "Choose market(s) to scan",
-            options=["All", "Forex", "Crypto", "Metals"],
-            index=0,
-            key="market_selector"
-        )
-        st.session_state.selected_market = market_choice
+        st.markdown("<div class='scan-header'><h3>🔍 Select Markets & Timeframes to Scan</h3></div>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            market_choice = st.selectbox(
+                "Market",
+                options=["All", "Forex", "Crypto", "Metals"],
+                index=0,
+                key="market_selector"
+            )
+        with col2:
+            # Timeframe multiselect
+            available_timeframes = ["1m", "5m", "15m", "1h", "4h", "1d", "1wk"]
+            default_timeframes = ["4h", "15m"]  # Swing and scalp
+            selected_timeframes = st.multiselect(
+                "Timeframes",
+                options=available_timeframes,
+                default=default_timeframes,
+                help="Select one or more timeframes to scan."
+            )
         
         if market_choice == "All":
             scan_assets = assets["Forex"] + assets["Crypto"] + assets["Metals"]
         else:
             scan_assets = assets[market_choice]
         
-        st.info(f"Selected markets: **{market_choice}** ({len(scan_assets)} assets)")
+        st.info(f"Selected markets: **{market_choice}** ({len(scan_assets)} assets) | Timeframes: {', '.join(selected_timeframes)}")
         
         min_acc = st.slider(
             "Minimum Accuracy (%)",
@@ -2742,129 +2761,87 @@ else:
         col1, col2 = st.columns([1,5])
         with col1:
             if st.button("🚀 Start AI Scan", type="primary", use_container_width=True):
-                with st.spinner(f"AI Scanning {market_choice} for High Probability Setups (>{min_acc}%)..."):
-                    results = scan_market_with_ai(scan_assets, user_info, min_accuracy=min_acc)
-                    st.session_state.scan_results = results
-                    
-                    if not results['swing'] and not results['scalp']:
-                        st.warning(f"No signals found above {min_acc}% accuracy.")
-                    else:
-                        st.success(f"Scan Complete! Found {len(results['swing'])} Swing & {len(results['scalp'])} Scalp setups (auto-tracked).")
+                if not selected_timeframes:
+                    st.warning("Please select at least one timeframe.")
+                else:
+                    with st.spinner(f"AI Scanning {market_choice} on {len(selected_timeframes)} timeframe(s)..."):
+                        results = scan_market_with_ai(scan_assets, user_info, selected_timeframes, min_accuracy=min_acc)
+                        st.session_state.scan_results = results  # Now a flat list
+                        
+                        if not results:
+                            st.warning(f"No signals found above {min_acc}% accuracy.")
+                        else:
+                            st.success(f"Scan Complete! Found {len(results)} setups across {len(selected_timeframes)} timeframe(s).")
         
         with col2:
             if st.button("🗑️ Clear Results", use_container_width=True):
-                st.session_state.scan_results = {"swing": [], "scalp": []}
+                st.session_state.scan_results = []
                 st.rerun()
         
         st.markdown("---")
         
         res = st.session_state.scan_results
-        
-        # Helper to get current session
-        current_session = get_current_session()
-        
-        # Swing
-        st.subheader("🐢 SWING TRADES (4H) - AI Analyzed")
-        if res['swing']:
-            for idx, sig in enumerate(res['swing']):
-                max_diff = abs(sig['entry'] - sig['sl'])
-                if max_diff > 0:
-                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
-                    progress = max(0, min(1, progress))
-                else:
-                    progress = 0
-                
-                conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
-                
-                col1, col2, col3, col4 = st.columns([3,1,1,2])
-                with col1:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
-                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
-                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
-                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
-                        <small>🇱🇰 {sig.get('sinhala_summary', '')}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.progress(progress, text="Approach")
-                with col3:
-                    if not st.session_state.beginner_mode:
-                        if st.button("🔍 Deep", key=f"swing_deep_{idx}"):
-                            st.session_state.selected_trade = sig
-                            st.session_state.deep_analysis_result = None
-                            st.session_state.deep_analysis_provider = None
-                            st.session_state.deep_forecast_chart = None
-                            st.session_state.deep_confirmation = None
-                            st.session_state.deep_reason = None
-                            st.rerun()
-                with col4:
-                    # Fetch historical data for mini chart
-                    try:
-                        symbol_orig = sig.get('symbol_orig', sig['pair'])
-                        df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), "1h", period="1mo")
-                        if df_hist is not None:
-                            mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
-                            st.plotly_chart(mini_chart, use_container_width=True)
-                    except:
-                        st.write("Chart N/A")
+        if res:
+            # Group results by timeframe
+            trades_by_tf = {}
+            for trade in res:
+                tf = trade.get('timeframe', 'Unknown')
+                if tf not in trades_by_tf:
+                    trades_by_tf[tf] = []
+                trades_by_tf[tf].append(trade)
+            
+            # Display each timeframe group
+            for tf, trades in trades_by_tf.items():
+                with st.expander(f"⏰ {tf} Timeframe ({len(trades)} trades)", expanded=True):
+                    current_session = get_current_session()
+                    for idx, sig in enumerate(trades):
+                        max_diff = abs(sig['entry'] - sig['sl'])
+                        if max_diff > 0:
+                            progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
+                            progress = max(0, min(1, progress))
+                        else:
+                            progress = 0
+                        
+                        conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
+                        
+                        col1, col2, col3, col4 = st.columns([3,1,1,2])
+                        with col1:
+                            color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
+                            session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
+                            st.markdown(f"""
+                            <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
+                                <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
+                                Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
+                                Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
+                                <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
+                                <small>🇱🇰 {sig.get('sinhala_summary', '')}</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with col2:
+                            st.progress(progress, text="Approach")
+                        with col3:
+                            if not st.session_state.beginner_mode:
+                                if st.button("🔍 Deep", key=f"deep_{tf}_{idx}"):
+                                    st.session_state.selected_trade = sig
+                                    st.session_state.deep_analysis_result = None
+                                    st.session_state.deep_analysis_provider = None
+                                    st.session_state.deep_forecast_chart = None
+                                    st.session_state.deep_confirmation = None
+                                    st.session_state.deep_reason = None
+                                    st.rerun()
+                        with col4:
+                            # Fetch historical data for mini chart (use same timeframe as the trade)
+                            try:
+                                symbol_orig = sig.get('symbol_orig', sig['pair'])
+                                period = get_period_for_tf(tf)
+                                df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), tf, period=period)
+                                if df_hist is not None:
+                                    mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
+                                    st.plotly_chart(mini_chart, use_container_width=True)
+                            except:
+                                st.write("Chart N/A")
         else:
-            st.info("No Swing setups found.")
-        
-        st.markdown("---")
-        
-        # Scalp
-        st.subheader("🐇 SCALP TRADES (15M) - AI Analyzed")
-        if res['scalp']:
-            for idx, sig in enumerate(res['scalp']):
-                max_diff = abs(sig['entry'] - sig['sl'])
-                if max_diff > 0:
-                    progress = 1 - (abs(sig['live_price'] - sig['entry']) / max_diff)
-                    progress = max(0, min(1, progress))
-                else:
-                    progress = 0
-                
-                conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>" if sig['confirmation'] == "APPROVE" else f"<span class='ai-badge ai-reject'>❌ {sig['confirmation']}</span>" if sig['confirmation'] == "REJECT" else ""
-                
-                col1, col2, col3, col4 = st.columns([3,1,1,2])
-                with col1:
-                    color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
-                    session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>" if current_session else ""
-                    st.markdown(f"""
-                    <div style='background:#1e1e1e; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
-                        <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge}<br>
-                        Entry: {sig['entry']:.4f} | SL: {sig['sl']:.4f} | TP: {sig['tp']:.4f}<br>
-                        Live: {sig['live_price']:.4f} | AI Confidence: {sig['conf']}%<br>
-                        <small>Provider: {sig.get('provider', 'AI')} | Forecast: {sig.get('forecast', 'N/A')}</small><br>
-                        <small>🇱🇰 {sig.get('sinhala_summary', '')}</small>
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col2:
-                    st.progress(progress, text="Approach")
-                with col3:
-                    if not st.session_state.beginner_mode:
-                        if st.button("🔍 Deep", key=f"scalp_deep_{idx}"):
-                            st.session_state.selected_trade = sig
-                            st.session_state.deep_analysis_result = None
-                            st.session_state.deep_analysis_provider = None
-                            st.session_state.deep_forecast_chart = None
-                            st.session_state.deep_confirmation = None
-                            st.session_state.deep_reason = None
-                            st.rerun()
-                with col4:
-                    try:
-                        symbol_orig = sig.get('symbol_orig', sig['pair'])
-                        df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), "15m", period="1d")
-                        if df_hist is not None:
-                            mini_chart = create_mini_chart(df_hist, sig['entry'], sig['sl'], sig['tp'])
-                            st.plotly_chart(mini_chart, use_container_width=True)
-                    except:
-                        st.write("Chart N/A")
-        else:
-            st.info("No Scalp setups found.")
+            st.info("No scan results. Run a scan to see setups.")
         
         # Deep analysis display (only in expert mode)
         if not st.session_state.beginner_mode and st.session_state.selected_trade:
@@ -2875,12 +2852,10 @@ else:
                 with st.spinner("Running deep analysis with AI..."):
                     try:
                         symbol_orig = st.session_state.selected_trade.get('symbol_orig', st.session_state.selected_trade['pair'])
-                        if "Swing" in st.session_state.selected_trade['tf']:
-                            interval = "4h"
-                            period = "3mo"
-                        else:
-                            interval = "15m"
-                            period = "1mo"
+                        # Extract timeframe from the trade's tf field
+                        tf_part = st.session_state.selected_trade.get('timeframe', '1h')
+                        interval = tf_part
+                        period = get_period_for_tf(interval)
                         df_hist = get_cached_historical_data(get_yf_symbol(symbol_orig), interval, period=period)
                         if df_hist is None or len(df_hist) < 10:
                             df_hist = None
