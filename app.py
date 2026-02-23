@@ -553,7 +553,7 @@ def get_ongoing_sheet():
         try:
             sheet = spreadsheet.worksheet("Ongoing_Trades")
         except gspread.WorksheetNotFound:
-            # Create with 12 columns (including Forecast and Timeframe)
+            # Create with 13 columns (including Forecast and Timeframe)
             sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=13)
             headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
             sheet.append_row(headers)
@@ -1182,12 +1182,19 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         # Remove duplicates and sort ascending
         unique_candidates = sorted(set(tp_candidates))
         
-        # Select the best TP: closest to entry among those above entry
+        # Select the best TP for better profit:
+        # Get all candidates above entry
         valid_candidates = [c for c in unique_candidates if c > entry]
-        if valid_candidates:
-            tp = min(valid_candidates, key=lambda x: abs(x - entry))
+        if len(valid_candidates) >= 2:
+            # Sort by distance to entry (closest first)
+            valid_candidates.sort(key=lambda x: abs(x - entry))
+            # Take the second closest for better profit
+            tp = valid_candidates[1]
+        elif len(valid_candidates) == 1:
+            tp = valid_candidates[0]  # only one candidate
         else:
-            tp = entry * 1.02  # fallback
+            # Fallback: 5% profit target
+            tp = entry * 1.05
     
     else:  # SELL
         # 1. SMC: recent low
@@ -1220,12 +1227,18 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals):
         # Remove duplicates and sort descending
         unique_candidates = sorted(set(tp_candidates), reverse=True)
         
-        # Select the best TP: closest to entry among those below entry
+        # Select the best TP for better profit:
         valid_candidates = [c for c in unique_candidates if c < entry]
-        if valid_candidates:
-            tp = max(valid_candidates, key=lambda x: abs(x - entry))  # closest below entry
+        if len(valid_candidates) >= 2:
+            # Sort by distance to entry (closest first)
+            valid_candidates.sort(key=lambda x: abs(x - entry))
+            # Take the second closest for better profit
+            tp = valid_candidates[1]
+        elif len(valid_candidates) == 1:
+            tp = valid_candidates[0]
         else:
-            tp = entry * 0.98  # fallback
+            # Fallback: 5% profit target
+            tp = entry * 0.95
     
     return sl, tp
 
@@ -1458,6 +1471,7 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     """
     Get AI-generated trade setup - now only for news confirmation.
     Entry, SL, TP, and forecast are engine-generated.
+    Entry is based on Fibonacci levels.
     """
     if df_hist is None or df_hist.empty:
         return None
@@ -1475,62 +1489,62 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     # Get signals for current timeframe
     sigs, atr, conf, _ = calculate_advanced_signals(df_hist, primary_tf, news_items)
     
-    # Entry optimization (using SMC/ICT)
-    optimized_entry = None
-    entry_source = "AI"  # but we'll override
+    # --- Entry Optimization using Fibonacci ---
+    # Calculate Fibonacci levels from recent swing
+    recent_low = df_hist['Low'].tail(50).min()
+    recent_high = df_hist['High'].tail(50).max()
+    fib_range = recent_high - recent_low
     
+    # Fibonacci retracement levels (for pullback entries)
+    fib_382 = recent_high - 0.382 * fib_range
+    fib_500 = recent_high - 0.500 * fib_range
+    fib_618 = recent_high - 0.618 * fib_range
+    
+    # Fibonacci extension levels (for breakout entries)
+    fib_1272 = recent_high + 0.272 * fib_range
+    fib_1382 = recent_high + 0.382 * fib_range
+    fib_1618 = recent_high + 0.618 * fib_range
+    
+    # For BUY, we consider pullback levels (below current price) and extension levels (above)
+    # For SELL, we consider pullback levels (above current price) and extension levels (below)
+    
+    fib_candidates = []
     if direction == "BUY":
-        best_level = None
-        best_distance = float('inf')
-        # Check recent bullish order blocks (last 10 candles)
-        for i in range(10, len(df_hist)-1):
-            if df_hist['Close'].iloc[i-1] < df_hist['Open'].iloc[i-1]:  # bearish candle
-                if df_hist['Close'].iloc[i] > df_hist['High'].iloc[i-1]:  # breakout
-                    ob_level = df_hist['High'].iloc[i-1]  # top of OB
-                    if ob_level < current_price * 1.01:
-                        dist = abs(ob_level - current_price)
-                        if dist < best_distance:
-                            best_distance = dist
-                            best_level = ob_level
-        # Check FVGs
-        for i in range(2, len(df_hist)-1):
-            if df_hist['Low'].iloc[i] > df_hist['High'].iloc[i+1]:  # bullish FVG
-                fvg_level = df_hist['Low'].iloc[i]  # top of FVG
-                if fvg_level < current_price * 1.01:
-                    dist = abs(fvg_level - current_price)
-                    if dist < best_distance:
-                        best_distance = dist
-                        best_level = fvg_level
-        if best_level and best_distance < (current_price * 0.002):
-            optimized_entry = best_level
-            entry_source = "SMC/ICT"
-    else:
-        best_level = None
-        best_distance = float('inf')
-        for i in range(10, len(df_hist)-1):
-            if df_hist['Close'].iloc[i-1] > df_hist['Open'].iloc[i-1]:  # bullish candle
-                if df_hist['Close'].iloc[i] < df_hist['Low'].iloc[i-1]:  # breakdown
-                    ob_level = df_hist['Low'].iloc[i-1]  # bottom of OB
-                    if ob_level > current_price * 0.99:
-                        dist = abs(ob_level - current_price)
-                        if dist < best_distance:
-                            best_distance = dist
-                            best_level = ob_level
-        for i in range(2, len(df_hist)-1):
-            if df_hist['High'].iloc[i] < df_hist['Low'].iloc[i+1]:  # bearish FVG
-                fvg_level = df_hist['High'].iloc[i]  # bottom of FVG
-                if fvg_level > current_price * 0.99:
-                    dist = abs(fvg_level - current_price)
-                    if dist < best_distance:
-                        best_distance = dist
-                        best_level = fvg_level
-        if best_level and best_distance < (current_price * 0.002):
-            optimized_entry = best_level
-            entry_source = "SMC/ICT"
+        # Pullback levels (below recent high)
+        fib_candidates = [fib_382, fib_500, fib_618]
+        # Also consider extension levels if they are near current price? Not typical for entry.
+        # Filter candidates that are within 1% of current price
+        valid_candidates = [f for f in fib_candidates if f < current_price * 1.01 and f > current_price * 0.99]
+        if valid_candidates:
+            # Choose the one closest to current price
+            optimized_entry = min(valid_candidates, key=lambda x: abs(x - current_price))
+            entry_source = "Fibonacci Pullback"
+        else:
+            # Use current price as fallback
+            optimized_entry = current_price
+            entry_source = "Current Price"
+    else:  # SELL
+        # Pullback levels (above recent low)
+        fib_candidates = [fib_382, fib_500, fib_618]  # These are below recent high, but for SELL we need above recent low
+        # Actually, for SELL, retracement levels are above the recent low.
+        # Recalculate for SELL:
+        fib_382 = recent_low + 0.382 * fib_range
+        fib_500 = recent_low + 0.500 * fib_range
+        fib_618 = recent_low + 0.618 * fib_range
+        fib_candidates = [fib_382, fib_500, fib_618]
+        valid_candidates = [f for f in fib_candidates if f > current_price * 0.99 and f < current_price * 1.01]
+        if valid_candidates:
+            optimized_entry = max(valid_candidates, key=lambda x: abs(x - current_price))  # closest?
+            # Actually, we want the one closest to current price
+            optimized_entry = min(valid_candidates, key=lambda x: abs(x - current_price))
+            entry_source = "Fibonacci Pullback"
+        else:
+            optimized_entry = current_price
+            entry_source = "Current Price"
     
-    final_entry = optimized_entry if optimized_entry is not None else current_price
+    final_entry = optimized_entry
     
-    # Calculate SL and TP using engine
+    # Calculate SL and TP using engine (SMC+Elliott)
     tf_type = 'scalp' if 'scalp' in primary_tf.lower() or '15m' in primary_tf else 'swing'
     sl, tp = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs)
     
