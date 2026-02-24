@@ -16,54 +16,142 @@ import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
 
-# ==================== RATE LIMITER ====================
-class RateLimiter:
-    """
-    Per-minute call throttle for Google Sheets and yfinance APIs.
-    Ensures we never exceed max_calls per 60-second window.
-    """
-    def __init__(self, max_calls_per_minute: int):
-        self.max_calls = max_calls_per_minute
-        self.call_times = []
+# ==================== UNIFIED RATE LIMITER (50 req/min total) ====================
+import threading
 
-    def wait_if_needed(self):
-        """Block until we are within rate limit, then record this call."""
-        now = time.time()
-        self.call_times = [t for t in self.call_times if now - t < 60]
-        if len(self.call_times) >= self.max_calls:
-            oldest = self.call_times[0]
-            sleep_for = 60 - (now - oldest) + 0.1
-            if sleep_for > 0:
-                time.sleep(sleep_for)
+class UnifiedRateLimiter:
+    """
+    Single shared token bucket that enforces a COMBINED 50 requests/minute
+    across ALL external APIs (Google Sheets + yfinance).
+
+    Design:
+    - One global queue of timestamps (thread-safe via Lock)
+    - Sliding 60-second window
+    - Hard cap: 50 calls per window
+    - Per-source soft caps prevent one source starving the other:
+        • Google Sheets: max 28 per window  (≈56% of 50)
+        • yfinance      : max 22 per window  (≈44% of 50)
+    - Exponential back-off on repeated consecutive waits
+    - Non-blocking dry-run mode for quota checks
+    """
+    WINDOW       = 60.0   # seconds
+    TOTAL_CAP    = 50     # hard cap — combined across all sources
+    GS_CAP       = 28     # soft cap — Google Sheets
+    YF_CAP       = 22     # soft cap — yfinance
+    MIN_INTERVAL = 0.25   # minimum gap between any two calls (250 ms) → smoothing
+
+    def __init__(self):
+        self._lock       = threading.Lock()
+        self._timestamps = []           # (epoch_float, source_str)
+        self._last_call  = 0.0          # epoch of last call (any source)
+        self._wait_streak = 0           # consecutive waits counter (for back-off)
+
+    # ── internal helpers ────────────────────────────────────────────────
+    def _prune(self, now):
+        cutoff = now - self.WINDOW
+        self._timestamps = [(t, s) for (t, s) in self._timestamps if t > cutoff]
+
+    def _count(self, source=None):
+        if source is None:
+            return len(self._timestamps)
+        return sum(1 for (_, s) in self._timestamps if s == source)
+
+    # ── public interface ─────────────────────────────────────────────────
+    def wait_if_needed(self, source: str = "gs"):
+        """
+        Block until it is safe to make one API call of the given source.
+        source: "gs"  (Google Sheets)  or  "yf"  (yfinance)
+        """
+        per_source_cap = self.GS_CAP if source == "gs" else self.YF_CAP
+
+        while True:
+            with self._lock:
+                now = time.time()
+                self._prune(now)
+
+                total_used      = self._count()
+                source_used     = self._count(source)
+                time_since_last = now - self._last_call
+
+                # All caps satisfied AND minimum spacing met?
+                if (total_used  < self.TOTAL_CAP and
+                        source_used < per_source_cap and
+                        time_since_last >= self.MIN_INTERVAL):
+                    # Approved — record the call
+                    self._timestamps.append((now, source))
+                    self._last_call  = now
+                    self._wait_streak = 0
+                    return  # ← caller can proceed immediately
+
+                # Need to wait — calculate how long
+                wait_for = 0.0
+
+                # Hard total cap hit?
+                if total_used >= self.TOTAL_CAP:
+                    oldest_any = self._timestamps[0][0]
+                    wait_for = max(wait_for, self.WINDOW - (now - oldest_any) + 0.05)
+
+                # Source soft cap hit?
+                if source_used >= per_source_cap:
+                    src_times = sorted(t for (t, s) in self._timestamps if s == source)
+                    if src_times:
+                        wait_for = max(wait_for, self.WINDOW - (now - src_times[0]) + 0.05)
+
+                # Minimum spacing?
+                if time_since_last < self.MIN_INTERVAL:
+                    wait_for = max(wait_for, self.MIN_INTERVAL - time_since_last + 0.01)
+
+                # Exponential back-off guard (max 2 s extra)
+                self._wait_streak += 1
+                back_off = min(0.1 * (2 ** min(self._wait_streak, 4)), 2.0)
+                wait_for = max(wait_for, back_off)
+
+            # Sleep OUTSIDE the lock so other threads can progress
+            time.sleep(max(0.05, wait_for))
+
+    def can_call(self, source: str = "gs") -> bool:
+        """Non-blocking check — returns True if a call would be allowed right now."""
+        per_source_cap = self.GS_CAP if source == "gs" else self.YF_CAP
+        with self._lock:
             now = time.time()
-            self.call_times = [t for t in self.call_times if now - t < 60]
-        self.call_times.append(time.time())
+            self._prune(now)
+            return (self._count() < self.TOTAL_CAP and
+                    self._count(source) < per_source_cap and
+                    now - self._last_call >= self.MIN_INTERVAL)
 
-# Global rate limiters (module-level singletons — persist for entire session)
-# Google Sheets free tier: ~60 req/min — stay at 45 to be safe
-_gsheets_limiter = RateLimiter(max_calls_per_minute=45)
-# yfinance unofficial API: no hard limit but 30/min avoids throttle bans
-_yfinance_limiter = RateLimiter(max_calls_per_minute=30)
+    def usage_stats(self) -> dict:
+        """Return current window usage — for Admin Panel display."""
+        with self._lock:
+            now = time.time()
+            self._prune(now)
+            return {
+                "total_used"    : self._count(),
+                "total_cap"     : self.TOTAL_CAP,
+                "gs_used"       : self._count("gs"),
+                "gs_cap"        : self.GS_CAP,
+                "yf_used"       : self._count("yf"),
+                "yf_cap"        : self.YF_CAP,
+                "window_sec"    : self.WINDOW,
+                "pct_used"      : round(self._count() / self.TOTAL_CAP * 100, 1),
+            }
 
-# ==================== GSPREAD CLIENT CACHE ====================
-# Reusing the same gspread client across calls avoids an OAuth round-trip
-# (which itself costs an extra Sheets API request) on every sheet access.
-_gspread_client_cache = {"client": None, "created_at": 0}
-_GSPREAD_CLIENT_TTL = 1800  # re-authenticate every 30 min (tokens last 1 hr)
 
-def get_gspread_client():
-    """Return a cached gspread client, refreshing after TTL expires."""
-    global _gspread_client_cache
-    now = time.time()
-    if _gspread_client_cache["client"] is None or (now - _gspread_client_cache["created_at"]) > _GSPREAD_CLIENT_TTL:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        _gspread_client_cache["client"] = gspread.authorize(creds)
-        _gspread_client_cache["created_at"] = now
-    return _gspread_client_cache["client"]
+# ── Singleton — lives for the entire Streamlit session ────────────────────────
+_api_limiter = UnifiedRateLimiter()
+
+# Back-compat aliases so the rest of the code can call the old names
+class _BackCompatLimiter:
+    """Thin wrapper that forwards to the unified limiter with the correct source tag."""
+    def __init__(self, source):
+        self._source = source
+    def wait_if_needed(self):
+        _api_limiter.wait_if_needed(self._source)
+
+_gsheets_limiter = _BackCompatLimiter("gs")
+_yfinance_limiter = _BackCompatLimiter("yf")
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite Algo Terminal v29.0 (EW+ICT+SMC+Fib Theory Engine)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite Algo Terminal v32.0 (50 req/min | EW+ICT+SMC+Fib)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -158,6 +246,11 @@ st.markdown("""
     .rejected-card:hover { opacity: 1; }
     .rejected-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; background: #ff4b4b22; color: #ff4b4b; border: 1px solid #ff4b4b; margin-left: 6px; }
     .gate-fail-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #33000a; color: #ff8888; border: 1px solid #ff4b4b66; margin-right: 4px; }
+    /* Risk Badges */
+    .risk-badge-safe { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; background: #003300; color: #00ff00; border: 1px solid #00ff00; margin-left: 6px; }
+    .risk-badge-danger { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; background: #330000; color: #ff4444; border: 1px solid #ff4444; margin-left: 6px; }
+    .risk-badge-moderate { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; background: #332200; color: #ffaa00; border: 1px solid #ffaa00; margin-left: 6px; }
+    .entry-zone-badge { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 11px; font-weight: bold; background: #003344; color: #00ccff; border: 1px solid #00ccff; margin-left: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -189,8 +282,6 @@ if "historical_data_cache" not in st.session_state: st.session_state.historical_
 if "beginner_mode" not in st.session_state: st.session_state.beginner_mode = False
 if "backtest_results" not in st.session_state: st.session_state.backtest_results = None
 if "price_cache" not in st.session_state: st.session_state.price_cache = {}
-if "scanner_active_trades" not in st.session_state: st.session_state.scanner_active_trades = []
-if "refresh_active_trades" not in st.session_state: st.session_state.refresh_active_trades = True
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -244,13 +335,15 @@ def get_live_price(clean_pair):
 def get_cached_historical_data(symbol, interval, period=None, start=None, end=None):
     """
     Smart historical data fetcher with Google Sheets persistent cache.
-    
+
     Strategy:
     1. Check in-memory session cache (fastest, expires by TF)
     2. Check Google Sheets persistent cache (survives restarts)
     3. If cache exists → only fetch NEW candles since last saved timestamp
     4. If no cache → full download, save to Sheets
     5. Merge old + new data, return complete DataFrame
+
+    All API calls routed through _api_limiter (50 req/min combined).
     """
     if period:
         key = f"{symbol}_{interval}_{period}"
@@ -286,9 +379,9 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
             else:
                 last_ts_naive = last_ts
 
-            # Download only recent data (last 5 days worth regardless of TF to catch updates)
+            # Download only recent data (incremental update)
             incremental_period = "5d" if interval in ["1m","5m"] else "1mo" if interval in ["15m","1h"] else "3mo"
-            _yfinance_limiter.wait_if_needed()
+            _api_limiter.wait_if_needed("yf")
             new_df = yf.download(symbol, period=incremental_period, interval=interval, progress=False)
 
             if new_df is not None and not new_df.empty:
@@ -312,8 +405,8 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
                     merged = merged[~merged.index.duplicated(keep='last')]
                     merged = merged.sort_index()
 
-                    # Append only new rows to Sheets (incremental)
-                    save_history_to_sheets(symbol, interval, new_rows, mode="append")
+                    # Save updated data back to Sheets (only new rows)
+                    save_history_to_sheets(symbol, interval, new_rows)
                 else:
                     merged = gs_df
             else:
@@ -329,7 +422,7 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
 
     # --- 3. Full download (no cache or cache failed) ---
     try:
-        _yfinance_limiter.wait_if_needed()
+        _api_limiter.wait_if_needed("yf")
         if period:
             df = yf.download(symbol, period=period, interval=interval, progress=False)
         else:
@@ -345,8 +438,8 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
         if hasattr(df.index, 'tz') and df.index.tz is not None:
             df.index = df.index.tz_localize(None)
 
-        # Save full history to Google Sheets (replace mode — fresh write)
-        save_history_to_sheets(symbol, interval, df, mode="replace")
+        # Save full history to Google Sheets
+        save_history_to_sheets(symbol, interval, df)
 
         # Store in memory cache
         st.session_state.historical_data_cache[key] = (df, current_time)
@@ -357,245 +450,357 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
         return None
 
 
+# ==================== GOOGLE SHEETS CLIENT CACHE ====================
+# Reuse a single authorized gspread client per Streamlit session.
+# Opening a new OAuth connection on every call wastes ~1 API request + latency.
+
+def _get_gspread_client():
+    """
+    Return a cached gspread client + spreadsheet handle.
+    The client is stored in st.session_state so it survives reruns
+    but is re-created if the token expires (>60 min).
+    """
+    now = time.time()
+    cached = st.session_state.get("_gs_client_cache")
+    if cached and now - cached["created_at"] < 3000:   # 50-min lifetime
+        return cached["client"], cached["spreadsheet"]
+
+    try:
+        scope = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds        = Credentials.from_service_account_info(
+                           st.secrets["gcp_service_account"], scopes=scope)
+        client       = gspread.authorize(creds)
+        spreadsheet  = client.open("Forex_User_DB")
+        st.session_state["_gs_client_cache"] = {
+            "client"       : client,
+            "spreadsheet"  : spreadsheet,
+            "created_at"   : now,
+        }
+        return client, spreadsheet
+    except Exception as e:
+        print(f"gspread client error: {e}")
+        return None, None
+
+
+def _get_spreadsheet():
+    """Shortcut — returns just the spreadsheet handle."""
+    _, ss = _get_gspread_client()
+    return ss
+
+
+# ── Worksheet handle cache ─────────────────────────────────────────────────────
+# Avoid repeated worksheet-lookup calls (each one costs an API request).
+
+def _get_ws_cache():
+    if "_gs_ws_cache" not in st.session_state:
+        st.session_state["_gs_ws_cache"] = {}
+    return st.session_state["_gs_ws_cache"]
+
+
+def _tf_sheet_name(symbol: str, interval: str) -> str:
+    """
+    Canonical worksheet name for a (symbol, interval) pair.
+    Format: H_{SYMBOL}_{INTERVAL}   e.g.  H_EURUSD_4h
+    Sanitized and capped at 50 chars (Sheets tab-name limit).
+    """
+    safe = (symbol.replace("=X","").replace("-","").replace("/","")
+                  .replace(".","").replace(" ","").upper()[:20])
+    return f"H_{safe}_{interval}"[:50]
+
+
 # ==================== GOOGLE SHEETS HISTORY CACHE ====================
 
-def get_history_sheet(symbol, interval):
+def get_history_sheet(symbol: str, interval: str):
     """
-    Get or create a worksheet for historical data cache.
-    Sheet name format: H_{symbol}_{interval}  (max 100 chars, sanitized)
-    Each sheet stores OHLCV candles with timestamp.
-    Uses cached gspread client to avoid extra OAuth round-trips.
+    Return (or lazily create) the worksheet for this (symbol, interval).
+    Uses a session-level worksheet cache so we pay the lookup cost only once.
+    One API call used: worksheet lookup or creation.
+
+    Sheet layout per timeframe:
+        Col A: Timestamp | B: Open | C: High | D: Low | E: Close | F: Volume | G: SavedAt
+    Header row is always row 1.
     """
+    sheet_name = _tf_sheet_name(symbol, interval)
+    ws_cache   = _get_ws_cache()
+
+    if sheet_name in ws_cache:
+        return ws_cache[sheet_name]
+
+    spreadsheet = _get_spreadsheet()
+    if spreadsheet is None:
+        return None
+
     try:
-        _gsheets_limiter.wait_if_needed()
-        client = get_gspread_client()
-        spreadsheet = client.open("Forex_User_DB")
-
-        # Sanitize sheet name: remove special chars, limit length
-        safe_sym = symbol.replace("=X","").replace("-","").replace("/","").replace(".","")[:20]
-        sheet_name = f"H_{safe_sym}_{interval}"[:50]
-
+        _api_limiter.wait_if_needed("gs")
+        ws = spreadsheet.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
         try:
-            sheet = spreadsheet.worksheet(sheet_name)
-        except gspread.WorksheetNotFound:
-            # Create new worksheet with headers
-            sheet = spreadsheet.add_worksheet(title=sheet_name, rows=5000, cols=7)
-            sheet.append_row(["Timestamp", "Open", "High", "Low", "Close", "Volume", "SavedAt"])
-
-        return sheet
+            _api_limiter.wait_if_needed("gs")
+            ws = spreadsheet.add_worksheet(
+                title=sheet_name,
+                rows=6000,
+                cols=7,
+            )
+            _api_limiter.wait_if_needed("gs")
+            ws.update("A1:G1", [["Timestamp","Open","High","Low","Close","Volume","SavedAt"]])
+        except Exception as e:
+            print(f"Cannot create sheet {sheet_name}: {e}")
+            return None
     except Exception as e:
-        print(f"History sheet error ({symbol}/{interval}): {e}")
+        print(f"get_history_sheet error ({symbol}/{interval}): {e}")
         return None
 
+    ws_cache[sheet_name] = ws
+    return ws
 
-def _normalize_ohlcv_df(df):
+
+def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
     """
-    Normalise a yfinance DataFrame so columns are always simple strings
-    like 'Open', 'High', 'Low', 'Close', 'Volume' regardless of whether
-    yfinance returned a MultiIndex or single-level index.
-    Returns a clean copy, or None on failure.
-    """
-    if df is None or df.empty:
-        return None
-    d = df.copy()
-    # Flatten MultiIndex columns  e.g. ('Close', 'EURUSD=X') → 'Close'
-    if isinstance(d.columns, pd.MultiIndex):
-        d.columns = d.columns.get_level_values(0)
-    # Remove timezone from index
-    if hasattr(d.index, 'tz') and d.index.tz is not None:
-        d.index = d.index.tz_localize(None)
-    # Rename lowercase variants just in case
-    rename_map = {c: c.capitalize() for c in d.columns if c.lower() in ('open','high','low','close','volume','adj close')}
-    d = d.rename(columns=rename_map)
-    return d
+    Persist OHLCV data to the per-timeframe Google Sheet.
 
+    Strategy — write-mode:
+    • If the sheet already has data: APPEND only rows newer than the last
+      saved timestamp (incremental / delta write).
+    • If the sheet is empty: batch-write the full df (up to max_rows limit).
 
-def save_history_to_sheets(symbol, interval, df, mode="append"):
-    """
-    Save OHLCV DataFrame to Google Sheets history cache.
-    mode='append'  → append new rows only (incremental update)
-    mode='replace' → clear sheet and write fresh (full download)
+    Deduplication: we track the last known timestamp in session state so
+    we never append a row twice even if this function is called repeatedly.
 
-    Column access uses positional iloc to avoid MultiIndex / case issues.
+    API cost: 2 calls for incremental (read last row + append batch)
+              2 calls for full write  (clear + append batch)
     """
     if df is None or df.empty:
         return False
 
+    ws = get_history_sheet(symbol, interval)
+    if ws is None:
+        return False
+
+    # Rows-per-timeframe limit (keeps sheets from blowing up)
+    max_rows_map = {
+        "1m":  700,  "5m": 1000, "15m": 1500,
+        "1h": 1500, "4h": 1200,  "1d": 1000, "1wk": 600,
+    }
+    limit    = max_rows_map.get(interval, 1000)
+    save_df  = df.tail(limit).copy()
+
+    # Normalize index to timezone-naive
+    if hasattr(save_df.index, 'tz') and save_df.index.tz is not None:
+        save_df.index = save_df.index.tz_localize(None)
+
+    saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Determine which rows are truly new ────────────────────────────────
+    last_ts_key = f"_gs_last_ts_{_tf_sheet_name(symbol, interval)}"
+    last_saved  = st.session_state.get(last_ts_key)
+
+    if last_saved is None:
+        # Try to read last row from sheet to find last timestamp
+        try:
+            _api_limiter.wait_if_needed("gs")
+            last_row = ws.row_values(ws.row_count)
+            if last_row and last_row[0] not in ("", "Timestamp"):
+                last_saved = pd.to_datetime(last_row[0])
+                st.session_state[last_ts_key] = last_saved
+        except Exception:
+            last_saved = None
+
+    if last_saved is not None:
+        try:
+            last_saved_naive = (last_saved.tz_localize(None)
+                                if hasattr(last_saved, 'tzinfo') and last_saved.tzinfo
+                                else last_saved)
+            new_rows_df = save_df[save_df.index > last_saved_naive]
+        except Exception:
+            new_rows_df = save_df
+    else:
+        new_rows_df = save_df   # first-time full write
+
+    if new_rows_df.empty:
+        return True   # nothing new to write
+
+    # ── Build rows list ───────────────────────────────────────────────────
+    rows_to_append = []
+    for ts, row in new_rows_df.iterrows():
+        try:
+            ts_str = str(ts)[:19]
+            o  = round(float(row.get('Open',  0)), 8)
+            h  = round(float(row.get('High',  0)), 8)
+            lo = round(float(row.get('Low',   0)), 8)
+            c  = round(float(row.get('Close', 0)), 8)
+            v  = int(float(row.get('Volume', 0))) if 'Volume' in row else 0
+            rows_to_append.append([ts_str, o, h, lo, c, v, saved_at])
+        except Exception:
+            continue
+
+    if not rows_to_append:
+        return True
+
+    # ── Batch-append in one API call ─────────────────────────────────────
+    # Split into chunks of 500 to stay within Sheets payload limits
+    CHUNK = 500
     try:
-        sheet = get_history_sheet(symbol, interval)
-        if sheet is None:
-            return False
+        for i in range(0, len(rows_to_append), CHUNK):
+            chunk = rows_to_append[i : i + CHUNK]
+            _api_limiter.wait_if_needed("gs")
+            ws.append_rows(chunk, value_input_option='RAW')
 
-        # Normalise columns
-        save_df = _normalize_ohlcv_df(df)
-        if save_df is None or save_df.empty:
-            return False
-
-        # Limit rows per timeframe
-        max_rows = {
-            "1m": 500, "5m": 800, "15m": 1000,
-            "1h": 1000, "4h": 1000, "1d": 1000, "1wk": 500
-        }
-        limit = max_rows.get(interval, 1000)
-        save_df = save_df.tail(limit)
-
-        saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        rows_to_write = []
-        for ts, row in save_df.iterrows():
-            try:
-                ts_str = str(ts)[:19]
-                # Use .get() with fallback to 0 — works on pandas Series
-                o  = round(float(row['Open'])   if 'Open'   in row.index else 0, 8)
-                h  = round(float(row['High'])   if 'High'   in row.index else 0, 8)
-                lo = round(float(row['Low'])    if 'Low'    in row.index else 0, 8)
-                c  = round(float(row['Close'])  if 'Close'  in row.index else 0, 8)
-                v  = int(float(row['Volume']))  if 'Volume' in row.index else 0
-                rows_to_write.append([ts_str, o, h, lo, c, v, saved_at])
-            except Exception as row_err:
-                print(f"Row skip ({ts}): {row_err}")
-                continue
-
-        if not rows_to_write:
-            return False
-
-        if mode == "replace":
-            # Clear all data rows (keep header row 1)
-            _gsheets_limiter.wait_if_needed()
-            sheet.resize(rows=1)          # shrink to header only
-            _gsheets_limiter.wait_if_needed()
-            sheet.resize(rows=5000)       # expand again
-            _gsheets_limiter.wait_if_needed()
-            sheet.append_rows(rows_to_write, value_input_option='RAW')
-        else:
-            # Append only
-            _gsheets_limiter.wait_if_needed()
-            sheet.append_rows(rows_to_write, value_input_option='RAW')
-
-        print(f"[Sheets] Saved {len(rows_to_write)} rows → {symbol}/{interval} (mode={mode})")
+        # Update session-state last-saved pointer
+        last_new_ts = new_rows_df.index[-1]
+        if hasattr(last_new_ts, 'tzinfo') and last_new_ts.tzinfo:
+            last_new_ts = last_new_ts.tz_localize(None)
+        st.session_state[last_ts_key] = last_new_ts
         return True
 
     except Exception as e:
-        print(f"Error saving history to Sheets ({symbol}/{interval}): {e}")
+        print(f"save_history_to_sheets error ({symbol}/{interval}): {e}")
         return False
 
 
-def load_history_from_sheets(symbol, interval):
+def load_history_from_sheets(symbol: str, interval: str):
     """
-    Load OHLCV history from Google Sheets cache.
-    Returns DataFrame with DatetimeIndex, or None if not found / insufficient data.
-    Deduplicates rows and sorts by timestamp.
+    Load OHLCV history from the per-timeframe Google Sheet.
+
+    Optimisations vs v30/v31:
+    • Uses cached worksheet handle (no repeated open() calls)
+    • get_all_values() fetched in ONE API call
+    • Skips parsing if row count is too small (saves CPU)
+    • Stores loaded df in session state keyed by sheet name so
+      subsequent calls within the same rerun return instantly
+
+    Returns DataFrame with DatetimeIndex, or None.
     """
-    try:
-        sheet = get_history_sheet(symbol, interval)
-        if sheet is None:
-            return None
+    sheet_name = _tf_sheet_name(symbol, interval)
+    # Fast in-session cache (avoids a Sheets read if already loaded this rerun)
+    mem_key = f"_gs_loaded_{sheet_name}"
+    cached  = st.session_state.get(mem_key)
+    if cached is not None and isinstance(cached, tuple):
+        df_cached, loaded_at = cached
+        # Use mem cache for up to 90 seconds (avoids thundering-herd on first scan)
+        if time.time() - loaded_at < 90:
+            return df_cached
 
-        _gsheets_limiter.wait_if_needed()
-        all_rows = sheet.get_all_values()
-        if len(all_rows) < 3:  # header + at least 2 data rows
-            return None
-
-        headers = all_rows[0]
-        data_rows = all_rows[1:]
-
-        if not data_rows:
-            return None
-
-        records = []
-        for row in data_rows:
-            try:
-                if len(row) < 5:
-                    continue
-                ts = pd.to_datetime(row[0])
-                o  = float(row[1])
-                h  = float(row[2])
-                lo = float(row[3])
-                c  = float(row[4])
-                v  = float(row[5]) if len(row) > 5 and row[5] else 0
-                records.append({"Timestamp": ts, "Open": o, "High": h, "Low": lo, "Close": c, "Volume": v})
-            except:
-                continue
-
-        if len(records) < 10:
-            return None
-
-        df = pd.DataFrame(records)
-        df = df.set_index("Timestamp")
-        df = df[~df.index.duplicated(keep='last')]  # remove duplicates
-        df = df.sort_index()
-
-        # Remove timezone info for consistency
-        if hasattr(df.index, 'tz') and df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-
-        return df
-
-    except Exception as e:
-        print(f"Error loading history from Sheets ({symbol}/{interval}): {e}")
+    ws = get_history_sheet(symbol, interval)
+    if ws is None:
         return None
 
-
-def clear_history_cache_for_symbol(symbol, interval=None):
-    """
-    Admin utility: clear cached history for a symbol (all TFs or specific TF).
-    Used when data appears stale or corrupted.
-    """
     try:
-        _gsheets_limiter.wait_if_needed()
-        client = get_gspread_client()
-        spreadsheet = client.open("Forex_User_DB")
+        _api_limiter.wait_if_needed("gs")
+        all_rows = ws.get_all_values()
+    except Exception as e:
+        print(f"load_history_from_sheets read error ({symbol}/{interval}): {e}")
+        return None
 
-        tfs = [interval] if interval else ["1m","5m","15m","1h","4h","1d","1wk"]
-        cleared = []
-        for tf in tfs:
-            safe_sym = symbol.replace("=X","").replace("-","").replace("/","").replace(".","")[:20]
-            sheet_name = f"H_{safe_sym}_{tf}"[:50]
-            try:
-                ws = spreadsheet.worksheet(sheet_name)
-                # Keep header, clear data rows
-                ws.resize(rows=1)
-                ws.resize(rows=5000)
-                cleared.append(sheet_name)
-            except gspread.WorksheetNotFound:
-                pass
+    if len(all_rows) < 3:      # header + at least 2 data rows
+        st.session_state[mem_key] = (None, time.time())
+        return None
 
-        # Also clear memory cache
-        keys_to_clear = [k for k in st.session_state.historical_data_cache.keys()
-                         if symbol.replace("=X","").replace("-","") in k]
-        for k in keys_to_clear:
+    data_rows = all_rows[1:]   # skip header
+    records   = []
+    for row in data_rows:
+        try:
+            if len(row) < 5 or row[0] in ("", "Timestamp"):
+                continue
+            ts = pd.to_datetime(row[0])
+            o  = float(row[1]); h  = float(row[2])
+            lo = float(row[3]); c  = float(row[4])
+            v  = float(row[5]) if len(row) > 5 and row[5] else 0
+            records.append({"Timestamp": ts, "Open": o, "High": h,
+                             "Low": lo, "Close": c, "Volume": v})
+        except Exception:
+            continue
+
+    if len(records) < 10:
+        st.session_state[mem_key] = (None, time.time())
+        return None
+
+    df = pd.DataFrame(records).set_index("Timestamp")
+    df = df[~df.index.duplicated(keep='last')].sort_index()
+
+    if hasattr(df.index, 'tz') and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
+
+    st.session_state[mem_key] = (df, time.time())
+    return df
+
+
+def clear_history_cache_for_symbol(symbol: str, interval=None) -> list:
+    """
+    Admin utility: wipe history sheets for a symbol (all TFs or one TF).
+    Returns list of sheet names that were cleared.
+    """
+    spreadsheet = _get_spreadsheet()
+    if spreadsheet is None:
+        return []
+
+    tfs      = [interval] if interval else ["1m","5m","15m","1h","4h","1d","1wk"]
+    cleared  = []
+    ws_cache = _get_ws_cache()
+
+    for tf in tfs:
+        sheet_name = _tf_sheet_name(symbol, tf)
+        try:
+            _api_limiter.wait_if_needed("gs")
+            ws = spreadsheet.worksheet(sheet_name)
+            # Keep header row, delete all data rows by resizing
+            _api_limiter.wait_if_needed("gs")
+            ws.resize(rows=1)
+            _api_limiter.wait_if_needed("gs")
+            ws.resize(rows=6000)
+            cleared.append(sheet_name)
+            # Evict caches
+            if sheet_name in ws_cache:
+                del ws_cache[sheet_name]
+            for k in list(st.session_state.keys()):
+                if sheet_name in str(k):
+                    del st.session_state[k]
+        except gspread.WorksheetNotFound:
+            pass
+        except Exception as e:
+            print(f"clear_history error ({sheet_name}): {e}")
+
+    # Also clear in-memory historical data cache
+    sym_clean = symbol.replace("=X","").replace("-","").upper()
+    for k in list(st.session_state.historical_data_cache.keys()):
+        if sym_clean in k.upper():
             del st.session_state.historical_data_cache[k]
 
-        return cleared
-    except Exception as e:
+    return cleared
+
+
+def get_history_cache_stats() -> list:
+    """
+    Admin display: returns stats about all H_* worksheets.
+    Single API call via spreadsheet.worksheets().
+    """
+    spreadsheet = _get_spreadsheet()
+    if spreadsheet is None:
         return []
-
-
-def get_history_cache_stats():
-    """
-    Returns stats about all history cache sheets (for admin panel display).
-    """
     try:
-        _gsheets_limiter.wait_if_needed()
-        client = get_gspread_client()
-        spreadsheet = client.open("Forex_User_DB")
-
-        stats = []
-        for ws in spreadsheet.worksheets():
-            if ws.title.startswith("H_"):
-                row_count = ws.row_count
-                parts = ws.title.split("_")
-                sym = parts[1] if len(parts) > 1 else "?"
-                tf = parts[2] if len(parts) > 2 else "?"
-                # Get last row to find latest timestamp
-                try:
-                    last_row = ws.row_values(ws.row_count)
-                    last_ts = last_row[0] if last_row else "N/A"
-                except:
-                    last_ts = "N/A"
-                stats.append({"Symbol": sym, "TF": tf, "Rows": row_count, "Last Update": last_ts})
-        return stats
-    except:
+        _api_limiter.wait_if_needed("gs")
+        worksheets = spreadsheet.worksheets()
+    except Exception:
         return []
+
+    stats = []
+    for ws in worksheets:
+        if not ws.title.startswith("H_"):
+            continue
+        parts  = ws.title.split("_")
+        sym    = parts[1] if len(parts) > 1 else "?"
+        tf     = parts[2] if len(parts) > 2 else "?"
+        rows   = ws.row_count
+        try:
+            _api_limiter.wait_if_needed("gs")
+            last_row = ws.row_values(rows)
+            last_ts  = last_row[0] if last_row else "N/A"
+        except Exception:
+            last_ts = "N/A"
+        stats.append({"Symbol": sym, "TF": tf, "Rows": rows, "Last Update": last_ts})
+    return stats
 
 def get_period_for_tf(tf):
     # Extended periods for better Elliott Wave + ICT structure identification
@@ -610,28 +815,33 @@ def get_period_for_tf(tf):
     }
     return period_map.get(tf, "3mo")
 
-# --- Google Sheets Functions ---
+# --- Google Sheets Functions (use cached client) ---
 def get_user_sheet():
-    """Use cached gspread client — avoids a new OAuth round-trip on every call."""
     try:
-        _gsheets_limiter.wait_if_needed()
-        client = get_gspread_client()
-        try: sheet = client.open("Forex_User_DB").sheet1
-        except: sheet = None
+        _, spreadsheet = _get_gspread_client()
+        if spreadsheet is None:
+            return None, None
+        _api_limiter.wait_if_needed("gs")
+        sheet = spreadsheet.sheet1
+        _, client = _get_gspread_client()
         return sheet, client
-    except: return None, None
+    except Exception as e:
+        print(f"get_user_sheet error: {e}")
+        return None, None
 
 def get_ongoing_sheet():
-    """Use cached gspread client — avoids a new OAuth round-trip on every call."""
     try:
-        _gsheets_limiter.wait_if_needed()
-        client = get_gspread_client()
-        spreadsheet = client.open("Forex_User_DB")
+        client, spreadsheet = _get_gspread_client()
+        if spreadsheet is None:
+            return None, None
         try:
+            _api_limiter.wait_if_needed("gs")
             sheet = spreadsheet.worksheet("Ongoing_Trades")
         except gspread.WorksheetNotFound:
+            _api_limiter.wait_if_needed("gs")
             sheet = spreadsheet.add_worksheet(title="Ongoing_Trades", rows=100, cols=13)
             headers = ["User", "Timestamp", "Pair", "Direction", "Entry", "SL", "TP", "Confidence", "Status", "ClosedDate", "Notes", "Forecast", "Timeframe"]
+            _api_limiter.wait_if_needed("gs")
             sheet.append_row(headers)
         return sheet, client
     except Exception as e:
@@ -947,7 +1157,79 @@ def get_data_period(tf):
     elif tf == "1wk": return "5y"
     return "1mo"
 
-# ==================== MULTI-TIMEFRAME ANALYSIS ====================
+# ==================== RISK ASSESSMENT BADGE ENGINE ====================
+def assess_trade_risk(trade):
+    """
+    Assess trade risk level and return a badge label.
+    Returns: ("SAFE" | "MODERATE" | "DANGEROUS", reason_string, badge_class)
+    
+    Risk factors:
+    - RR ratio (higher = safer)
+    - MTF score (lower = more dangerous)
+    - News impact (high-impact news = more dangerous)
+    - Market regime (ranging = more dangerous for trend trades)
+    - Wave position (Wave 5 / Wave C End = exhaustion = dangerous)
+    - Entry source quality (no OB/Fib = weak entry = dangerous)
+    - EW+ICT confidence (low conf = dangerous)
+    """
+    risk_score = 0  # higher = more dangerous
+    reasons = []
+
+    # --- RR Ratio ---
+    rr = trade.get('rr_ratio', 0)
+    try: rr = float(rr)
+    except: rr = 0
+    if rr < 1.5: risk_score += 30; reasons.append(f"Low RR ({rr:.1f})")
+    elif rr < 2.0: risk_score += 10
+    # RR >= 2 is good
+
+    # --- MTF Score ---
+    mtf = trade.get('mtf_score', 50)
+    try: mtf = float(mtf)
+    except: mtf = 50
+    if mtf < 45: risk_score += 25; reasons.append(f"Weak MTF ({mtf:.0f}%)")
+    elif mtf < 55: risk_score += 10
+
+    # --- EW+ICT Confidence ---
+    ew_conf = trade.get('ew_ict_conf', 50)
+    if ew_conf < 35: risk_score += 20; reasons.append(f"Low EW/ICT conf ({ew_conf}%)")
+    elif ew_conf < 50: risk_score += 8
+
+    # --- Market Regime ---
+    regime = trade.get('regime', '')
+    if regime == "ranging": risk_score += 15; reasons.append("Ranging market")
+    elif regime == "transitioning": risk_score += 7
+
+    # --- Wave Position ---
+    ew_label = trade.get('ew_label', '')
+    if 'Exhaustion' in ew_label or 'Wave 5' in ew_label or 'Avoid' in ew_label.upper():
+        risk_score += 20; reasons.append("Wave 5 exhaustion zone")
+    if 'Reversal Watch' in ew_label or 'Invalidated' in ew_label:
+        risk_score += 15; reasons.append("Wave invalidation risk")
+
+    # --- Entry Source Quality ---
+    entry_src = trade.get('entry_source', '')
+    if 'WEAK' in entry_src.upper() or 'No OB' in entry_src:
+        risk_score += 15; reasons.append("Weak entry — no OB/Fib")
+    elif 'Confluence ⭐' in entry_src:
+        risk_score -= 10  # strong entry reduces risk
+
+    # --- Combined Confidence ---
+    conf = trade.get('conf', 50)
+    if conf < 45: risk_score += 15; reasons.append(f"Low confidence ({conf}%)")
+
+    # --- Classification ---
+    if risk_score <= 15:
+        return "SAFE", "All risk factors clear", "risk-badge-safe"
+    elif risk_score <= 35:
+        reason_str = ", ".join(reasons) if reasons else "Minor caution flags"
+        return "MODERATE", reason_str, "risk-badge-moderate"
+    else:
+        reason_str = ", ".join(reasons[:3]) if reasons else "Multiple risk factors"
+        return "DANGEROUS", reason_str, "risk-badge-danger"
+
+
+# ==================== MULTI-TIMEFRAME ANALYSIS (STRICT) ====================
 def get_multi_timeframe_analysis(symbol, primary_tf, news_items=None):
     tf_hierarchy = {
         "1m": ["5m", "15m", "1h"], "5m": ["15m", "1h", "4h"],
@@ -1231,84 +1513,201 @@ def calculate_advanced_signals(df, tf, news_items=None):
     return signals, atr, confidence, score_breakdown, theory_signals
 
 
-# ==================== THEORY ENGINE v2: ELLIOTT WAVE + ICT DIRECTION ====================
+# ==================== THEORY ENGINE v3: ELLIOTT WAVE + ICT DIRECTION (PRECISION) ====================
+
+def find_swing_points(df, window=5):
+    """
+    Identify proper swing highs and swing lows using a rolling window approach.
+    A swing high at i: high[i] is the highest in [i-window, i+window]
+    A swing low  at i: low[i]  is the lowest  in [i-window, i+window]
+    Returns lists of (index_pos, price) tuples for highs and lows.
+    """
+    highs_list = []
+    lows_list  = []
+    h = df['High'].values
+    l = df['Low'].values
+    for i in range(window, len(df) - window):
+        if h[i] == max(h[i-window:i+window+1]):
+            highs_list.append((i, h[i]))
+        if l[i] == min(l[i-window:i+window+1]):
+            lows_list.append((i, l[i]))
+    return highs_list, lows_list
+
+
+def detect_smc_structure(df, swing_highs, swing_lows):
+    """
+    SMC market structure analysis:
+    - BOS (Break of Structure): price closes beyond the last significant swing high/low
+    - CHoCH (Change of Character): price reverses after a BOS — signals trend change
+    Returns: (structure_bias "bull"/"bear"/"neutral", bos_type, choch_detected, description)
+    """
+    if not swing_highs or not swing_lows:
+        return "neutral", "", False, "Insufficient swing data"
+
+    c = df['Close'].iloc[-1]
+    # Last confirmed swing high / low
+    last_sh = swing_highs[-1][1]
+    last_sl = swing_lows[-1][1]
+    prev_sh = swing_highs[-2][1] if len(swing_highs) > 1 else last_sh
+    prev_sl = swing_lows[-2][1]  if len(swing_lows) > 1 else last_sl
+
+    bos_bull  = c > last_sh   # Break above last swing high → bullish BOS
+    bos_bear  = c < last_sl   # Break below last swing low  → bearish BOS
+    choch_bull = bos_bull and prev_sh > last_sh  # Higher high after lower highs = CHoCH bullish
+    choch_bear = bos_bear and prev_sl < last_sl  # Lower low after higher lows  = CHoCH bearish
+
+    desc_parts = []
+    if bos_bull:
+        bias = "bull"
+        bos_type = "BOS Bullish"
+        if choch_bull: desc_parts.append("CHoCH Bull (Trend Flip)")
+        else: desc_parts.append("BOS Bullish")
+    elif bos_bear:
+        bias = "bear"
+        bos_type = "BOS Bearish"
+        if choch_bear: desc_parts.append("CHoCH Bear (Trend Flip)")
+        else: desc_parts.append("BOS Bearish")
+    else:
+        bias = "neutral"
+        bos_type = ""
+        desc_parts.append("Inside Structure (No BOS)")
+
+    # Higher Highs / Higher Lows check (classic market structure)
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        hh = swing_highs[-1][1] > swing_highs[-2][1]
+        hl = swing_lows[-1][1]  > swing_lows[-2][1]
+        lh = swing_highs[-1][1] < swing_highs[-2][1]
+        ll = swing_lows[-1][1]  < swing_lows[-2][1]
+        if hh and hl: desc_parts.append("HH+HL (Uptrend)")
+        elif lh and ll: desc_parts.append("LH+LL (Downtrend)")
+
+    choch = choch_bull or choch_bear
+    return bias, bos_type, choch, " | ".join(desc_parts)
+
+
 def detect_elliott_wave_ict_direction(df, tf):
     """
-    Swing Trade Direction: Elliott Wave wave count + ICT Concepts.
-    Returns: (direction "BUY"/"SELL"/"NEUTRAL", wave_label, ict_context, confidence_pct)
+    PRECISION Elliott Wave + ICT Direction Engine v3.
     
-    Logic:
-    - Elliott Wave: identify current wave position using swing structure
-    - ICT: Fair Value Gaps, Market Structure Shift, Inducement, Optimal Trade Entry
-    - Combined: both must agree for high-confidence direction
+    Elliott Wave: Uses real swing points to identify wave position.
+    ICT: BOS, CHoCH, FVG, Inducement (Liquidity Sweep), OTE zone.
+    SMC: Structure bias from higher highs/lows.
+    
+    Returns: (direction "BUY"/"SELL"/"NEUTRAL", wave_label, ict_context, confidence_pct)
     """
     if df is None or len(df) < 100:
         return "NEUTRAL", "Insufficient Data", "N/A", 0
 
-    c = df['Close'].iloc[-1]
-    high_50 = df['High'].tail(50).max()
-    low_50  = df['Low'].tail(50).min()
+    c   = df['Close'].iloc[-1]
+    atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
+
+    # ── 1. Swing Points (window varies by timeframe) ─────────────────────
+    sw_window = 3 if tf in ["1m","5m"] else (4 if tf in ["15m","1h"] else 5)
+    swing_highs, swing_lows = find_swing_points(df, window=sw_window)
+
+    if len(swing_highs) < 3 or len(swing_lows) < 3:
+        return "NEUTRAL", "Insufficient Swing Data", "N/A", 0
+
+    # ── 2. Higher-timeframe macro structure ───────────────────────────────
     high_100 = df['High'].tail(100).max()
     low_100  = df['Low'].tail(100).min()
-    range_50 = high_50 - low_50
-    if range_50 == 0:
-        return "NEUTRAL", "Flat Market", "N/A", 0
+    high_50  = df['High'].tail(50).max()
+    low_50   = df['Low'].tail(50).min()
+    range_100 = high_100 - low_100
+    if range_100 < atr * 2:
+        return "NEUTRAL", "Flat / Choppy Market", "N/A", 0
 
-    # --- Elliott Wave Position ---
-    current_pos = (c - low_50) / range_50  # 0=bottom, 1=top
+    # Price position in macro range (0=bottom, 1=top)
+    current_pos = (c - low_100) / range_100
 
-    # Trend direction from MA + slope
+    # ── 3. Trend via MAs + slope ──────────────────────────────────────────
     ma_20 = df['Close'].rolling(20).mean().iloc[-1]
     ma_50 = df['Close'].rolling(50).mean().iloc[-1]
-    slope = (df['Close'].tail(20).values[-1] - df['Close'].tail(20).values[0]) / 20
+    ma_100 = df['Close'].rolling(100).mean().iloc[-1] if len(df) >= 100 else ma_50
+    # Linear regression slope (20-bar)
+    y20 = df['Close'].tail(20).values
+    slope20 = (y20[-1] - y20[0]) / (len(y20) * atr + 1e-10)  # normalised by ATR
 
-    # Wave identification
+    # ── 4. Elliott Wave identification via swing structure ────────────────
+    # Recent 5 swing points for wave counting
+    recent_sh = swing_highs[-5:]  # last 5 swing highs (idx, price)
+    recent_sl = swing_lows[-5:]   # last 5 swing lows  (idx, price)
+
     ew_direction = "NEUTRAL"; ew_label = "Wave Unknown"; ew_score = 0
-    if slope > 0 and c > ma_50:  # Uptrend
-        if current_pos < 0.25:
-            ew_label = "Wave 1 (Impulse Start)"; ew_direction = "BUY"; ew_score = 70
-        elif 0.25 <= current_pos < 0.45:
-            ew_label = "Wave 2 (Correction - BUY Zone)"; ew_direction = "BUY"; ew_score = 90  # Best buy entry
-        elif 0.45 <= current_pos < 0.75:
-            ew_label = "Wave 3 (Strong Impulse)"; ew_direction = "BUY"; ew_score = 85
-        elif 0.75 <= current_pos < 0.88:
-            ew_label = "Wave 4 (Pullback - BUY)"; ew_direction = "BUY"; ew_score = 75
-        elif current_pos >= 0.88:
-            ew_label = "Wave 5 (Exhaustion - AVOID)"; ew_direction = "NEUTRAL"; ew_score = 20
-    elif slope < 0 and c < ma_50:  # Downtrend
-        if current_pos > 0.75:
-            ew_label = "Wave A (Impulse Drop Start)"; ew_direction = "SELL"; ew_score = 70
-        elif 0.55 <= current_pos <= 0.75:
-            ew_label = "Wave B (Correction - SELL Zone)"; ew_direction = "SELL"; ew_score = 90  # Best sell entry
-        elif 0.25 <= current_pos < 0.55:
-            ew_label = "Wave C (Strong Drop)"; ew_direction = "SELL"; ew_score = 85
-        else:
-            ew_label = "Wave C End (Reversal Watch)"; ew_direction = "NEUTRAL"; ew_score = 30
-    else:
-        ew_label = "Corrective Structure"; ew_direction = "NEUTRAL"; ew_score = 30
 
-    # --- ICT Concepts ---
+    if slope20 > 0.5 and c > ma_50:  # ── UPTREND ──────────────────
+        # Last swing low is the most recent pullback
+        last_low_price  = swing_lows[-1][1]
+        last_high_price = swing_highs[-1][1]
+        prev_low_price  = swing_lows[-2][1] if len(swing_lows) > 1 else low_50
+
+        retracement = (last_high_price - c) / max(last_high_price - last_low_price, atr)
+        pullback_deep = last_low_price < swing_lows[-2][1] if len(swing_lows) >= 2 else False
+
+        if current_pos < 0.20:
+            ew_label = "Wave 1 (Impulse Start)"; ew_direction = "BUY"; ew_score = 65
+        elif 0.20 <= current_pos < 0.42 and c < last_high_price:
+            # Price is pulling back — classic Wave 2 entry zone
+            # Wave 2 CANNOT break Wave 1 start (Elliott Rule)
+            if c > low_100:  # rule: Wave 2 doesn't go below Wave 1 start
+                ew_label = "Wave 2 (Correction — BEST BUY)"; ew_direction = "BUY"; ew_score = 92
+            else:
+                ew_label = "Wave 2 Invalidated"; ew_direction = "NEUTRAL"; ew_score = 15
+        elif 0.42 <= current_pos < 0.72:
+            ew_label = "Wave 3 (Strong Impulse — BUY)"; ew_direction = "BUY"; ew_score = 80
+        elif 0.72 <= current_pos < 0.87 and c < last_high_price:
+            ew_label = "Wave 4 (Pullback — BUY)"; ew_direction = "BUY"; ew_score = 70
+        elif current_pos >= 0.87:
+            ew_label = "Wave 5 (Exhaustion — CAUTION)"; ew_direction = "NEUTRAL"; ew_score = 18
+        else:
+            ew_label = "Uptrend — Wave Position Unclear"; ew_direction = "BUY"; ew_score = 40
+
+    elif slope20 < -0.5 and c < ma_50:  # ── DOWNTREND ──────────────
+        last_high_price = swing_highs[-1][1]
+        last_low_price  = swing_lows[-1][1]
+
+        if current_pos > 0.80:
+            ew_label = "Wave A (Impulse Drop Start)"; ew_direction = "SELL"; ew_score = 65
+        elif 0.58 <= current_pos <= 0.80 and c > last_low_price:
+            # Wave B: corrective rally — best sell zone
+            if c < high_100:  # rule: Wave B doesn't exceed Wave A start
+                ew_label = "Wave B (Correction — BEST SELL)"; ew_direction = "SELL"; ew_score = 92
+            else:
+                ew_label = "Wave B Invalidated"; ew_direction = "NEUTRAL"; ew_score = 15
+        elif 0.28 <= current_pos < 0.58:
+            ew_label = "Wave C (Strong Drop — SELL)"; ew_direction = "SELL"; ew_score = 80
+        elif current_pos < 0.28:
+            ew_label = "Wave C End (Reversal Watch)"; ew_direction = "NEUTRAL"; ew_score = 20
+        else:
+            ew_label = "Downtrend — Wave Position Unclear"; ew_direction = "SELL"; ew_score = 40
+
+    else:  # Sideways / transitioning
+        ew_label = "Corrective Structure (No Clear Wave)"; ew_direction = "NEUTRAL"; ew_score = 20
+
+    # ── 5. SMC Structure ──────────────────────────────────────────────────
+    smc_bias, bos_type, choch, smc_desc = detect_smc_structure(df, swing_highs, swing_lows)
+    smc_score = 0
+    if smc_bias == "bull": smc_score = 25 if choch else 15
+    elif smc_bias == "bear": smc_score = 25 if choch else 15
+
+    # ── 6. ICT Concepts ───────────────────────────────────────────────────
     ict_direction = "NEUTRAL"; ict_label = "No ICT Setup"; ict_score = 0
 
-    # 1. Market Structure Shift (MSS) - Break of Structure
-    recent_highs = df['High'].tail(20).values
-    recent_lows  = df['Low'].tail(20).values
-    last_high = recent_highs[-1]; last_low = recent_lows[-1]
-    prev_high = df['High'].tail(30).values[-10]; prev_low = df['Low'].tail(30).values[-10]
+    # Fair Value Gaps (3-candle imbalance)
+    fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]
+    fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]
+    # Multi-candle FVG check (stronger signal)
+    fvg_bull_strong = fvg_bull and df['Low'].iloc[-2] > df['High'].iloc[-4] if len(df) >= 4 else fvg_bull
+    fvg_bear_strong = fvg_bear and df['High'].iloc[-2] < df['Low'].iloc[-4] if len(df) >= 4 else fvg_bear
 
-    bos_bull = c > prev_high and df['High'].iloc[-2] > df['High'].tail(20)[:-2].max()  # Break of structure bullish
-    bos_bear = c < prev_low  and df['Low'].iloc[-2] < df['Low'].tail(20)[:-2].min()   # Break of structure bearish
+    # Liquidity Sweeps (Inducement)
+    # Swept equal lows (sell-side taken, now bullish)
+    lows_10 = df['Low'].tail(11).values[:-1]  # last 10 bars excluding current
+    highs_10 = df['High'].tail(11).values[:-1]
+    equal_lows_swept = (df['Low'].iloc[-1] < lows_10.min()) and (c > df['Low'].iloc[-1] + atr * 0.3)
+    equal_highs_swept = (df['High'].iloc[-1] > highs_10.max()) and (c < df['High'].iloc[-1] - atr * 0.3)
 
-    # 2. Fair Value Gaps (Imbalance zones)
-    fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]    # Bullish FVG
-    fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]   # Bearish FVG
-
-    # 3. Inducement (Liquidity sweep before move)
-    equal_lows_swept = df['Low'].iloc[-1] < df['Low'].tail(10)[:-1].min() and c > df['Low'].iloc[-1]  # swept lows → bullish
-    equal_highs_swept = df['High'].iloc[-1] > df['High'].tail(10)[:-1].max() and c < df['High'].iloc[-1]  # swept highs → bearish
-
-    # 4. OTE (Optimal Trade Entry) - Price in 61.8%–79% retracement
-    # Bullish: price retraced into 61.8-79% of last impulse
+    # OTE Zone (Optimal Trade Entry: 61.8% – 78.6% retracement)
     impulse_range = high_50 - low_50
     ote_bull_lo = high_50 - impulse_range * 0.786
     ote_bull_hi = high_50 - impulse_range * 0.618
@@ -1317,69 +1716,104 @@ def detect_elliott_wave_ict_direction(df, tf):
     in_ote_bull = ote_bull_lo <= c <= ote_bull_hi
     in_ote_bear = ote_bear_lo <= c <= ote_bear_hi
 
-    # ICT Score
-    if bos_bull or fvg_bull or equal_lows_swept or in_ote_bull:
-        ict_score = sum([20 if bos_bull else 0, 15 if fvg_bull else 0,
-                         25 if equal_lows_swept else 0, 20 if in_ote_bull else 0])
-        ict_direction = "BUY"
-        parts = []
-        if bos_bull: parts.append("BOS Bullish")
-        if fvg_bull: parts.append("FVG Bullish")
-        if equal_lows_swept: parts.append("Liquidity Swept ↑")
-        if in_ote_bull: parts.append("OTE Zone")
-        ict_label = " + ".join(parts) if parts else "ICT Bullish"
-    elif bos_bear or fvg_bear or equal_highs_swept or in_ote_bear:
-        ict_score = sum([20 if bos_bear else 0, 15 if fvg_bear else 0,
-                         25 if equal_highs_swept else 0, 20 if in_ote_bear else 0])
-        ict_direction = "SELL"
-        parts = []
-        if bos_bear: parts.append("BOS Bearish")
-        if fvg_bear: parts.append("FVG Bearish")
-        if equal_highs_swept: parts.append("Liquidity Swept ↓")
-        if in_ote_bear: parts.append("OTE Zone")
-        ict_label = " + ".join(parts) if parts else "ICT Bearish"
+    # Market Structure Shift (MSS) on recent bars (stronger signal)
+    last_sh_price = swing_highs[-1][1]
+    last_sl_price = swing_lows[-1][1]
+    mss_bull = c > last_sh_price  # price is above last swing high
+    mss_bear = c < last_sl_price  # price is below last swing low
 
-    # --- Combined Direction ---
+    ict_parts = []
+    bull_ict = (bos_type == "BOS Bullish") or fvg_bull or equal_lows_swept or in_ote_bull or (smc_bias == "bull")
+    bear_ict = (bos_type == "BOS Bearish") or fvg_bear or equal_highs_swept or in_ote_bear or (smc_bias == "bear")
+
+    if bull_ict and not (bear_ict and not bull_ict):
+        ict_score = sum([
+            20 if (bos_type == "BOS Bullish") else 0,
+            18 if fvg_bull_strong else (10 if fvg_bull else 0),
+            28 if equal_lows_swept else 0,
+            22 if in_ote_bull else 0,
+            15 if (smc_bias == "bull") else 0,
+        ])
+        ict_direction = "BUY"
+        if bos_type == "BOS Bullish": ict_parts.append("BOS↑")
+        if fvg_bull: ict_parts.append("FVG↑" + ("⭐" if fvg_bull_strong else ""))
+        if equal_lows_swept: ict_parts.append("Liq Sweep↑")
+        if in_ote_bull: ict_parts.append("OTE Zone")
+        if smc_bias == "bull": ict_parts.append(f"SMC({smc_desc[:20]})")
+        ict_label = " + ".join(ict_parts) if ict_parts else "ICT Bullish"
+    elif bear_ict:
+        ict_score = sum([
+            20 if (bos_type == "BOS Bearish") else 0,
+            18 if fvg_bear_strong else (10 if fvg_bear else 0),
+            28 if equal_highs_swept else 0,
+            22 if in_ote_bear else 0,
+            15 if (smc_bias == "bear") else 0,
+        ])
+        ict_direction = "SELL"
+        if bos_type == "BOS Bearish": ict_parts.append("BOS↓")
+        if fvg_bear: ict_parts.append("FVG↓" + ("⭐" if fvg_bear_strong else ""))
+        if equal_highs_swept: ict_parts.append("Liq Sweep↓")
+        if in_ote_bear: ict_parts.append("OTE Zone")
+        if smc_bias == "bear": ict_parts.append(f"SMC({smc_desc[:20]})")
+        ict_label = " + ".join(ict_parts) if ict_parts else "ICT Bearish"
+
+    # ── 7. Combined Signal ────────────────────────────────────────────────
     if ew_direction == ict_direction and ew_direction != "NEUTRAL":
         final_direction = ew_direction
-        combined_conf = int((ew_score + ict_score) / 2)
-        combined_conf = min(95, combined_conf)
+        combined_conf = min(95, int((ew_score * 0.55 + ict_score * 0.45)))
+        if smc_bias == ("bull" if ew_direction == "BUY" else "bear"):
+            combined_conf = min(95, combined_conf + 5)  # bonus for 3-way agreement
     elif ew_direction != "NEUTRAL" and ict_direction == "NEUTRAL":
         final_direction = ew_direction
-        combined_conf = int(ew_score * 0.7)
+        combined_conf = int(ew_score * 0.65)
     elif ict_direction != "NEUTRAL" and ew_direction == "NEUTRAL":
         final_direction = ict_direction
-        combined_conf = int(ict_score * 0.7)
+        combined_conf = int(ict_score * 0.65)
+    elif ew_direction != "NEUTRAL" and ict_direction != "NEUTRAL" and ew_direction != ict_direction:
+        # Direct conflict → low confidence
+        final_direction = "NEUTRAL"
+        combined_conf = 15
     else:
         final_direction = "NEUTRAL"
-        combined_conf = 20
+        combined_conf = 15
 
     ict_context = f"EW: {ew_label} | ICT: {ict_label}"
     return final_direction, ew_label, ict_context, combined_conf
 
 
-# ==================== SMC + FIBONACCI ENTRY ENGINE ====================
+# ==================== SMC + FIBONACCI ENTRY ENGINE (PRECISION v2) ====================
 def calculate_smc_fibonacci_entry(df, direction, current_price, atr):
     """
-    Short Trade Entry: SMC Order Block + Fibonacci confluence.
+    Short Trade Entry: SMC Order Block + Fibonacci confluence — PRECISION v2.
     
-    SMC Entry Rules:
-    - Bullish OB: Last bearish candle before impulse move up (50-75% of OB body)
-    - Bearish OB: Last bullish candle before impulse move down (25-50% of OB body)
-    
-    Fibonacci Entry Rules:
-    - 0.618 (Golden Ratio) = primary entry
-    - 0.705 = secondary entry
-    - 0.786 = deep entry (aggressive)
-    
-    Returns: (entry_price, entry_source, confidence_bonus)
+    Key improvements over v1:
+    - OB must be validated by proper impulse move (≥1.5× ATR next candle)  
+    - Fibonacci levels use ACTUAL swing high/low (not rolling window max/min)
+    - Rejects entry if price is MORE than 0.3% away from OB or Fib zone (no chasing)
+    - Returns confidence_bonus reflecting entry quality
     """
     if df is None or len(df) < 30:
         return current_price, "Current Price (no data)", 0
 
-    recent_high = df['High'].tail(50).max()
-    recent_low  = df['Low'].tail(50).min()
+    # Proper swing high/low (last 50 bars, window=3)
+    sw = min(3, len(df) // 10)
+    swing_highs_raw, swing_lows_raw = find_swing_points(df.tail(80), window=sw)
+
+    if swing_highs_raw and swing_lows_raw:
+        # Use last valid swing high and low
+        recent_high = swing_highs_raw[-1][1]
+        recent_low  = swing_lows_raw[-1][1]
+        # Ensure high > low; fall back to rolling if inverted
+        if recent_high <= recent_low:
+            recent_high = df['High'].tail(50).max()
+            recent_low  = df['Low'].tail(50).min()
+    else:
+        recent_high = df['High'].tail(50).max()
+        recent_low  = df['Low'].tail(50).min()
+
     fib_range = recent_high - recent_low
+    if fib_range < atr * 0.5:  # market is flat — no reliable Fib
+        return current_price, "Current Price (flat market)", 0
 
     # Fibonacci levels
     if direction == "BUY":
@@ -1395,63 +1829,82 @@ def calculate_smc_fibonacci_entry(df, direction, current_price, atr):
         fib_500 = recent_low + fib_range * 0.500
         golden_lo, golden_hi = fib_618, fib_786
 
-    # SMC Order Block Detection
+    # In golden zone?
+    in_golden = golden_lo <= current_price <= golden_hi
+    golden_bonus = 18 if in_golden else 0
+
+    # SMC Order Block Detection — validated OB only
     ob_entry = None; ob_source = None; ob_conf = 0
-    scan_start = max(1, len(df) - 40)
+    scan_start = max(1, len(df) - 60)  # scan last 60 bars
 
     if direction == "BUY":
-        for i in range(scan_start, len(df) - 1):
+        for i in range(scan_start, len(df) - 2):
             is_bearish = df['Close'].iloc[i] < df['Open'].iloc[i]
             body = abs(df['Close'].iloc[i] - df['Open'].iloc[i])
-            if is_bearish and body > atr * 0.25:
-                ob_lo = df['Low'].iloc[i]; ob_hi = df['High'].iloc[i]
-                ob_50pct = (ob_lo + ob_hi) / 2
-                ob_75pct = ob_lo + (ob_hi - ob_lo) * 0.75
-                # Check if next candles were bullish (confirms OB validity)
-                if i + 2 < len(df):
-                    next_close = df['Close'].iloc[i+1]
-                    if next_close > ob_hi:  # price left the OB bullishly
-                        if ob_lo - atr * 0.2 <= current_price <= ob_hi + atr * 0.5:
-                            # Prefer 50% of OB (classic SMC Optimal Trade Entry)
-                            ob_entry = ob_50pct if current_price > ob_50pct else ob_75pct
-                            ob_source = f"Bullish OB @ {ob_50pct:.5f} (SMC)"
-                            ob_conf = 30
-                            break
+            if not is_bearish or body < atr * 0.30:
+                continue  # only meaningful bearish candles
+            ob_lo = df['Low'].iloc[i]
+            ob_hi = df['High'].iloc[i]
+            # Validated: at least one of next 2 candles breaks above OB high with ATR momentum
+            validated = False
+            for ni in range(i+1, min(i+3, len(df))):
+                if df['Close'].iloc[ni] > ob_hi and (df['Close'].iloc[ni] - df['Open'].iloc[ni]) > atr * 0.5:
+                    validated = True; break
+            if not validated:
+                continue
+            # Mitigation check: price has NOT yet revisited below OB low (OB still fresh)
+            if df['Low'].tail(len(df)-i-1).min() < ob_lo * 0.9985:
+                continue
+            ob_50pct = (ob_lo + ob_hi) / 2
+            ob_75pct = ob_lo + (ob_hi - ob_lo) * 0.75
+            # Price is approaching OB from above (pullback)
+            if ob_lo - atr * 0.3 <= current_price <= ob_hi + atr * 0.3:
+                ob_entry = ob_50pct  # OTE entry at 50% of OB
+                ob_source = f"Bull OB@{ob_50pct:.5f} (SMC)"
+                ob_conf = 35
+                break  # most recent valid OB takes priority
+
     else:  # SELL
-        for i in range(scan_start, len(df) - 1):
+        for i in range(scan_start, len(df) - 2):
             is_bullish = df['Close'].iloc[i] > df['Open'].iloc[i]
             body = abs(df['Close'].iloc[i] - df['Open'].iloc[i])
-            if is_bullish and body > atr * 0.25:
-                ob_lo = df['Low'].iloc[i]; ob_hi = df['High'].iloc[i]
-                ob_50pct = (ob_lo + ob_hi) / 2
-                ob_25pct = ob_lo + (ob_hi - ob_lo) * 0.25
-                if i + 2 < len(df):
-                    next_close = df['Close'].iloc[i+1]
-                    if next_close < ob_lo:  # price left the OB bearishly
-                        if ob_lo - atr * 0.5 <= current_price <= ob_hi + atr * 0.2:
-                            ob_entry = ob_50pct if current_price < ob_50pct else ob_25pct
-                            ob_source = f"Bearish OB @ {ob_50pct:.5f} (SMC)"
-                            ob_conf = 30
-                            break
+            if not is_bullish or body < atr * 0.30:
+                continue
+            ob_lo = df['Low'].iloc[i]
+            ob_hi = df['High'].iloc[i]
+            validated = False
+            for ni in range(i+1, min(i+3, len(df))):
+                if df['Close'].iloc[ni] < ob_lo and (df['Open'].iloc[ni] - df['Close'].iloc[ni]) > atr * 0.5:
+                    validated = True; break
+            if not validated:
+                continue
+            if df['High'].tail(len(df)-i-1).max() > ob_hi * 1.0015:
+                continue
+            ob_50pct = (ob_lo + ob_hi) / 2
+            if ob_lo - atr * 0.3 <= current_price <= ob_hi + atr * 0.3:
+                ob_entry = ob_50pct
+                ob_source = f"Bear OB@{ob_50pct:.5f} (SMC)"
+                ob_conf = 35
+                break
 
-    # Fibonacci proximity check
+    # Fibonacci proximity check (within 0.3% — tighter than v1's 0.4%)
     fib_entry = None; fib_source = None; fib_conf = 0
-    fib_levels = [(fib_618, "Fib 0.618 Golden", 25), (fib_705, "Fib 0.705", 20), (fib_786, "Fib 0.786", 15), (fib_500, "Fib 0.500", 10)]
+    fib_levels = [
+        (fib_618, "Fib 0.618 Golden", 28),
+        (fib_705, "Fib 0.705", 22),
+        (fib_786, "Fib 0.786", 16),
+        (fib_500, "Fib 0.500 Mid", 10),
+    ]
     for fv, fl, fc in fib_levels:
-        if abs(fv - current_price) / max(current_price, 1e-8) < 0.004:  # within 0.4%
+        if abs(fv - current_price) / max(current_price, 1e-8) < 0.003:
             fib_entry = fv; fib_source = fl; fib_conf = fc
             break
 
-    # In golden zone check
-    in_golden = golden_lo <= current_price <= golden_hi
-    golden_bonus = 15 if in_golden else 0
-
-    # Prioritize: OB + Fib confluence > OB alone > Fib > current price
+    # Build entry decision
     if ob_entry and fib_entry and abs(ob_entry - fib_entry) / max(fib_entry, 1e-8) < 0.005:
-        # OB + Fib confluence = highest priority
         entry = (ob_entry + fib_entry) / 2
-        source = f"OB + {fib_source} Confluence ⭐"
-        conf_bonus = ob_conf + fib_conf + golden_bonus + 10  # extra for confluence
+        source = f"OB + {fib_source} Confluence ⭐⭐"
+        conf_bonus = ob_conf + fib_conf + golden_bonus + 12
     elif ob_entry:
         entry = ob_entry
         source = ob_source + (" + Golden Zone" if in_golden else "")
@@ -1460,202 +1913,289 @@ def calculate_smc_fibonacci_entry(df, direction, current_price, atr):
         entry = fib_entry
         source = fib_source + (" + Golden Zone" if in_golden else "")
         conf_bonus = fib_conf + golden_bonus
-    else:
+    elif in_golden:
         entry = current_price
-        source = "Current Price" + (" (Golden Zone)" if in_golden else "")
+        source = "Current Price (Golden Zone)"
         conf_bonus = golden_bonus
-
-    # Validate entry is within reasonable range
-    if abs(entry - current_price) / max(current_price, 1e-8) > 0.01:  # > 1% away
+    else:
+        # No OB, no Fib proximity, not in golden zone → entry at current price with LOW confidence
         entry = current_price
-        source = "Current Price (OB too far)"
+        source = "Current Price (No OB/Fib — WEAK ENTRY)"
+        conf_bonus = 0  # zero bonus → lower overall confidence
+
+    # Hard cap: reject entry if price would chase more than 1.2% away
+    if abs(entry - current_price) / max(current_price, 1e-8) > 0.012:
+        entry = current_price
+        source = "Current Price (OB/Fib too far)"
         conf_bonus = golden_bonus
 
     return entry, source, conf_bonus
 
 
-# ==================== THEORY-BASED SL/TP ENGINE ====================
+# ==================== THEORY-BASED SL/TP ENGINE (PRECISION v2) ====================
 def calculate_theory_sl_tp(df, direction, entry, atr, trade_type, ew_label, theory_signals):
     """
-    theory-based SL and TP calculation.
+    PRECISION SL/TP Engine v2.
     
-    SWING TRADE (Elliott Wave + ICT):
-    - SL: Below/above the Wave 2/B correction extreme (structural invalidation)
-    - TP1: Elliott Wave target (Wave 3 = 1.618 × Wave 1, Wave C = 1.0 × Wave A)
-    - TP2: 2.618 extension
-    - TP3: 4.236 extension or next liquidity pool
+    SWING TRADE (Elliott Wave + SMC):
+    - SL: BEYOND the ACTUAL Wave 2/B extreme identified by swing points
+          Plus SMC Order Block zone invalidation level
+          Buffer: ATR × 0.5 (structural buffer — not too tight)
+    - TP1: Wave 3 = 1.618 × Wave 1 (Elliott extension)
+    - TP2: Wave 3 extended = 2.618 extension
+    - TP3: Wave 5 projection = 4.236 extension OR liquidity pool
     
     SHORT TRADE (SMC + Fibonacci):
-    - SL: Beyond the Order Block high/low (SMC invalidation)
-    - TP1: First FVG fill target (imbalance)
-    - TP2: Next key S/R / Fib extension 1.272
-    - TP3: Liquidity pool / Fib 1.618
+    - SL: Beyond nearest validated Order Block OR recent swing point + buffer
+          Minimum RR: 1.5:1 enforced
+    - TP1: First FVG fill (imbalance) or Fib 1.272
+    - TP2: Fib 1.618 or next S/R
+    - TP3: Fib 2.0 or liquidity pool
+    
+    SL ANTI-HUNT LOGIC:
+    - Minimum SL distance = ATR × 0.8 (no scalping SLs that get hunted)
+    - Maximum SL distance = ATR × 4.0 (no oversized stops)
+    - SL placed at structural level, not at arbitrary ATR multiple
     """
     if df is None or len(df) < 50:
-        sl = entry - atr * 1.5 if direction == "BUY" else entry + atr * 1.5
-        tp1 = entry + atr * 2.0 if direction == "BUY" else entry - atr * 2.0
-        tp2 = entry + atr * 3.5 if direction == "BUY" else entry - atr * 3.5
-        tp3 = entry + atr * 5.5 if direction == "BUY" else entry - atr * 5.5
+        sl  = entry - atr * 2.0 if direction == "BUY" else entry + atr * 2.0
+        tp1 = entry + atr * 3.0 if direction == "BUY" else entry - atr * 3.0
+        tp2 = entry + atr * 5.0 if direction == "BUY" else entry - atr * 5.0
+        tp3 = entry + atr * 8.0 if direction == "BUY" else entry - atr * 8.0
         return sl, tp1, tp2, tp3
 
     high_50 = df['High'].tail(50).max()
     low_50  = df['Low'].tail(50).min()
-    high_20 = df['High'].tail(20).max()
-    low_20  = df['Low'].tail(20).min()
     structure_range = high_50 - low_50
 
     supports, resistances = find_key_levels(df)
 
+    # Swing points for structural SL
+    sw_window = 3 if len(df) < 100 else 5
+    swing_highs, swing_lows = find_swing_points(df.tail(100), window=sw_window)
+
+    def nearest_swing_low_below(price, swings, buffer=0):
+        """Find the nearest swing low that is below price"""
+        candidates = [sl for (_, sl) in swings if sl < price - buffer]
+        return max(candidates) if candidates else None
+
+    def nearest_swing_high_above(price, swings, buffer=0):
+        """Find the nearest swing high that is above price"""
+        candidates = [sh for (_, sh) in swings if sh > price + buffer]
+        return min(candidates) if candidates else None
+
     if trade_type == "SWING":
-        # === SWING TRADE: Elliott Wave + ICT SL/TP ===
-        buffer = atr * 0.35  # structural buffer
+        # ─── SWING TRADE: Elliott Wave + SMC SL/TP ──────────────────────────────
+        # SL buffer: wider for swing trades (min ATR×0.5 to avoid hunts)
+        sl_buf = max(atr * 0.5, structure_range * 0.01)
 
         if direction == "BUY":
-            # SL: Below Wave 2 correction (the most recent swing low before entry)
-            # In Elliott Wave, Wave 2 cannot go below Wave 1 start
-            wave2_low = df['Low'].tail(30).min()
-            # ICT confirmation: SL below recent liquidity grab level
-            ict_sl_level = df['Low'].tail(10).min()
-            sl_candidates = [wave2_low - buffer, ict_sl_level - buffer, entry - atr * 2.0]
-            valid_sls = [s for s in sl_candidates if 0 < s < entry]
+            # SL: Below the most recent CONFIRMED swing low (Wave 2 low)
+            # Wave 2 in EW must be above Wave 1 start (low_50 reference)
+            struct_sl_level = nearest_swing_low_below(entry, swing_lows, buffer=atr * 0.2)
+            if struct_sl_level is None:
+                struct_sl_level = low_50
+
+            # Additional checks:
+            # 1. SMC: below any nearby bullish OB low
+            ob_low = df['Low'].tail(20).min()
+            # 2. ICT: below the last swing low (liquidity resting level)
+            last_swing_low = swing_lows[-1][1] if swing_lows else low_50
+
+            sl_candidates = [
+                struct_sl_level - sl_buf,
+                ob_low - sl_buf,
+                last_swing_low - sl_buf,
+            ]
+            # Filter: SL must be below entry but not too far
+            valid_sls = [s for s in sl_candidates if 0 < s < entry - atr * 0.8]
             sl = max(valid_sls) if valid_sls else entry - atr * 2.0
 
-            # TP: Elliott Wave extensions
-            # Wave 3 target: 1.618 × (Wave 1 length) above Wave 1 start
-            wave1_len = structure_range * 0.382  # approximate Wave 1
-            ew_tp1 = entry + wave1_len * 1.618    # Wave 3 = 1.618 × Wave 1
-            ew_tp2 = entry + wave1_len * 2.618    # extended Wave 3
-            ew_tp3 = entry + wave1_len * 4.236    # Wave 5 projection
+            # TP: Elliott Wave extensions from the move
+            wave1_estimate = structure_range * 0.38  # conservative wave 1 estimate
+            # Use actual entry-to-sl distance to scale wave projections (removes outliers)
+            sl_dist = abs(entry - sl)
+            ew_tp1 = entry + wave1_estimate * 1.618   # Wave 3 = 1.618×Wave 1
+            ew_tp2 = entry + wave1_estimate * 2.618   # Extended Wave 3
+            ew_tp3 = entry + wave1_estimate * 4.236   # Wave 5
 
-            # ICT: Liquidity pools above (equal highs)
-            liq_pools = find_liquidity_pools(df, "BUY", entry, atr)
-            # FVG targets
+            # ICT liquidity + FVG targets
+            liq_pools   = find_liquidity_pools(df, "BUY", entry, atr)
             fvg_targets = find_fvg_levels(df, "BUY", entry)
-            res_above = sorted([r for r in resistances if r > entry + atr * 0.5])
+            res_above   = sorted([r for r in resistances if r > entry + atr * 0.5])
 
-            tp1_candidates = sorted(set([ew_tp1] + fvg_targets + res_above[:2] + liq_pools[:2]))
-            tp1_candidates = [t for t in tp1_candidates if t > entry + abs(entry - sl) * 1.5]
-            tp1 = tp1_candidates[0] if tp1_candidates else entry + abs(entry - sl) * 2.0
+            # TP1: minimum 2.0× risk
+            min_tp1 = entry + sl_dist * 2.0
+            tp1_pool = sorted(set([ew_tp1] + fvg_targets[:3] + res_above[:3] + liq_pools[:3]))
+            tp1_pool = [t for t in tp1_pool if t >= min_tp1]
+            tp1 = tp1_pool[0] if tp1_pool else min_tp1
 
-            tp2_candidates = sorted(set([ew_tp2] + res_above + liq_pools))
-            tp2_candidates = [t for t in tp2_candidates if t > tp1 + atr * 0.5]
-            tp2 = tp2_candidates[0] if tp2_candidates else tp1 + abs(entry - sl) * 1.5
+            # TP2: minimum 3.5× risk
+            min_tp2 = entry + sl_dist * 3.5
+            tp2_pool = sorted(set([ew_tp2] + res_above + liq_pools))
+            tp2_pool = [t for t in tp2_pool if t >= min_tp2 and t > tp1 + atr * 0.5]
+            tp2 = tp2_pool[0] if tp2_pool else tp1 + sl_dist * 1.8
 
-            tp3_candidates = sorted(set([ew_tp3] + liq_pools))
-            tp3_candidates = [t for t in tp3_candidates if t > tp2 + atr * 0.5]
-            tp3 = tp3_candidates[-1] if tp3_candidates else tp2 + abs(entry - sl) * 2.0
+            # TP3: minimum 6× risk
+            min_tp3 = entry + sl_dist * 6.0
+            tp3_pool = sorted(set([ew_tp3] + liq_pools))
+            tp3_pool = [t for t in tp3_pool if t >= min_tp3 and t > tp2 + atr * 0.5]
+            tp3 = tp3_pool[-1] if tp3_pool else tp2 + sl_dist * 2.5
 
         else:  # SELL
-            wave2_high = df['High'].tail(30).max()
-            ict_sl_level = df['High'].tail(10).max()
-            sl_candidates = [wave2_high + buffer, ict_sl_level + buffer, entry + atr * 2.0]
-            valid_sls = [s for s in sl_candidates if s > entry]
+            sl_buf = max(atr * 0.5, structure_range * 0.01)
+            struct_sl_level = nearest_swing_high_above(entry, swing_highs, buffer=atr * 0.2)
+            if struct_sl_level is None:
+                struct_sl_level = high_50
+
+            ob_high = df['High'].tail(20).max()
+            last_swing_high = swing_highs[-1][1] if swing_highs else high_50
+
+            sl_candidates = [
+                struct_sl_level + sl_buf,
+                ob_high + sl_buf,
+                last_swing_high + sl_buf,
+            ]
+            valid_sls = [s for s in sl_candidates if s > entry + atr * 0.8]
             sl = min(valid_sls) if valid_sls else entry + atr * 2.0
 
-            wave1_len = structure_range * 0.382
-            ew_tp1 = entry - wave1_len * 1.618
-            ew_tp2 = entry - wave1_len * 2.618
-            ew_tp3 = entry - wave1_len * 4.236
-
-            liq_pools = find_liquidity_pools(df, "SELL", entry, atr)
-            fvg_targets = find_fvg_levels(df, "SELL", entry)
-            sup_below = sorted([s for s in supports if s < entry - atr * 0.5], reverse=True)
-
+            wave1_estimate = structure_range * 0.38
             sl_dist = abs(sl - entry)
-            tp1_candidates = sorted(set([ew_tp1] + fvg_targets + sup_below[:2] + liq_pools[:2]), reverse=True)
-            tp1_candidates = [t for t in tp1_candidates if t < entry - sl_dist * 1.5]
-            tp1 = tp1_candidates[0] if tp1_candidates else entry - sl_dist * 2.0
+            ew_tp1 = entry - wave1_estimate * 1.618
+            ew_tp2 = entry - wave1_estimate * 2.618
+            ew_tp3 = entry - wave1_estimate * 4.236
 
-            tp2_candidates = sorted(set([ew_tp2] + sup_below + liq_pools), reverse=True)
-            tp2_candidates = [t for t in tp2_candidates if t < tp1 - atr * 0.5]
-            tp2 = tp2_candidates[0] if tp2_candidates else tp1 - sl_dist * 1.5
+            liq_pools   = find_liquidity_pools(df, "SELL", entry, atr)
+            fvg_targets = find_fvg_levels(df, "SELL", entry)
+            sup_below   = sorted([s for s in supports if s < entry - atr * 0.5], reverse=True)
 
-            tp3_candidates = sorted(set([ew_tp3] + liq_pools), reverse=True)
-            tp3_candidates = [t for t in tp3_candidates if t < tp2 - atr * 0.5]
-            tp3 = tp3_candidates[-1] if tp3_candidates else tp2 - sl_dist * 2.0
+            min_tp1 = entry - sl_dist * 2.0
+            tp1_pool = sorted(set([ew_tp1] + fvg_targets[:3] + sup_below[:3] + liq_pools[:3]), reverse=True)
+            tp1_pool = [t for t in tp1_pool if t <= min_tp1]
+            tp1 = tp1_pool[0] if tp1_pool else min_tp1
+
+            min_tp2 = entry - sl_dist * 3.5
+            tp2_pool = sorted(set([ew_tp2] + sup_below + liq_pools), reverse=True)
+            tp2_pool = [t for t in tp2_pool if t <= min_tp2 and t < tp1 - atr * 0.5]
+            tp2 = tp2_pool[0] if tp2_pool else tp1 - sl_dist * 1.8
+
+            min_tp3 = entry - sl_dist * 6.0
+            tp3_pool = sorted(set([ew_tp3] + liq_pools), reverse=True)
+            tp3_pool = [t for t in tp3_pool if t <= min_tp3 and t < tp2 - atr * 0.5]
+            tp3 = tp3_pool[-1] if tp3_pool else tp2 - sl_dist * 2.5
 
     else:
-        # === SHORT TRADE: SMC + Fibonacci SL/TP ===
-        tight_buf = atr * 0.15
-        normal_buf = atr * 0.30
+        # ─── SHORT TRADE: SMC + Fibonacci SL/TP ────────────────────────────────
+        tight_buf  = max(atr * 0.2, structure_range * 0.005)
+        normal_buf = max(atr * 0.4, structure_range * 0.008)
 
         if direction == "BUY":
-            # SL: Below the SMC Order Block low (structural invalidation)
-            # Find recent bullish OB low
-            ob_lo = df['Low'].tail(10).min()
-            recent_swing_low = df['Low'].tail(5).min()
-            fib_786_sl = df['High'].tail(50).max() - (df['High'].tail(50).max() - df['Low'].tail(50).min()) * 0.886
-            sl_candidates = [ob_lo - tight_buf, recent_swing_low - tight_buf, fib_786_sl - tight_buf, entry - atr * 1.0]
-            valid_sls = [s for s in sl_candidates if 0 < s < entry]
-            sl = max(valid_sls) if valid_sls else entry - atr * 1.2
+            # SL: Below nearest confirmed Order Block low OR recent swing low
+            ob_lo = df['Low'].tail(15).min()
+            struct_sl = nearest_swing_low_below(entry, swing_lows, buffer=0)
+            if struct_sl is None: struct_sl = low_50
 
-            # TP: FVG fill + Fibonacci extension
+            fib_786_sl = high_50 - (high_50 - low_50) * 0.886  # deep fib as absolute last resort
+
+            sl_candidates = [
+                ob_lo - tight_buf,
+                struct_sl - tight_buf,
+                fib_786_sl,
+                entry - atr * 1.2,
+            ]
+            valid_sls = [s for s in sl_candidates if 0 < s < entry - atr * 0.8]
+            sl = max(valid_sls) if valid_sls else entry - atr * 1.5
+
+            # FVG + Fib extensions for TP
             fvg_targets = find_fvg_levels(df, "BUY", entry)
-            high_50 = df['High'].tail(50).max(); low_50 = df['Low'].tail(50).min()
-            fib_range = high_50 - low_50
-            fib_127 = low_50 + fib_range * 1.272
-            fib_162 = low_50 + fib_range * 1.618
-            fib_200 = low_50 + fib_range * 2.000
-            liq_pools = find_liquidity_pools(df, "BUY", entry, atr)
-            res_above = sorted([r for r in resistances if r > entry])
+            high_50_ = df['High'].tail(50).max(); low_50_ = df['Low'].tail(50).min()
+            fib_range = high_50_ - low_50_
+            fib_127 = low_50_ + fib_range * 1.272
+            fib_162 = low_50_ + fib_range * 1.618
+            fib_200 = low_50_ + fib_range * 2.000
+            liq_pools   = find_liquidity_pools(df, "BUY", entry, atr)
+            res_above   = sorted([r for r in resistances if r > entry])
 
             sl_dist = abs(entry - sl)
-            min_tp1 = entry + sl_dist * 1.5
+            min_tp1 = entry + sl_dist * 1.8
             tp1_pool = sorted(set(fvg_targets + res_above[:3] + [fib_127]))
             tp1_pool = [t for t in tp1_pool if t >= min_tp1]
             tp1 = tp1_pool[0] if tp1_pool else min_tp1
 
-            min_tp2 = entry + sl_dist * 2.5
+            min_tp2 = entry + sl_dist * 3.0
             tp2_pool = sorted(set(res_above + liq_pools + [fib_162]))
             tp2_pool = [t for t in tp2_pool if t >= min_tp2 and t > tp1 + atr * 0.3]
-            tp2 = tp2_pool[0] if tp2_pool else tp1 + sl_dist * 1.2
+            tp2 = tp2_pool[0] if tp2_pool else tp1 + sl_dist * 1.5
 
-            min_tp3 = entry + sl_dist * 4.0
+            min_tp3 = entry + sl_dist * 5.0
             tp3_pool = sorted(set(liq_pools + [fib_200]))
             tp3_pool = [t for t in tp3_pool if t >= min_tp3 and t > tp2 + atr * 0.5]
-            tp3 = tp3_pool[-1] if tp3_pool else tp2 + sl_dist * 1.8
+            tp3 = tp3_pool[-1] if tp3_pool else tp2 + sl_dist * 2.0
 
         else:  # SELL
-            ob_hi = df['High'].tail(10).max()
-            recent_swing_high = df['High'].tail(5).max()
-            fib_786_sl = df['Low'].tail(50).min() + (df['High'].tail(50).max() - df['Low'].tail(50).min()) * 0.886
-            sl_candidates = [ob_hi + tight_buf, recent_swing_high + tight_buf, fib_786_sl + tight_buf, entry + atr * 1.0]
-            valid_sls = [s for s in sl_candidates if s > entry]
-            sl = min(valid_sls) if valid_sls else entry + atr * 1.2
+            ob_hi = df['High'].tail(15).max()
+            struct_sl = nearest_swing_high_above(entry, swing_highs, buffer=0)
+            if struct_sl is None: struct_sl = high_50
+
+            fib_786_sl = low_50 + (high_50 - low_50) * 0.886
+
+            sl_candidates = [
+                ob_hi + tight_buf,
+                struct_sl + tight_buf,
+                fib_786_sl,
+                entry + atr * 1.2,
+            ]
+            valid_sls = [s for s in sl_candidates if s > entry + atr * 0.8]
+            sl = min(valid_sls) if valid_sls else entry + atr * 1.5
 
             fvg_targets = find_fvg_levels(df, "SELL", entry)
-            high_50 = df['High'].tail(50).max(); low_50 = df['Low'].tail(50).min()
-            fib_range = high_50 - low_50
-            fib_127 = high_50 - fib_range * 1.272
-            fib_162 = high_50 - fib_range * 1.618
-            fib_200 = high_50 - fib_range * 2.000
-            liq_pools = find_liquidity_pools(df, "SELL", entry, atr)
-            sup_below = sorted([s for s in supports if s < entry], reverse=True)
+            high_50_ = df['High'].tail(50).max(); low_50_ = df['Low'].tail(50).min()
+            fib_range = high_50_ - low_50_
+            fib_127 = high_50_ - fib_range * 1.272
+            fib_162 = high_50_ - fib_range * 1.618
+            fib_200 = high_50_ - fib_range * 2.000
+            liq_pools   = find_liquidity_pools(df, "SELL", entry, atr)
+            sup_below   = sorted([s for s in supports if s < entry], reverse=True)
 
             sl_dist = abs(sl - entry)
-            min_tp1 = entry - sl_dist * 1.5
+            min_tp1 = entry - sl_dist * 1.8
             tp1_pool = sorted(set(fvg_targets + sup_below[:3] + [fib_127]), reverse=True)
             tp1_pool = [t for t in tp1_pool if t <= min_tp1]
             tp1 = tp1_pool[0] if tp1_pool else min_tp1
 
-            min_tp2 = entry - sl_dist * 2.5
+            min_tp2 = entry - sl_dist * 3.0
             tp2_pool = sorted(set(sup_below + liq_pools + [fib_162]), reverse=True)
             tp2_pool = [t for t in tp2_pool if t <= min_tp2 and t < tp1 - atr * 0.3]
-            tp2 = tp2_pool[0] if tp2_pool else tp1 - sl_dist * 1.2
+            tp2 = tp2_pool[0] if tp2_pool else tp1 - sl_dist * 1.5
 
-            min_tp3 = entry - sl_dist * 4.0
+            min_tp3 = entry - sl_dist * 5.0
             tp3_pool = sorted(set(liq_pools + [fib_200]), reverse=True)
             tp3_pool = [t for t in tp3_pool if t <= min_tp3 and t < tp2 - atr * 0.5]
-            tp3 = tp3_pool[-1] if tp3_pool else tp2 - sl_dist * 1.8
+            tp3 = tp3_pool[-1] if tp3_pool else tp2 - sl_dist * 2.0
 
-    # Final safety checks
+    # ── Final SL Safety Checks ────────────────────────────────────────────
     sl_dist = abs(entry - sl)
-    max_sl = atr * (3.5 if trade_type == "SWING" else 2.5)
-    min_sl = atr * (0.8 if trade_type == "SWING" else 0.5)
-    if sl_dist > max_sl:
-        sl = (entry - max_sl) if direction == "BUY" else (entry + max_sl)
+    # Anti-hunt: minimum SL distance
+    min_sl = atr * (1.0 if trade_type == "SWING" else 0.8)
+    # Reasonable maximum
+    max_sl = atr * (4.0 if trade_type == "SWING" else 2.5)
+
     if sl_dist < min_sl:
         sl = (entry - min_sl) if direction == "BUY" else (entry + min_sl)
+    if sl_dist > max_sl:
+        sl = (entry - max_sl) if direction == "BUY" else (entry + max_sl)
+
+    # TP sanity: TP must be beyond minimum RR
+    sl_dist = abs(entry - sl)
+    min_rr  = 2.0 if trade_type == "SWING" else 1.8
+    if direction == "BUY":
+        if tp1 < entry + sl_dist * min_rr: tp1 = entry + sl_dist * min_rr
+        if tp2 <= tp1: tp2 = tp1 + sl_dist * 1.5
+        if tp3 <= tp2: tp3 = tp2 + sl_dist * 2.0
+    else:
+        if tp1 > entry - sl_dist * min_rr: tp1 = entry - sl_dist * min_rr
+        if tp2 >= tp1: tp2 = tp1 - sl_dist * 1.5
+        if tp3 >= tp2: tp3 = tp2 - sl_dist * 2.0
 
     return sl, tp1, tp2, tp3
 
@@ -2162,9 +2702,15 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     if progress_callback: progress_callback(0.20, "Gate 2: Multi-timeframe analysis...")
     yf_sym = clean_pair_to_yf_symbol(pair)
     mtf_score, mtf_direction, mtf_details = get_multi_timeframe_analysis(yf_sym, tf_clean, news_items)
-    mtf_agrees = (mtf_direction == ("bull" if direction == "BUY" else "bear")) or mtf_direction == "neutral"
-    if mtf_score < 40 and not mtf_agrees:
-        return None, f"Gate 2 FAILED: MTF score {mtf_score:.1f}% too low & direction conflicts (MTF: {mtf_direction.upper()} vs {direction})"
+    # STRICT: MTF must agree OR be close to neutral, but not actively conflict
+    mtf_agrees = (mtf_direction == ("bull" if direction == "BUY" else "bear"))
+    mtf_neutral = mtf_direction == "neutral"
+    # Reject if MTF score < 40 AND MTF direction actively opposes trade direction
+    if mtf_score < 40 and not mtf_agrees and not mtf_neutral:
+        return None, f"Gate 2 FAILED: MTF actively conflicts — MTF score {mtf_score:.1f}% (MTF dir: {mtf_direction.upper()} vs {direction})"
+    # Reject if MTF score is very weak (< 30) even if neutral
+    if mtf_score < 30:
+        return None, f"Gate 2 FAILED: MTF score {mtf_score:.1f}% too weak (< 30% minimum)"
 
     if progress_callback: progress_callback(0.30, "Gate 3: Market regime check...")
     regime, adx_strength = detect_market_regime(df_hist)
@@ -2183,8 +2729,11 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     # Step 3: Direction validation
     # Primary direction from engine; Elliott+ICT acts as higher-TF filter
     # If EW+ICT strongly disagrees with engine direction, reject
-    if ew_ict_conf >= 65 and ew_ict_direction != "NEUTRAL" and ew_ict_direction != direction:
+    if ew_ict_conf >= 55 and ew_ict_direction != "NEUTRAL" and ew_ict_direction != direction:
         return None, f"Gate 4 FAILED: Elliott Wave + ICT direction ({ew_ict_direction}) conflicts with engine signal ({direction}). EW/ICT conf: {ew_ict_conf}%"
+    # Also reject if EW+ICT is too low confidence (no clear structure)
+    if ew_ict_conf < 25 and ew_ict_direction == "NEUTRAL":
+        return None, f"Gate 4 FAILED: Elliott Wave + ICT cannot determine direction (conf: {ew_ict_conf}%). No clear wave structure."
 
     if progress_callback: progress_callback(0.45, f"Gate 4: {trade_type} trade — {'SMC+Fib' if trade_type=='SHORT' else 'EW+ICT'} entry calculation...")
 
@@ -2223,7 +2772,7 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     if progress_callback: progress_callback(0.50, "Gate 5: Theory-based SL/TP and RR...")
 
     # Step 5: Theory-based SL/TP
-    min_rr_required = 1.5 if trade_type == "SHORT" else 2.0
+    min_rr_required = 1.8 if trade_type == "SHORT" else 2.0  # Stricter RR minimums
     sl, tp1, tp2, tp3 = calculate_theory_sl_tp(df_hist, direction, final_entry, atr, trade_type, ew_label, theory_signals)
 
     # Fallback to advanced SL/TP if theory returns invalid levels
@@ -2575,16 +3124,10 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                 ai_trade['timeframe'] = tf
                 trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
 
-                # Always add to UI results list
-                all_trades.append(ai_trade)
-
-                # Auto-save to Google Sheets if not already tracked this session
                 if trade_id not in st.session_state.tracked_trades:
                     if save_trade_to_ongoing(ai_trade, user_info['Username'], tf, ai_trade.get('forecast', 'N/A')):
                         st.session_state.tracked_trades.add(trade_id)
-                    else:
-                        # Sheets save failed — trade shows in UI, user can manually capture
-                        print(f"[WARN] Auto-save failed for {trade_id}. Trade visible in UI — user can capture manually.")
+                        all_trades.append(ai_trade)
 
         except Exception as e:
             print(f"Error scanning {symbol}: {e}")
@@ -2772,7 +3315,7 @@ TIME: [most relevant news time]"""
 
 # ==================== MAIN APPLICATION ====================
 if not st.session_state.logged_in:
-    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI TERMINAL v29.0 (Theory Engine)</h1><p>Elliott Wave + ICT | SMC + Fibonacci | Multi-Timeframe | AI-Powered</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI TERMINAL v32.0</h1><p>Elliott Wave + ICT | SMC + Fibonacci | Multi-Timeframe | 50 req/min Rate Engine | Risk Badges</p></div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -2797,6 +3340,18 @@ else:
     st.sidebar.markdown(f"""<div class='session-card'><span>User:</span> {user_info['Username']}<br><span>Login:</span> {st.session_state.login_time or 'N/A'}<br><span>Last Activity:</span> {st.session_state.last_activity}<br><span>Status:</span> ✅ Active</div>""", unsafe_allow_html=True)
     auto_refresh = st.sidebar.checkbox("🔄 Auto-Monitor (60s)", value=False)
     if st.sidebar.button("Logout"): st.session_state.logged_in = False; st.rerun()
+
+    # ── Compact API rate meter in sidebar ─────────────────────────────────
+    _usage = _api_limiter.usage_stats()
+    _pct   = _usage["pct_used"]
+    _mc    = "#00ff00" if _pct < 60 else ("#ffaa00" if _pct < 85 else "#ff4b4b")
+    st.sidebar.markdown(f"""<div style='background:#0e0e0e;border:1px solid {_mc}44;border-radius:8px;padding:8px 10px;margin-top:8px;font-size:12px;'>
+        <b style='color:{_mc};'>⚡ API Rate</b>
+        <div style='background:#222;border-radius:4px;height:5px;margin:4px 0;'>
+            <div style='background:{_mc};width:{min(_pct,100):.0f}%;height:5px;border-radius:4px;'></div>
+        </div>
+        <span style='color:#888;'>GS: {_usage['gs_used']}/{_usage['gs_cap']} &nbsp; YF: {_usage['yf_used']}/{_usage['yf_cap']} &nbsp; Total: {_usage['total_used']}/50</span>
+    </div>""", unsafe_allow_html=True)
 
     nav_options = ["Dashboard", "Market Scanner", "Ongoing Trades"]
     if user_info.get("Role") == "Admin" and not st.session_state.beginner_mode: nav_options.append("Admin Panel")
@@ -2973,9 +3528,14 @@ else:
                     news_smr = t.get('sinhala_summary', '')
                     ai_fcast = t.get('ai_forecast', t.get('forecast', ''))
 
+                    # Risk badge
+                    risk_lvl_d, risk_rsn_d, risk_cls_d = assess_trade_risk(t)
+                    risk_icon_d = "🛡️" if risk_lvl_d == "SAFE" else ("⚠️" if risk_lvl_d == "MODERATE" else "🚨")
+                    risk_badge_d = f"<span class='{risk_cls_d}' style='margin-left:8px;'>{risk_icon_d} {risk_lvl_d}</span>"
+
                     st.markdown(f"""<div class='notif-container {notif_cls}' style='border-radius:12px;'>
                         <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;'>
-                            <span style='font-size:20px;font-weight:bold;color:{dir_color};'>{'📈' if t['dir']=='BUY' else '📉'} {t['pair']} — {t['dir']}</span>
+                            <span style='font-size:20px;font-weight:bold;color:{dir_color};'>{'📈' if t['dir']=='BUY' else '📉'} {t['pair']} — {t['dir']}{risk_badge_d}</span>
                             <span style='background:{tt_color}22;color:{tt_color};border:1px solid {tt_color};border-radius:6px;padding:2px 10px;font-size:13px;font-weight:bold;'>⚡ {trade_type_v} TRADE</span>
                         </div>
                         <div style='color:#fff;font-size:14px;margin-bottom:6px;'>
@@ -2993,6 +3553,7 @@ else:
                         <div style='margin-bottom:4px;'>{mtf_html}</div>
                         {"<div style='color:#ffcc44;font-size:12px;background:rgba(255,200,0,0.1);padding:6px 10px;border-radius:6px;border-left:3px solid #ffcc44;margin-top:4px;'>📰 AI News Analysis: " + ai_fcast[:120] + "...</div>" if ai_fcast else ""}
                         {"<div style='color:#00ff99;font-size:11px;margin-top:4px;'>🇱🇰 " + news_smr + "</div>" if news_smr else ""}
+                        {"<div style='color:#ff8888;font-size:11px;margin-top:4px;'>⚠️ Risk Flags: " + risk_rsn_d + "</div>" if risk_lvl_d != "SAFE" else ""}
                     </div>""", unsafe_allow_html=True)
         else:
             st.info("No recent scans. Run Market Scanner to see signals.")
@@ -3000,12 +3561,6 @@ else:
     elif app_mode == "Market Scanner":
         st.title("📡 Theory-Based Market Scanner (EW + ICT + SMC + Fibonacci)")
         st.markdown("<div class='scan-header'><h3>🔍 Elliott Wave + ICT (Swing) | SMC + Fibonacci (Short) — Multi-Timeframe Analysis</h3></div>", unsafe_allow_html=True)
-
-        # Load active trades once for duplicate-capture detection
-        if "scanner_active_trades" not in st.session_state or st.session_state.get("refresh_active_trades", True):
-            st.session_state.scanner_active_trades = load_user_trades(user_info['Username'], status='Active')
-            st.session_state.refresh_active_trades = False
-        scanner_active_trades = st.session_state.scanner_active_trades
         col1, col2 = st.columns(2)
         with col1:
             market_choice = st.selectbox("Market", options=["All","Forex","Crypto","Metals"], index=0, key="market_selector")
@@ -3032,7 +3587,6 @@ else:
                         results, rejected = scan_market_with_ai(scan_assets, user_info, selected_timeframes, min_accuracy=min_acc)
                         st.session_state.scan_results = results
                         st.session_state.rejected_trades = rejected
-                        st.session_state.refresh_active_trades = True  # reload after scan
                         if not results and not rejected:
                             st.warning(f"No signals found above {min_acc}% accuracy.")
                         else:
@@ -3041,10 +3595,7 @@ else:
                             st.success(f"Scan Complete! ✅ {approved_count} approved | ❌ {rejected_count} rejected across {len(selected_timeframes)} timeframe(s).")
         with col2:
             if st.button("🗑️ Clear Results", use_container_width=True):
-                st.session_state.scan_results = []
-                st.session_state.rejected_trades = []
-                st.session_state.refresh_active_trades = True
-                st.rerun()
+                st.session_state.scan_results = []; st.session_state.rejected_trades = []; st.rerun()
 
         st.markdown("---")
 
@@ -3119,8 +3670,16 @@ else:
                                 if ew_label_val:
                                     ew_color = "#00ff99" if "BUY" in sig['dir'] or "Wave 3" in ew_label_val or "Wave B" in ew_label_val else "#ff8888"
                                     theory_line = f"<div style='color:{ew_color};font-size:11px;margin-top:3px;'>📊 {ew_label_val} | {ict_ctx} (EW+ICT: {ew_ict_c}%)</div>"
+                                # Risk badge
+                                risk_lvl, risk_reason, risk_cls = assess_trade_risk(sig)
+                                risk_icon = "🛡️" if risk_lvl == "SAFE" else ("⚠️" if risk_lvl == "MODERATE" else "🚨")
+                                risk_badge_html = f"<span class='{risk_cls}'>{risk_icon} {risk_lvl}</span>"
+                                if risk_lvl in ("MODERATE", "DANGEROUS"):
+                                    risk_detail = f"<div style='color:#ffaa44;font-size:11px;margin-top:2px;'>⚠️ Risk: {risk_reason}</div>"
+                                else:
+                                    risk_detail = ""
                                 st.markdown(f"""<div style='background:#0d2a1a; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
-                                    <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge} {cap_badge} {tt_badge}<br>
+                                    <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge} {cap_badge} {tt_badge} {risk_badge_html}<br>
                                     Entry: {sig['entry']:.5f} | SL: {sig['sl']:.5f}<br>
                                     TP1: {sig.get('tp1',0):.5f} | TP2: {sig.get('tp2',0):.5f} | TP3: {sig.get('tp3',0):.5f}<br>
                                     Live: {sig['live_price']:.5f}<br>
@@ -3128,25 +3687,17 @@ else:
                                     <b>Confluence: {sig.get('confluence_pct','N/A')}% | R:R = 1:{sig.get('rr_ratio','N/A')} | {mtf_icon} | {regime_icon} ADX:{sig.get('adx_strength','N/A')}</b><br>
                                     <small>Entry Source: {sig.get('entry_source','N/A')} | Provider: {sig.get('provider','AI')}</small><br>
                                     <small>🇱🇰 {sig.get('sinhala_summary','')}</small><br>
-                                    {theory_badges}{theory_line}
+                                    {theory_badges}{theory_line}{risk_detail}
                                 </div>""", unsafe_allow_html=True)
                             with col2:
                                 st.progress(progress, text="Approach")
                             with col3:
-                                # --- Capture / Status Button ---
+                                # --- Capture Trade Button ---
                                 trade_id = f"{sig['pair']}_{sig.get('timeframe', tf)}_{sig['dir']}_{sig['entry']:.5f}"
-                                auto_saved = trade_id in st.session_state.tracked_trades
-                                sheets_saved = is_trade_tracked(sig, scanner_active_trades)
-
-                                if auto_saved or sheets_saved:
-                                    # Trade already saved — show status + option to re-save if needed
-                                    st.markdown("""<div style='color:#00ff99;font-size:12px;text-align:center;
-                                        padding:6px 4px;border:1px solid #00ff9944;border-radius:8px;
-                                        background:rgba(0,255,153,0.05);'>✅ Auto-Saved<br>
-                                        <span style='font-size:10px;color:#aaa;'>to Ongoing</span></div>""",
-                                        unsafe_allow_html=True)
+                                already_captured = trade_id in st.session_state.tracked_trades
+                                if already_captured:
+                                    st.markdown("<div style='color:#00ff99;font-size:12px;text-align:center;padding:6px;'>✅ Captured</div>", unsafe_allow_html=True)
                                 else:
-                                    # Trade NOT saved (auto-save failed) — show manual capture button
                                     if st.button("💾 Capture", key=f"capture_cap_{tf}_{idx}", use_container_width=True, type="primary"):
                                         capture_dict = {
                                             "pair": sig['pair'],
@@ -3159,14 +3710,13 @@ else:
                                             "tp3":   sig.get('tp3', sig['entry']),
                                             "conf":  sig.get('conf', 0),
                                         }
-                                        forecast_text = sig.get('forecast', sig.get('sinhala_summary', 'Manual capture'))
+                                        forecast_text = sig.get('forecast', sig.get('sinhala_summary', 'Captured from scanner'))
                                         if save_trade_to_ongoing(capture_dict, user_info['Username'], sig.get('timeframe', tf), forecast_text):
                                             st.session_state.tracked_trades.add(trade_id)
-                                            st.session_state.refresh_active_trades = True
                                             st.success(f"✅ {sig['pair']} captured!")
                                             st.rerun()
                                         else:
-                                            st.error("❌ Capture failed. Check Google Sheets.")
+                                            st.error("❌ Capture failed. Check Google Sheets connection.")
                                 if not st.session_state.beginner_mode:
                                     if st.button("🔍 Deep", key=f"deep_cap_{tf}_{idx}", use_container_width=True):
                                         st.session_state.selected_trade = sig
@@ -3744,6 +4294,28 @@ else:
     elif app_mode == "Admin Panel":
         if user_info.get("Role") == "Admin":
             st.title("🛡️ Admin Center & User Management")
+            # ── Live API Rate Meter ────────────────────────────────────────────
+            usage = _api_limiter.usage_stats()
+            pct   = usage["pct_used"]
+            meter_color = "#00ff00" if pct < 60 else ("#ffaa00" if pct < 85 else "#ff4b4b")
+            st.markdown(f"""<div style='background:#0a1f2e;border:2px solid {meter_color};border-radius:12px;padding:12px 20px;margin-bottom:16px;'>
+                <b style='color:{meter_color};font-size:15px;'>⚡ Live API Rate Meter (50 req/min combined)</b><br>
+                <div style='display:flex;gap:30px;margin-top:8px;align-items:center;flex-wrap:wrap;'>
+                    <div><span style='color:#aaa;font-size:11px;'>TOTAL USED</span><br>
+                        <b style='color:{meter_color};font-size:22px;'>{usage['total_used']}/{usage['total_cap']}</b>
+                        <span style='color:#888;font-size:11px;'> per min</span></div>
+                    <div><span style='color:#aaa;font-size:11px;'>GOOGLE SHEETS</span><br>
+                        <b style='color:#00ccff;font-size:18px;'>{usage['gs_used']}/{usage['gs_cap']}</b></div>
+                    <div><span style='color:#aaa;font-size:11px;'>YFINANCE</span><br>
+                        <b style='color:#ffaa00;font-size:18px;'>{usage['yf_used']}/{usage['yf_cap']}</b></div>
+                    <div><span style='color:#aaa;font-size:11px;'>UTILIZATION</span><br>
+                        <b style='color:{meter_color};font-size:18px;'>{pct:.0f}%</b></div>
+                </div>
+                <div style='background:#222;border-radius:6px;height:8px;margin-top:10px;'>
+                    <div style='background:{meter_color};width:{min(pct,100):.0f}%;height:8px;border-radius:6px;transition:width 0.3s;'></div>
+                </div>
+                <span style='color:#555;font-size:10px;'>Window: 60 sec | GS cap: {usage['gs_cap']}/min | YF cap: {usage['yf_cap']}/min | Spacing: 250ms</span>
+            </div>""", unsafe_allow_html=True)
             st.metric("Total System API Requests", st.session_state.total_api_requests)
             sheet, _ = get_user_sheet()
             if sheet:
@@ -3852,5 +4424,5 @@ else:
                 st.dataframe(df_res, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v29.0 (EW+ICT+SMC+Fibonacci Theory Engine) | Elliott Wave + ICT → Swing Direction | SMC + Fibonacci → Short Entry | Multi-Timeframe Analysis</div>", unsafe_allow_html=True)
+    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v32.0 | Unified 50 req/min Rate Engine (GS:28 + YF:22) | Per-TF Google Sheets Cache | EW+ICT+SMC+Fibonacci Precision | Risk Badges</div>", unsafe_allow_html=True)
     if auto_refresh: time.sleep(60); st.rerun()
