@@ -2174,37 +2174,33 @@ else:
 
         # ==================== APPROVED TRADES DISPLAY ====================
         res = st.session_state.scan_results
+        current_session = get_current_session()
 
-        # ── Summary banner (all scan results) ─────────────────────────────
+        # ── Summary Banner ─────────────────────────────────────────────────
         if res or st.session_state.rejected_trades:
             capturable_all   = [s for s in res if s.get('conf', 0) >= min_acc]
             uncapturable_all = [s for s in res if s.get('conf', 0) < min_acc]
-            total_scan = len(res)
-            st.markdown(f"""<div style='background:linear-gradient(135deg,#0a1f2e,#1e3c3f);border:1px solid #00ff99;border-radius:12px;padding:12px 20px;margin-bottom:16px;display:flex;gap:30px;align-items:center;flex-wrap:wrap;'>
-                <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>APPROVED SIGNALS</div><div style='color:#fff;font-size:20px;font-weight:bold;'>{total_scan}</div></div>
-                <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>✅ CAPTURABLE (≥{min_acc}%)</div><div style='color:#00ff00;font-size:20px;font-weight:bold;'>{len(capturable_all)}</div></div>
-                <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>⚠️ BELOW THRESHOLD</div><div style='color:#ffaa00;font-size:20px;font-weight:bold;'>{len(uncapturable_all)}</div></div>
-                <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>❌ GATE REJECTED</div><div style='color:#ff4b4b;font-size:20px;font-weight:bold;'>{len(st.session_state.rejected_trades)}</div></div>
-                <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>MIN ACCURACY</div><div style='color:#ffaa00;font-size:20px;font-weight:bold;'>{min_acc}%</div></div>
+            st.markdown(f"""<div style='background:linear-gradient(135deg,#0a1f2e,#1e3c3f);border:1px solid #00ff99;border-radius:12px;padding:12px 20px;margin-bottom:16px;display:flex;gap:24px;align-items:center;flex-wrap:wrap;'>
+                <div style='text-align:center;'><div style='color:#aaa;font-size:11px;'>TOTAL APPROVED</div><div style='color:#fff;font-size:20px;font-weight:bold;'>{len(res)}</div></div>
+                <div style='text-align:center;'><div style='color:#aaa;font-size:11px;'>✅ CAPTURABLE (≥{min_acc}%)</div><div style='color:#00ff00;font-size:20px;font-weight:bold;'>{len(capturable_all)}</div></div>
+                <div style='text-align:center;'><div style='color:#aaa;font-size:11px;'>⚠️ BELOW THRESHOLD</div><div style='color:#ffaa00;font-size:20px;font-weight:bold;'>{len(uncapturable_all)}</div></div>
+                <div style='text-align:center;'><div style='color:#aaa;font-size:11px;'>❌ GATE REJECTED</div><div style='color:#ff4b4b;font-size:20px;font-weight:bold;'>{len(st.session_state.rejected_trades)}</div></div>
+                <div style='text-align:center;'><div style='color:#aaa;font-size:11px;'>MIN ACCURACY</div><div style='color:#ffaa00;font-size:20px;font-weight:bold;'>{min_acc}%</div></div>
             </div>""", unsafe_allow_html=True)
 
         if res:
-            current_session = get_current_session()
-
-            # Split approved results into capturable vs below-threshold
             capturable_trades   = [s for s in res if s.get('conf', 0) >= min_acc]
             uncapturable_trades = [s for s in res if s.get('conf', 0) < min_acc]
 
-            # ──────────────────────────────────────────────────────────────
-            # SECTION A — CAPTURABLE TRADES (conf >= min_acc)
-            # ──────────────────────────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════
+            # SECTION A — CAPTURABLE (conf >= min_acc)
+            # ══════════════════════════════════════════════════════════════
             if capturable_trades:
                 st.markdown(f"""<div style='background:linear-gradient(135deg,#0a2010,#0d3020);border:1px solid #00ff99;border-left:5px solid #00ff00;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
                     <b style='color:#00ff00;font-size:15px;'>✅ CAPTURABLE TRADES — Confidence ≥ {min_acc}%</b>
-                    <span style='color:#aaa;font-size:12px;'> — These signals passed all gates AND meet your minimum accuracy. Safe to trade.</span>
+                    <span style='color:#aaa;font-size:12px;'> — Passed all gates AND meet your minimum accuracy. Safe to trade.</span>
                 </div>""", unsafe_allow_html=True)
 
-                # Group by timeframe
                 cap_by_tf = {}
                 for sig in capturable_trades:
                     tf = sig.get('timeframe', 'Unknown')
@@ -2212,7 +2208,6 @@ else:
                     cap_by_tf[tf].append(sig)
 
                 for tf, trades in cap_by_tf.items():
-                    # Sort strongest confidence first
                     trades_sorted = sorted(trades, key=lambda x: x.get('conf', 0), reverse=True)
                     with st.expander(f"✅ {tf} — CAPTURABLE ({len(trades_sorted)} trades)", expanded=True):
                         for idx, sig in enumerate(trades_sorted):
@@ -2221,6 +2216,8 @@ else:
                             else: progress = 0
                             progress = max(0, min(1, progress))
                             conf_badge = f"<span class='ai-badge ai-approve'>✅ {sig['confirmation']}</span>"
+                            conf_val = sig.get('conf', 0)
+                            cap_badge = f"<span style='background:#00ff0022;color:#00ff00;border:1px solid #00ff00;border-radius:6px;padding:1px 8px;font-size:11px;font-weight:bold;margin-left:6px;'>✅ {conf_val}% CAPTURABLE</span>"
                             theory = sig.get('theory_signals', {})
                             theory_badges = ""
                             for th, val in theory.items():
@@ -2234,8 +2231,6 @@ else:
                             with col1:
                                 color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                                 session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>"
-                                conf_val = sig.get('conf', 0)
-                                cap_badge = f"<span style='background:#00ff0022;color:#00ff00;border:1px solid #00ff00;border-radius:6px;padding:1px 8px;font-size:11px;font-weight:bold;margin-left:6px;'>✅ {conf_val}% CAPTURABLE</span>"
                                 st.markdown(f"""<div style='background:#0d2a1a; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
                                     <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge} {cap_badge}<br>
                                     Entry: {sig['entry']:.5f} | SL: {sig['sl']:.5f}<br>
@@ -2271,70 +2266,72 @@ else:
                                         st.plotly_chart(mini_chart, use_container_width=True)
                                 except: st.write("Chart N/A")
             else:
-                st.info(f"✅ No approved signals meet the minimum accuracy threshold of {min_acc}%. Lower the slider or run a new scan.")
+                st.info(f"No approved signals meet the minimum accuracy of {min_acc}%. Try lowering the slider or running a new scan.")
 
-            # ──────────────────────────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════
             # SECTION B — CANNOT CAPTURE (passed gates but conf < min_acc)
-            # ──────────────────────────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════
             if uncapturable_trades:
                 st.markdown("---")
-                unc_by_tf = {}
-                for sig in uncapturable_trades:
-                    tf = sig.get('timeframe', 'Unknown')
-                    if tf not in unc_by_tf: unc_by_tf[tf] = []
-                    unc_by_tf[tf].append(sig)
-
                 with st.expander(f"⚠️ CANNOT CAPTURE — Below {min_acc}% Threshold ({len(uncapturable_trades)} signals)", expanded=False):
-                    st.markdown(f"""<div style='background:#1a1000;border:1px solid #ffaa0044;border-left:5px solid #ffaa00;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
-                        <b style='color:#ffaa00;font-size:14px;'>⚠️ These signals PASSED all accuracy gates but their confidence is below your {min_acc}% minimum</b>
-                        <span style='color:#aaa;font-size:12px;'> — They are technically valid setups but below your risk threshold. Shown with reasons.</span>
+                    st.markdown(f"""<div style='background:#1a1200;border:1px solid #ffaa0055;border-left:5px solid #ffaa00;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
+                        <b style='color:#ffaa00;font-size:14px;'>⚠️ These signals PASSED all 6 accuracy gates but their confidence is below your {min_acc}% minimum</b><br>
+                        <span style='color:#aaa;font-size:12px;'>Technically valid setups — below your risk threshold. Each trade shows exact reasons why it cannot be captured.</span>
                     </div>""", unsafe_allow_html=True)
+
+                    unc_by_tf = {}
+                    for sig in uncapturable_trades:
+                        tf = sig.get('timeframe', 'Unknown')
+                        if tf not in unc_by_tf: unc_by_tf[tf] = []
+                        unc_by_tf[tf].append(sig)
 
                     for tf, trades in unc_by_tf.items():
                         trades_sorted = sorted(trades, key=lambda x: x.get('conf', 0), reverse=True)
-                        st.markdown(f"<b style='color:#ffaa00;'>📌 {tf} Timeframe ({len(trades_sorted)} signals)</b>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='color:#ffaa00;font-weight:bold;margin:10px 0 6px;'>📌 {tf} Timeframe — {len(trades_sorted)} signal(s)</div>", unsafe_allow_html=True)
                         for sig in trades_sorted:
                             dir_color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                             conf_val  = sig.get('conf', 0)
+                            engine    = sig.get('engine_conf', 0)
+                            ai_c      = sig.get('ai_conf', 0)
+                            mtf_s     = sig.get('mtf_score', 0)
                             gap       = min_acc - conf_val
 
-                            # Build reasons
                             reasons = []
                             reasons.append(f"Confidence {conf_val}% is {gap}% below your minimum accuracy of {min_acc}%")
                             if conf_val < 30:
-                                reasons.append("Very low combined confidence — weak indicator alignment")
+                                reasons.append("Very low combined confidence — technical indicators are weakly aligned")
                             elif conf_val < 45:
-                                reasons.append("Low confidence — signals are present but not strongly confluent")
+                                reasons.append("Low confidence — signals present but not strongly confluent")
                             else:
-                                reasons.append(f"Moderate confidence — close to threshold, consider lowering slider to {conf_val}% to include")
-                            engine = sig.get('engine_conf', 0)
-                            ai_c   = sig.get('ai_conf', 0)
-                            mtf_s  = sig.get('mtf_score', 0)
+                                reasons.append(f"Moderate confidence — consider lowering the slider to {conf_val}% to include this trade")
                             if engine < 40:
-                                reasons.append(f"Engine confidence too low ({engine}%) — technical indicators lack direction")
+                                reasons.append(f"Engine score too low ({engine}%) — technical indicators lack clear direction")
                             if ai_c < 40:
                                 reasons.append(f"AI News confidence low ({ai_c}%) — news/sentiment not supporting this direction")
                             if mtf_s < 40:
-                                reasons.append(f"Multi-timeframe score weak ({mtf_s}%) — higher timeframes disagree")
+                                reasons.append(f"Multi-timeframe score weak ({mtf_s}%) — higher timeframes disagree with this setup")
                             if not sig.get('mtf_agrees', True):
                                 reasons.append("MTF Conflict — higher timeframe direction opposes this trade")
                             if sig.get('regime') == 'ranging':
-                                reasons.append("Market is ranging — trend-based signals are less reliable")
+                                reasons.append("Market is in ranging mode — trend signals are less reliable in sideways conditions")
+                            if sig.get('rr_ratio', 0) < 1.5:
+                                reasons.append(f"Low R:R ratio (1:{sig.get('rr_ratio','N/A')}) — risk/reward not favourable enough")
 
                             reason_html = "".join([f"<li style='color:#ffbb66;margin-bottom:3px;'>⚠️ {r}</li>" for r in reasons])
-                            mtf_agrees = sig.get('mtf_agrees', True)
-                            mtf_icon   = "✅ MTF OK" if mtf_agrees else "⚠️ MTF Conflict"
-                            st.markdown(f"""<div style='background:#1a1200;border:1px solid #ffaa0033;border-left:4px solid #ffaa00;border-radius:8px;padding:12px 16px;margin-bottom:10px;opacity:0.92;'>
+                            mtf_icon = "✅ MTF OK" if sig.get('mtf_agrees', True) else "⚠️ MTF Conflict"
+                            regime_icon = {"trending":"📈 Trending","ranging":"↔️ Ranging","transitioning":"🔄 Transitioning"}.get(sig.get('regime',''),'')
+
+                            st.markdown(f"""<div style='background:#1a1200;border:1px solid #ffaa0033;border-left:4px solid #ffaa00;border-radius:8px;padding:12px 16px;margin-bottom:10px;'>
                                 <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>
                                     <b style='color:{dir_color};font-size:14px;'>{sig['pair']} | {sig['dir']}</b>
                                     <span style='background:#ffaa0022;color:#ffaa00;border:1px solid #ffaa00;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>⚠️ CANNOT CAPTURE — {conf_val}%</span>
                                 </div>
-                                <div style='color:#888;font-size:12px;margin-bottom:6px;'>
+                                <div style='color:#888;font-size:12px;margin-bottom:8px;'>
                                     Entry: {sig['entry']:.5f} | SL: {sig['sl']:.5f} | TP1: {sig.get('tp1',0):.5f} | Live: {sig['live_price']:.5f}<br>
-                                    Engine: {sig.get('engine_conf','N/A')}% | AI: {sig.get('ai_conf','N/A')}% | MTF: {sig.get('mtf_score','N/A')}% | {mtf_icon}
+                                    Engine: {engine}% | AI: {ai_c}% | MTF: {mtf_s}% | {mtf_icon} | {regime_icon} | R:R 1:{sig.get('rr_ratio','N/A')}
                                 </div>
-                                <div style='background:#0d0a00;border-radius:6px;padding:8px 10px;margin-top:4px;'>
-                                    <b style='color:#ffaa00;font-size:12px;'>⚠️ Reasons this trade cannot be captured:</b>
+                                <div style='background:#0d0900;border-radius:6px;padding:8px 12px;'>
+                                    <b style='color:#ffaa00;font-size:12px;'>❌ Reasons this trade CANNOT be captured:</b>
                                     <ul style='margin:6px 0 0 0;padding-left:16px;'>{reason_html}</ul>
                                 </div>
                             </div>""", unsafe_allow_html=True)
