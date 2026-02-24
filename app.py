@@ -823,8 +823,90 @@ def calculate_advanced_signals(df, tf, news_items=None):
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence, score_breakdown, theory_signals
 
-# ==================== SL/TP CALCULATION ====================
+# ==================== SL/TP CALCULATION (PRECISION ENGINE v2) ====================
+def find_key_levels(df, lookback=100):
+    """
+    Identify significant support/resistance levels using swing highs/lows,
+    volume clusters, and liquidity pool detection.
+    Returns sorted lists of support and resistance levels.
+    """
+    highs = df['High'].values[-lookback:]
+    lows  = df['Low'].values[-lookback:]
+    closes = df['Close'].values[-lookback:]
+    supports = []
+    resistances = []
+    # Swing points with multi-window confirmation
+    for window in [3, 5, 8, 13]:
+        for i in range(window, len(lows) - window):
+            if all(lows[i] <= lows[i-j] for j in range(1, window+1)) and                all(lows[i] <= lows[i+j] for j in range(1, window+1)):
+                supports.append(lows[i])
+        for i in range(window, len(highs) - window):
+            if all(highs[i] >= highs[i-j] for j in range(1, window+1)) and                all(highs[i] >= highs[i+j] for j in range(1, window+1)):
+                resistances.append(highs[i])
+    # Cluster nearby levels within 0.1% of each other
+    def cluster_levels(levels, tol=0.001):
+        if not levels: return []
+        levels = sorted(set(levels))
+        clustered = [levels[0]]
+        for l in levels[1:]:
+            if abs(l - clustered[-1]) / max(clustered[-1], 1e-10) > tol:
+                clustered.append(l)
+            else:
+                clustered[-1] = (clustered[-1] + l) / 2  # average cluster
+        return clustered
+    supports = cluster_levels(supports)
+    resistances = cluster_levels(resistances)
+    return supports, resistances
+
+def find_fvg_levels(df, direction, entry):
+    """Fair Value Gaps — SMC imbalance zones"""
+    fvg_targets = []
+    for i in range(max(0, len(df)-50), len(df)-2):
+        try:
+            if direction == "BUY":
+                # Bullish FVG: gap between candle[i] low and candle[i+2] high (impulse up)
+                if df['Low'].iloc[i+2] > df['High'].iloc[i]:
+                    gap_top = df['Low'].iloc[i+2]
+                    gap_bot = df['High'].iloc[i]
+                    mid = (gap_top + gap_bot) / 2
+                    if mid > entry: fvg_targets.append(gap_top)  # target top of gap
+            else:
+                # Bearish FVG: gap between candle[i] high and candle[i+2] low
+                if df['High'].iloc[i+2] < df['Low'].iloc[i]:
+                    gap_top = df['Low'].iloc[i]
+                    gap_bot = df['High'].iloc[i+2]
+                    mid = (gap_top + gap_bot) / 2
+                    if mid < entry: fvg_targets.append(gap_bot)  # target bottom of gap
+        except: continue
+    return fvg_targets
+
+def find_liquidity_pools(df, direction, entry, atr):
+    """Equal highs/lows = liquidity pools above/below price"""
+    pools = []
+    tol = atr * 0.3
+    highs = df['High'].values[-80:]
+    lows  = df['Low'].values[-80:]
+    if direction == "BUY":
+        # Equal highs above entry = sell-side liquidity to sweep
+        for i in range(len(highs)-1):
+            for j in range(i+1, len(highs)):
+                if abs(highs[i] - highs[j]) < tol and highs[i] > entry:
+                    pools.append(highs[i] + tol * 0.5)
+    else:
+        for i in range(len(lows)-1):
+            for j in range(i+1, len(lows)):
+                if abs(lows[i] - lows[j]) < tol and lows[i] < entry:
+                    pools.append(lows[i] - tol * 0.5)
+    return list(set(round(p, 6) for p in pools))
+
 def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals, theory_signals):
+    """
+    Precision SL/TP engine v2:
+    - SL: placed BELOW the true structural invalidation point (not just ATR)
+    - TP1/2/3: key S/R levels, FVG tops, liquidity pools, Fibonacci extensions
+    - Partial TP spacing ensures realistic targets traders actually use
+    """
+    # ── helpers ──────────────────────────────────────────────
     def find_swing_low(df_data, window=5):
         lows = df_data['Low'].values
         for i in range(len(lows)-1, window-1, -1):
@@ -837,83 +919,198 @@ def calculate_advanced_sl_tp(df, direction, entry, atr, tf_type, signals, theory
             if all(highs[i] >= highs[i-j] for j in range(1, window+1) if i-j >= 0): return highs[i]
         return df_data['High'].tail(window*2).max()
 
-    swing_window = 3 if tf_type == 'scalp' else 5
-    swing_low = find_swing_low(df, swing_window); swing_high = find_swing_high(df, swing_window)
-    structure_low = df['Low'].tail(50).min(); structure_high = df['High'].tail(50).max()
-    structure_range = structure_high - structure_low
-    min_rr_tp1 = 1.5 if tf_type == 'scalp' else 2.0
-    min_rr_tp2 = 2.5 if tf_type == 'scalp' else 3.0
-    min_rr_tp3 = 3.5 if tf_type == 'scalp' else 4.5
-    base_sl_mult = 1.0 if tf_type == 'scalp' else 1.2
-    atr_distance = atr * base_sl_mult
+    # ── market structure ──────────────────────────────────────
+    swing_window = 3 if tf_type == 'scalp' else 7
+    swing_low  = find_swing_low(df, swing_window)
+    swing_high = find_swing_high(df, swing_window)
 
+    # Multi-timeframe structural lows/highs (last 20, 50, 100 bars)
+    struct_low_20  = df['Low'].tail(20).min()
+    struct_low_50  = df['Low'].tail(50).min()
+    struct_high_20 = df['High'].tail(20).max()
+    struct_high_50 = df['High'].tail(50).max()
+    structure_range = struct_high_50 - struct_low_50
+
+    # ── key S/R levels ────────────────────────────────────────
+    supports, resistances = find_key_levels(df)
+
+    # ── RSI / pattern context ────────────────────────────────
     rsi_val_str = signals.get('RSI', ("RSI: 50", "neutral"))[0]
     rsi_num = 50
     rsi_match = re.search(r'RSI:\s*(\d+)', rsi_val_str)
     if rsi_match: rsi_num = int(rsi_match.group(1))
     pattern = signals.get('PATT', ("No Pattern", "neutral"))[0]
+    ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
+
+    # ── SL Calculation ────────────────────────────────────────
+    # Philosophy: SL must be BEYOND a significant structure point.
+    # If price goes there, the setup is truly invalidated.
+    tight_buffer  = atr * 0.15   # small wick buffer
+    normal_buffer = atr * 0.30   # standard buffer
+    wide_buffer   = atr * 0.50   # volatile pairs buffer
 
     if direction == "BUY":
-        buffer = atr * 0.25
-        sl_candidates = [swing_low - buffer, entry - atr_distance]
-        if "Bull Engulfing" in pattern: sl_candidates.append(df['Low'].iloc[-1] - buffer)
-        if rsi_num < 30: sl_candidates.append(entry - atr_distance * 0.85)
-        valid_sls = [s for s in sl_candidates if s < entry and s > 0]
-        sl = max(valid_sls) if valid_sls else entry - atr_distance
-        if (entry - sl) > atr * 3: sl = entry - atr * 2
-    else:
-        buffer = atr * 0.25
-        sl_candidates = [swing_high + buffer, entry + atr_distance]
-        if "Bear Engulfing" in pattern: sl_candidates.append(df['High'].iloc[-1] + buffer)
-        if rsi_num > 70: sl_candidates.append(entry + atr_distance * 0.85)
-        valid_sls = [s for s in sl_candidates if s > entry]
-        sl = min(valid_sls) if valid_sls else entry + atr_distance
-        if (sl - entry) > atr * 3: sl = entry + atr * 2
+        # SL candidates (all below entry):
+        sl_cands = []
+        # 1) Recent swing low (most important)
+        sl_cands.append(swing_low - normal_buffer)
+        # 2) The lowest wick of last 3 candles (body+wick invalidation)
+        last3_low = df['Low'].tail(3).min()
+        sl_cands.append(last3_low - tight_buffer)
+        # 3) Nearest support level below entry
+        supports_below = [s for s in supports if s < entry - atr * 0.5]
+        if supports_below: sl_cands.append(max(supports_below) - tight_buffer)
+        # 4) Structure low (20-bar) for tighter scalp safety
+        sl_cands.append(struct_low_20 - tight_buffer)
+        # 5) ATR-based fallback
+        base_atr_sl = 1.0 if tf_type == 'scalp' else 1.5
+        sl_cands.append(entry - atr * base_atr_sl)
+        # 6) Bullish pattern wick invalidation
+        if "Engulfing" in pattern or "Hammer" in pattern:
+            sl_cands.append(df['Low'].iloc[-1] - tight_buffer)
+        # RSI oversold: tighter SL allowed
+        if rsi_num < 35: sl_cands.append(entry - atr * 0.8)
+        # Filter: must be below entry and positive
+        valid_sls = [s for s in sl_cands if 0 < s < entry]
+        # Pick the HIGHEST valid SL (tightest stop that is still structural)
+        sl = max(valid_sls) if valid_sls else entry - atr * 1.5
+        # Safety: don't let SL be too wide (max 3 ATR for scalp, 4 ATR for swing)
+        max_sl_dist = atr * (3.0 if tf_type == 'scalp' else 4.0)
+        if (entry - sl) > max_sl_dist: sl = entry - max_sl_dist
+        # Safety: don't let SL be too tight (min 0.5 ATR)
+        if (entry - sl) < atr * 0.5: sl = entry - atr * 0.5
+
+    else:  # SELL
+        sl_cands = []
+        sl_cands.append(swing_high + normal_buffer)
+        last3_high = df['High'].tail(3).max()
+        sl_cands.append(last3_high + tight_buffer)
+        resistances_above = [r for r in resistances if r > entry + atr * 0.5]
+        if resistances_above: sl_cands.append(min(resistances_above) + tight_buffer)
+        sl_cands.append(struct_high_20 + tight_buffer)
+        base_atr_sl = 1.0 if tf_type == 'scalp' else 1.5
+        sl_cands.append(entry + atr * base_atr_sl)
+        if "Engulfing" in pattern or "Shooting Star" in pattern:
+            sl_cands.append(df['High'].iloc[-1] + tight_buffer)
+        if rsi_num > 65: sl_cands.append(entry + atr * 0.8)
+        valid_sls = [s for s in sl_cands if s > entry]
+        sl = min(valid_sls) if valid_sls else entry + atr * 1.5
+        max_sl_dist = atr * (3.0 if tf_type == 'scalp' else 4.0)
+        if (sl - entry) > max_sl_dist: sl = entry + max_sl_dist
+        if (sl - entry) < atr * 0.5: sl = entry + atr * 0.5
 
     sl_distance = abs(entry - sl)
 
+    # ── TP Calculation ────────────────────────────────────────
+    # TP1 = first key level (partial exit 40% position)
+    # TP2 = next major level (partial exit 40% position)
+    # TP3 = maximum extension — liquidity pool / major fib (20% position)
+    #
+    # Min RR ratios (generous enough to be realistic):
+    min_rr_tp1 = 1.3 if tf_type == 'scalp' else 1.8
+    min_rr_tp2 = 2.2 if tf_type == 'scalp' else 3.0
+    min_rr_tp3 = 3.5 if tf_type == 'scalp' else 5.0
+
     if direction == "BUY":
-        fib_ext_1272 = structure_low + structure_range * 1.272
-        fib_ext_1618 = structure_low + structure_range * 1.618
-        fib_ext_2000 = structure_low + structure_range * 2.000
-        recent_high_20 = df['High'].tail(20).max(); recent_high_50 = df['High'].tail(50).max()
+        # Fibonacci extensions from swing low to swing high
+        fib_ext_1272 = struct_low_50 + structure_range * 1.272
+        fib_ext_1618 = struct_low_50 + structure_range * 1.618
+        fib_ext_2000 = struct_low_50 + structure_range * 2.000
+        fib_ext_2618 = struct_low_50 + structure_range * 2.618
+        fib_ext_3618 = struct_low_50 + structure_range * 3.618
+
+        # Key resistance levels
+        recent_high_20 = struct_high_20
+        recent_high_50 = struct_high_50
+
+        # Bollinger Band upper (dynamic resistance)
         bb_upper = (df['Close'].rolling(20).mean() + 2 * df['Close'].rolling(20).std()).iloc[-1]
-        ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
-        ew_tp = None
-        if "Wave 3" in ew_status: ew_tp = entry + structure_range * 1.618
-        elif "Wave 1" in ew_status: ew_tp = entry + structure_range * 1.0
-        raw_candidates = [recent_high_20, recent_high_50, fib_ext_1272, fib_ext_1618, fib_ext_2000, bb_upper]
-        if ew_tp: raw_candidates.append(ew_tp)
-        for i in range(max(0, len(df)-20), len(df)-1):
-            if df['Low'].iloc[i] > df['High'].iloc[i+1]:
-                fvg_mid = (df['Low'].iloc[i] + df['High'].iloc[i+1]) / 2
-                if fvg_mid > entry: raw_candidates.append(fvg_mid)
-        valid_candidates = sorted([c for c in raw_candidates if c > entry])
-        min_tp1_price = entry + sl_distance * min_rr_tp1; min_tp2_price = entry + sl_distance * min_rr_tp2; min_tp3_price = entry + sl_distance * min_rr_tp3
-        tp1_candidates = [c for c in valid_candidates if c >= min_tp1_price]; tp1 = tp1_candidates[0] if tp1_candidates else min_tp1_price
-        tp2_candidates = [c for c in valid_candidates if c >= min_tp2_price and c > tp1]; tp2 = tp2_candidates[0] if tp2_candidates else min_tp2_price
-        tp3_candidates = [c for c in valid_candidates if c >= min_tp3_price and c > tp2]; tp3 = tp3_candidates[0] if tp3_candidates else min_tp3_price
-    else:
-        fib_ext_1272 = structure_high - structure_range * 1.272
-        fib_ext_1618 = structure_high - structure_range * 1.618
-        fib_ext_2000 = structure_high - structure_range * 2.000
-        recent_low_20 = df['Low'].tail(20).min(); recent_low_50 = df['Low'].tail(50).min()
+
+        # Elliott Wave TP hint
+        ew_tp_bonus = []
+        if "Wave 3" in ew_status:
+            ew_tp_bonus = [entry + structure_range * 1.618, entry + structure_range * 2.618]
+        elif "Wave 1" in ew_status:
+            ew_tp_bonus = [entry + structure_range * 1.0, entry + structure_range * 1.618]
+
+        # Fair Value Gap tops (imbalance fill targets)
+        fvg_targets = find_fvg_levels(df, "BUY", entry)
+        # Liquidity pools above entry
+        liq_pools = find_liquidity_pools(df, "BUY", entry, atr)
+        # Resistance levels above entry
+        res_above = sorted([r for r in resistances if r > entry])
+
+        # All TP candidates pool
+        raw_cands = ([recent_high_20, recent_high_50, bb_upper,
+                      fib_ext_1272, fib_ext_1618, fib_ext_2000, fib_ext_2618, fib_ext_3618]
+                     + fvg_targets + liq_pools + res_above + ew_tp_bonus)
+
+        valid_cands = sorted(set(round(c, 8) for c in raw_cands if c > entry + atr * 0.3))
+
+        min_tp1 = entry + sl_distance * min_rr_tp1
+        min_tp2 = entry + sl_distance * min_rr_tp2
+        min_tp3 = entry + sl_distance * min_rr_tp3
+
+        tp1_pool = [c for c in valid_cands if c >= min_tp1]
+        tp1 = tp1_pool[0] if tp1_pool else min_tp1
+
+        tp2_pool = [c for c in valid_cands if c >= min_tp2 and c > tp1 + atr * 0.2]
+        tp2 = tp2_pool[0] if tp2_pool else max(tp1 + sl_distance * 0.8, min_tp2)
+
+        tp3_pool = [c for c in valid_cands if c >= min_tp3 and c > tp2 + atr * 0.5]
+        # For TP3 prefer the HIGHEST major extension (liquidity sweep target)
+        if tp3_pool:
+            # Pick the candidate that aligns best with a fib extension or liquidity pool
+            fib_exts = [fib_ext_1618, fib_ext_2000, fib_ext_2618, fib_ext_3618]
+            fib_aligned = [c for c in tp3_pool if any(abs(c - f) < atr for f in fib_exts)]
+            tp3 = fib_aligned[-1] if fib_aligned else tp3_pool[-1]  # furthest fib-aligned
+        else:
+            tp3 = min_tp3
+
+    else:  # SELL
+        fib_ext_1272 = struct_high_50 - structure_range * 1.272
+        fib_ext_1618 = struct_high_50 - structure_range * 1.618
+        fib_ext_2000 = struct_high_50 - structure_range * 2.000
+        fib_ext_2618 = struct_high_50 - structure_range * 2.618
+        fib_ext_3618 = struct_high_50 - structure_range * 3.618
+
+        recent_low_20 = struct_low_20
+        recent_low_50 = struct_low_50
         bb_lower = (df['Close'].rolling(20).mean() - 2 * df['Close'].rolling(20).std()).iloc[-1]
-        ew_status = signals.get('ELLIOTT', ("", "neutral"))[0]
-        ew_tp = None
-        if "Wave C" in ew_status: ew_tp = entry - structure_range * 1.618
-        elif "Wave A" in ew_status: ew_tp = entry - structure_range * 1.0
-        raw_candidates = [recent_low_20, recent_low_50, fib_ext_1272, fib_ext_1618, fib_ext_2000, bb_lower]
-        if ew_tp: raw_candidates.append(ew_tp)
-        for i in range(max(0, len(df)-20), len(df)-1):
-            if df['High'].iloc[i] < df['Low'].iloc[i+1]:
-                fvg_mid = (df['High'].iloc[i] + df['Low'].iloc[i+1]) / 2
-                if fvg_mid < entry: raw_candidates.append(fvg_mid)
-        valid_candidates = sorted([c for c in raw_candidates if c < entry], reverse=True)
-        min_tp1_price = entry - sl_distance * min_rr_tp1; min_tp2_price = entry - sl_distance * min_rr_tp2; min_tp3_price = entry - sl_distance * min_rr_tp3
-        tp1_candidates = [c for c in valid_candidates if c <= min_tp1_price]; tp1 = tp1_candidates[0] if tp1_candidates else min_tp1_price
-        tp2_candidates = [c for c in valid_candidates if c <= min_tp2_price and c < tp1]; tp2 = tp2_candidates[0] if tp2_candidates else min_tp2_price
-        tp3_candidates = [c for c in valid_candidates if c <= min_tp3_price and c < tp2]; tp3 = tp3_candidates[0] if tp3_candidates else min_tp3_price
+
+        ew_tp_bonus = []
+        if "Wave C" in ew_status:
+            ew_tp_bonus = [entry - structure_range * 1.618, entry - structure_range * 2.618]
+        elif "Wave A" in ew_status:
+            ew_tp_bonus = [entry - structure_range * 1.0, entry - structure_range * 1.618]
+
+        fvg_targets = find_fvg_levels(df, "SELL", entry)
+        liq_pools = find_liquidity_pools(df, "SELL", entry, atr)
+        sup_below = sorted([s for s in supports if s < entry], reverse=True)
+
+        raw_cands = ([recent_low_20, recent_low_50, bb_lower,
+                      fib_ext_1272, fib_ext_1618, fib_ext_2000, fib_ext_2618, fib_ext_3618]
+                     + fvg_targets + liq_pools + sup_below + ew_tp_bonus)
+
+        valid_cands = sorted(set(round(c, 8) for c in raw_cands if c < entry - atr * 0.3), reverse=True)
+
+        min_tp1 = entry - sl_distance * min_rr_tp1
+        min_tp2 = entry - sl_distance * min_rr_tp2
+        min_tp3 = entry - sl_distance * min_rr_tp3
+
+        tp1_pool = [c for c in valid_cands if c <= min_tp1]
+        tp1 = tp1_pool[0] if tp1_pool else min_tp1
+
+        tp2_pool = [c for c in valid_cands if c <= min_tp2 and c < tp1 - atr * 0.2]
+        tp2 = tp2_pool[0] if tp2_pool else min(tp1 - sl_distance * 0.8, min_tp2)
+
+        tp3_pool = [c for c in valid_cands if c <= min_tp3 and c < tp2 - atr * 0.5]
+        if tp3_pool:
+            fib_exts = [fib_ext_1618, fib_ext_2000, fib_ext_2618, fib_ext_3618]
+            fib_aligned = [c for c in tp3_pool if any(abs(c - f) < atr for f in fib_exts)]
+            tp3 = fib_aligned[-1] if fib_aligned else tp3_pool[-1]
+        else:
+            tp3 = min_tp3
 
     return sl, tp1, tp2, tp3
 
@@ -1095,7 +1292,7 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
         return None, "Gate 1 FAILED: Cannot calculate signals (insufficient data)"
 
     confluence_pct = score_breakdown.get('Confluence_%', 0)
-    # Gate 1: Dynamic threshold — if confluence >= min_accuracy, it passes regardless of the hardcoded 65% gate
+    # Gate 1: Dynamic threshold — if confluence >= min_accuracy, it passes regardless of hardcoded 65% gate
     confluence_valid = score_breakdown.get('Confluence_Gate', '') == 'PASSED' or confluence_pct >= min_accuracy
     if not confluence_valid:
         return None, f"Gate 1 FAILED: Signal confluence {confluence_pct:.1f}% < {min_accuracy}% threshold (your minimum accuracy)"
@@ -1112,39 +1309,152 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     if regime == "ranging" and abs(conf) < 30:
         return None, f"Gate 3 FAILED: Ranging market (ADX: {adx_strength}) with weak signal ({abs(conf)}%)"
 
-    if progress_callback: progress_callback(0.40, "Gate 4: Optimizing entry...")
+    if progress_callback: progress_callback(0.40, "Gate 4: Precision entry calculation...")
     recent_low = df_hist['Low'].tail(50).min(); recent_high = df_hist['High'].tail(50).max()
     fib_range = recent_high - recent_low
     optimized_entry = current_price; entry_source = "Current Price"
-    ob_tolerance = atr * 0.4
+    ob_tolerance = atr * 0.5
+    best_entry_score = 0  # score system: higher = better entry
+
+    # ── Helper: EMA levels ────────────────────────────────────────────────
+    ema_8  = df_hist['Close'].ewm(span=8, adjust=False).mean().iloc[-1]
+    ema_21 = df_hist['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
+    ema_50 = df_hist['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+
+    # ── Helper: VWAP approximation (session VWAP from last 20 bars) ───────
+    try:
+        typical = (df_hist['High'] + df_hist['Low'] + df_hist['Close']) / 3
+        if 'Volume' in df_hist.columns and df_hist['Volume'].sum() > 0:
+            vwap = (typical.tail(20) * df_hist['Volume'].tail(20)).sum() / df_hist['Volume'].tail(20).sum()
+        else:
+            vwap = typical.tail(20).mean()
+    except:
+        vwap = current_price
+
+    # ── Helper: Fibonacci retracement levels ─────────────────────────────
     if direction == "BUY":
-        ob_entry = None
-        for i in range(max(2, len(df_hist)-15), len(df_hist)-2):
-            if (df_hist['Close'].iloc[i] < df_hist['Open'].iloc[i] and df_hist['Close'].iloc[i+1] > df_hist['High'].iloc[i]):
-                ob_low = df_hist['Low'].iloc[i]; ob_high = df_hist['High'].iloc[i]
-                if ob_low <= current_price <= ob_high + ob_tolerance:
-                    ob_entry = (ob_low + ob_high) / 2; entry_source = "Order Block (OB)"; break
-        if ob_entry and abs(ob_entry - current_price) / current_price < 0.005:
-            optimized_entry = ob_entry
-        else:
-            fib_382 = recent_high - 0.382 * fib_range; fib_500 = recent_high - 0.500 * fib_range; fib_618 = recent_high - 0.618 * fib_range
-            fibs = [fib_382, fib_500, fib_618]
-            near_fibs = [f for f in fibs if abs(f - current_price) / current_price < 0.005]
-            if near_fibs: optimized_entry = min(near_fibs, key=lambda x: abs(x - current_price)); entry_source = "Fibonacci Pullback"
+        fib_236 = recent_high - 0.236 * fib_range
+        fib_382 = recent_high - 0.382 * fib_range
+        fib_500 = recent_high - 0.500 * fib_range
+        fib_618 = recent_high - 0.618 * fib_range
+        fib_786 = recent_high - 0.786 * fib_range
+        golden_zone_hi = fib_382; golden_zone_lo = fib_618
+        # Discount zone: price below 50% retracement
+        in_discount = current_price <= fib_500
     else:
-        ob_entry = None
-        for i in range(max(2, len(df_hist)-15), len(df_hist)-2):
-            if (df_hist['Close'].iloc[i] > df_hist['Open'].iloc[i] and df_hist['Close'].iloc[i+1] < df_hist['Low'].iloc[i]):
-                ob_low = df_hist['Low'].iloc[i]; ob_high = df_hist['High'].iloc[i]
-                if ob_low - ob_tolerance <= current_price <= ob_high:
-                    ob_entry = (ob_low + ob_high) / 2; entry_source = "Order Block (OB)"; break
-        if ob_entry and abs(ob_entry - current_price) / current_price < 0.005:
-            optimized_entry = ob_entry
+        fib_236 = recent_low + 0.236 * fib_range
+        fib_382 = recent_low + 0.382 * fib_range
+        fib_500 = recent_low + 0.500 * fib_range
+        fib_618 = recent_low + 0.618 * fib_range
+        fib_786 = recent_low + 0.786 * fib_range
+        golden_zone_hi = fib_618; golden_zone_lo = fib_382
+        in_discount = current_price >= fib_500  # premium zone for sells
+
+    # ── 1. Order Block Detection (Priority 1 — SMC) ───────────────────────
+    ob_entry = None; ob_source = None
+    scan_start = max(1, len(df_hist) - 30)
+    if direction == "BUY":
+        for i in range(scan_start, len(df_hist) - 1):
+            # Bullish OB: bearish candle followed by strong bullish move
+            is_bearish = df_hist['Close'].iloc[i] < df_hist['Open'].iloc[i]
+            body_size = abs(df_hist['Close'].iloc[i] - df_hist['Open'].iloc[i])
+            if is_bearish and body_size > atr * 0.3:
+                ob_lo = df_hist['Low'].iloc[i]
+                ob_hi = df_hist['High'].iloc[i]
+                ob_50 = (ob_lo + ob_hi) / 2  # 50% of OB = optimal entry
+                ob_75 = ob_lo + (ob_hi - ob_lo) * 0.75  # 75% = lower premium entry
+                # Price must be inside or just above the OB
+                if ob_lo - atr * 0.1 <= current_price <= ob_hi + ob_tolerance:
+                    # Prefer 50% of OB body as entry (classic SMC optimal trade entry)
+                    candidate = ob_50 if current_price > ob_50 else ob_75
+                    if 0 < candidate < current_price + atr:
+                        ob_entry = candidate
+                        ob_source = f"Bullish OB ({i - scan_start + 1} bars ago)"
+                        break
+    else:
+        for i in range(scan_start, len(df_hist) - 1):
+            is_bullish = df_hist['Close'].iloc[i] > df_hist['Open'].iloc[i]
+            body_size = abs(df_hist['Close'].iloc[i] - df_hist['Open'].iloc[i])
+            if is_bullish and body_size > atr * 0.3:
+                ob_lo = df_hist['Low'].iloc[i]
+                ob_hi = df_hist['High'].iloc[i]
+                ob_50 = (ob_lo + ob_hi) / 2
+                ob_25 = ob_lo + (ob_hi - ob_lo) * 0.25
+                if ob_lo - ob_tolerance <= current_price <= ob_hi + atr * 0.1:
+                    candidate = ob_50 if current_price < ob_50 else ob_25
+                    if candidate > current_price - atr:
+                        ob_entry = candidate
+                        ob_source = f"Bearish OB ({i - scan_start + 1} bars ago)"
+                        break
+
+    # ── 2. Fibonacci Golden Zone Entry (Priority 2) ───────────────────────
+    fib_entry = None; fib_source = None
+    fibs_ranked = [(fib_618, "Fib 0.618 (Golden)"), (fib_500, "Fib 0.500"), (fib_382, "Fib 0.382"), (fib_786, "Fib 0.786")]
+    for fib_val, fib_lbl in fibs_ranked:
+        if abs(fib_val - current_price) / max(current_price, 1e-10) < 0.003:  # within 0.3%
+            fib_entry = fib_val
+            fib_source = fib_lbl
+            break
+
+    # ── 3. EMA Confluence Entry (Priority 3) ─────────────────────────────
+    ema_entry = None; ema_source = None
+    ema_levels = [(ema_8, "EMA 8"), (ema_21, "EMA 21"), (ema_50, "EMA 50")]
+    for ema_val, ema_lbl in ema_levels:
+        if abs(ema_val - current_price) / max(current_price, 1e-10) < 0.002:  # within 0.2%
+            if (direction == "BUY" and ema_val <= current_price) or (direction == "SELL" and ema_val >= current_price):
+                ema_entry = ema_val
+                ema_source = f"{ema_lbl} confluence"
+                break
+
+    # ── 4. VWAP Entry (Priority 4) ───────────────────────────────────────
+    vwap_entry = None; vwap_source = None
+    if abs(vwap - current_price) / max(current_price, 1e-10) < 0.003:
+        vwap_entry = vwap
+        vwap_source = "VWAP level"
+
+    # ── Entry Selection Logic (score-based) ──────────────────────────────
+    # Combine signals: OB > FVG > Fib > EMA > VWAP > current price
+    # Extra bonus if entry is in discount/premium zone AND in golden fib zone
+    candidates = []
+    if ob_entry:
+        score = 100
+        if in_discount: score += 20
+        if fib_entry and abs(ob_entry - fib_entry) / max(fib_entry, 1e-10) < 0.003: score += 30  # OB+Fib confluence!
+        if ema_entry and abs(ob_entry - ema_entry) / max(ema_entry, 1e-10) < 0.002: score += 15
+        candidates.append((ob_entry, ob_source + (" + Fib" if score >= 130 else ""), score))
+
+    if fib_entry:
+        score = 70
+        if in_discount: score += 15
+        if ema_entry and abs(fib_entry - ema_entry) / max(ema_entry, 1e-10) < 0.002: score += 20
+        candidates.append((fib_entry, fib_source + (" + EMA" if score >= 90 else ""), score))
+
+    if ema_entry:
+        score = 50
+        if in_discount: score += 10
+        candidates.append((ema_entry, ema_source, score))
+
+    if vwap_entry:
+        score = 40
+        if in_discount: score += 10
+        candidates.append((vwap_entry, vwap_source, score))
+
+    # Sort by score descending, pick best
+    if candidates:
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        best_val, best_src, best_score = candidates[0]
+        # Only use if within reasonable distance of current price
+        if abs(best_val - current_price) / max(current_price, 1e-10) < 0.008:  # within 0.8%
+            optimized_entry = best_val
+            entry_source = best_src
         else:
-            fib_382 = recent_low + 0.382 * fib_range; fib_500 = recent_low + 0.500 * fib_range; fib_618 = recent_low + 0.618 * fib_range
-            fibs = [fib_382, fib_500, fib_618]
-            near_fibs = [f for f in fibs if abs(f - current_price) / current_price < 0.005]
-            if near_fibs: optimized_entry = min(near_fibs, key=lambda x: abs(x - current_price)); entry_source = "Fibonacci Pullback"
+            # Fall back to current price with zone context
+            zone_label = "Discount Zone" if in_discount else "Premium Zone"
+            entry_source = f"Current Price ({zone_label})"
+    else:
+        zone_label = "Discount Zone" if in_discount else "Premium Zone"
+        entry_source = f"Current Price ({zone_label})"
+
     final_entry = optimized_entry
 
     if progress_callback: progress_callback(0.50, "Gate 5: Calculating SL/TP and RR...")
@@ -1608,7 +1918,7 @@ def generate_dashboard_forecast(market, pair_display, tf, user_info):
         update_progress(0.5, "Fetching news...")
         news_items = get_market_news(yf_sym)
         update_progress(0.7, "Calling AI for news confirmation...")
-        ai_trade, reject_reason = get_ai_trade_setup(clean_pair, tf, direction, current_price, df, news_items, user_info, update_progress, min_accuracy=st.session_state.get('min_accuracy', 40))
+        ai_trade, reject_reason = get_ai_trade_setup(clean_pair, tf, direction, current_price, df, news_items, user_info, update_progress, min_accuracy=st.session_state.get("min_accuracy", 40))
         if not ai_trade:
             progress_bar.empty(); return None, f"AI analysis failed: {reject_reason}", None
         update_progress(0.9, "Creating forecast chart...")
@@ -2076,51 +2386,156 @@ else:
 
     elif app_mode == "Ongoing Trades":
         st.title("📋 Ongoing Trades")
-        col1, col2 = st.columns(2)
-        with col1: start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
-        with col2: end_date = st.date_input("End Date", value=datetime.now())
+
+        # ── Filters row ────────────────────────────────────────────────────
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1: start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
+        with col_f2: end_date = st.date_input("End Date", value=datetime.now())
+        with col_f3:
+            ongoing_min_acc = st.slider(
+                "Minimum Accuracy (%)",
+                min_value=0, max_value=100,
+                value=st.session_state.get("ongoing_min_acc", 40),
+                step=5,
+                key="ongoing_min_acc_slider",
+                help="Trades with Confidence >= this value will be shown as capturable. Others will be shown with reasons why they cannot be captured."
+            )
+            st.session_state["ongoing_min_acc"] = ongoing_min_acc
+
         if active_trades:
             all_timeframes = sorted(set([t.get('Timeframe', 'Unknown') for t in active_trades]))
             timeframe_options = ["All"] + all_timeframes
             selected_tf_filter = st.selectbox("Filter by Timeframe", options=timeframe_options, index=0)
         else: selected_tf_filter = "All"
+
         tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
         with tab1:
             if active_trades:
                 filtered_trades = active_trades if selected_tf_filter == "All" else [t for t in active_trades if t.get('Timeframe', 'Unknown') == selected_tf_filter]
-                for trade in filtered_trades:
-                    color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
-                    pair = trade['Pair']; live = get_live_price(pair)
-                    live_display = f"{live:.4f}" if live else "N/A"
-                    progress = 0.5; direction_text = ""
-                    if live is not None:
-                        try:
-                            entry = float(trade['Entry']); tp3 = float(trade['TP'])
-                            if trade['Direction'] == "BUY":
-                                if tp3 > entry: progress = (live - entry) / (tp3 - entry)
-                                direction_text = "⚠️ Moving towards **STOP LOSS**" if live < entry else ("✅ Moving towards **TAKE PROFIT**" if live > entry else "⚖️ At entry level")
-                            else:
-                                if entry > tp3: progress = (entry - live) / (entry - tp3)
-                                direction_text = "⚠️ Moving towards **STOP LOSS**" if live > entry else ("✅ Moving towards **TAKE PROFIT**" if live < entry else "⚖️ At entry level")
-                            progress = max(0, min(1, progress))
-                        except: progress = 0.5; direction_text = "❌ Error calculating"
-                    else: direction_text = "❌ Live price unavailable"
-                    forecast = trade.get('Forecast', 'No forecast available')
-                    col1, col2 = st.columns([5,1])
-                    with col1:
-                        st.markdown(f"""<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b> | <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span><br>
-                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                            Live: {live_display} | Confidence: {trade['Confidence']}%<br>
-                            <small>Tracked since: {trade['Timestamp']}</small>
+
+                # ── Split trades by minimum accuracy threshold ──────────────
+                capturable = []
+                not_capturable = []
+                for t in filtered_trades:
+                    try:
+                        conf_val = float(str(t.get('Confidence', 0)).replace('%','').strip())
+                    except:
+                        conf_val = 0
+                    if conf_val >= ongoing_min_acc:
+                        capturable.append((t, conf_val))
+                    else:
+                        not_capturable.append((t, conf_val))
+
+                # ── Summary banner ──────────────────────────────────────────
+                total_ongoing = len(filtered_trades)
+                cap_count = len(capturable)
+                nocap_count = len(not_capturable)
+                st.markdown(f"""<div style='background:linear-gradient(135deg,#0a1f2e,#1e3c3f);border:1px solid #00ff99;border-radius:12px;padding:12px 20px;margin-bottom:16px;display:flex;gap:30px;align-items:center;'>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>TOTAL ACTIVE</div><div style='color:#fff;font-size:20px;font-weight:bold;'>{total_ongoing}</div></div>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>✅ CAPTURABLE (≥{ongoing_min_acc}%)</div><div style='color:#00ff00;font-size:20px;font-weight:bold;'>{cap_count}</div></div>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>❌ BELOW THRESHOLD</div><div style='color:#ff4b4b;font-size:20px;font-weight:bold;'>{nocap_count}</div></div>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>MIN ACCURACY</div><div style='color:#ffaa00;font-size:20px;font-weight:bold;'>{ongoing_min_acc}%</div></div>
+                </div>""", unsafe_allow_html=True)
+
+                # ── SECTION 1: CAPTURABLE TRADES ───────────────────────────
+                if capturable:
+                    st.markdown(f"""<div style='background:linear-gradient(135deg,#0a2010,#0d3020);border:1px solid #00ff99;border-left:5px solid #00ff00;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
+                        <b style='color:#00ff00;font-size:15px;'>✅ CAPTURABLE TRADES — Accuracy ≥ {ongoing_min_acc}%</b>
+                        <span style='color:#aaa;font-size:12px;'> — These trades meet your minimum accuracy threshold and can be taken.</span>
+                    </div>""", unsafe_allow_html=True)
+
+                    for trade, conf_val in sorted(capturable, key=lambda x: x[1], reverse=True):
+                        color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                        pair = trade['Pair']; live = get_live_price(pair)
+                        live_display = f"{live:.4f}" if live else "N/A"
+                        progress = 0.5; direction_text = ""
+                        if live is not None:
+                            try:
+                                entry = float(trade['Entry']); tp3 = float(trade['TP'])
+                                if trade['Direction'] == "BUY":
+                                    if tp3 > entry: progress = (live - entry) / (tp3 - entry)
+                                    direction_text = "⚠️ Moving towards **STOP LOSS**" if live < entry else ("✅ Moving towards **TAKE PROFIT**" if live > entry else "⚖️ At entry level")
+                                else:
+                                    if entry > tp3: progress = (entry - live) / (entry - tp3)
+                                    direction_text = "⚠️ Moving towards **STOP LOSS**" if live > entry else ("✅ Moving towards **TAKE PROFIT**" if live < entry else "⚖️ At entry level")
+                                progress = max(0, min(1, progress))
+                            except: progress = 0.5; direction_text = "❌ Error calculating"
+                        else: direction_text = "❌ Live price unavailable"
+                        forecast = trade.get('Forecast', 'No forecast available')
+                        col1, col2 = st.columns([5,1])
+                        with col1:
+                            st.markdown(f"""<div style='background:#0d2a1a; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>
+                                    <b style='color:{color};font-size:15px;'>{trade['Pair']} | {trade['Direction']}</b>
+                                    <span style='background:#00ff0022;color:#00ff00;border:1px solid #00ff00;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>✅ CAPTURABLE — {conf_val:.0f}% Confidence</span>
+                                </div>
+                                <span style='color:#00ff99;font-size:12px;'>{trade.get('Timeframe', 'N/A')}</span><br>
+                                Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                                Live: {live_display}<br>
+                                <small style='color:#aaa;'>Tracked since: {trade['Timestamp']}</small>
+                            </div>""", unsafe_allow_html=True)
+                            st.progress(progress, text="Progress to Target")
+                            st.caption(direction_text)
+                            st.caption(f"📊 Engine Forecast: {forecast}")
+                        with col2:
+                            if not st.session_state.beginner_mode:
+                                if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
+                                    if delete_trade_by_row_number(trade['row_num']): st.success("Trade deleted."); st.rerun()
+                else:
+                    st.info(f"No active trades meet the minimum accuracy threshold of {ongoing_min_acc}%.")
+
+                # ── SECTION 2: NOT CAPTURABLE TRADES ───────────────────────
+                if not_capturable:
+                    st.markdown("---")
+                    with st.expander(f"❌ Cannot Be Captured — Below {ongoing_min_acc}% Threshold ({nocap_count} trades)", expanded=False):
+                        st.markdown(f"""<div style='background:#1a0a0a;border:1px solid #ff4b4b44;border-left:5px solid #ff4b4b;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
+                            <b style='color:#ff4b4b;font-size:14px;'>⚠️ These trades do NOT meet your minimum accuracy of {ongoing_min_acc}%</b>
+                            <span style='color:#aaa;font-size:12px;'> — Reasons are shown below for each trade.</span>
                         </div>""", unsafe_allow_html=True)
-                        st.progress(progress, text="Progress to Target")
-                        st.caption(direction_text)
-                        st.caption(f"📊 Engine Forecast: {forecast}")
-                    with col2:
-                        if not st.session_state.beginner_mode:
-                            if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
-                                if delete_trade_by_row_number(trade['row_num']): st.success("Trade deleted."); st.rerun()
+
+                        for trade, conf_val in sorted(not_capturable, key=lambda x: x[1], reverse=True):
+                            dir_color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                            reasons = []
+                            gap = ongoing_min_acc - conf_val
+                            reasons.append(f"Confidence is {conf_val:.0f}% — needs {ongoing_min_acc:.0f}% (gap: {gap:.0f}%)")
+                            if conf_val < 30:
+                                reasons.append("Very low confidence — weak or conflicting indicators")
+                            elif conf_val < 40:
+                                reasons.append("Low confidence — insufficient indicator confluence")
+                            elif conf_val < ongoing_min_acc:
+                                reasons.append(f"Moderate confidence but below your set threshold of {ongoing_min_acc}%")
+                            live = get_live_price(trade['Pair'])
+                            if live is None:
+                                reasons.append("Live price unavailable — cannot verify current market position")
+                            else:
+                                try:
+                                    entry_f = float(trade['Entry']); sl_f = float(trade['SL']); tp_f = float(trade['TP'])
+                                    if trade['Direction'] == "BUY" and live < sl_f:
+                                        reasons.append(f"Price ({live:.5f}) has already crossed below SL ({sl_f:.5f})")
+                                    elif trade['Direction'] == "SELL" and live > sl_f:
+                                        reasons.append(f"Price ({live:.5f}) has already crossed above SL ({sl_f:.5f})")
+                                    if trade['Direction'] == "BUY" and live > tp_f:
+                                        reasons.append(f"Price ({live:.5f}) has already passed TP ({tp_f:.5f})")
+                                    elif trade['Direction'] == "SELL" and live < tp_f:
+                                        reasons.append(f"Price ({live:.5f}) has already passed TP ({tp_f:.5f})")
+                                except: pass
+                            reason_html = "".join([f"<li style='color:#ff9966;margin-bottom:3px;'>⚠️ {r}</li>" for r in reasons])
+                            live_display = f"{live:.4f}" if live else "N/A"
+                            st.markdown(f"""<div style='background:#1a0505;border:1px solid #ff4b4b33;border-left:4px solid #ff4b4b;border-radius:8px;padding:12px 16px;margin-bottom:10px;opacity:0.9;'>
+                                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>
+                                    <b style='color:{dir_color};font-size:14px;'>{trade['Pair']} | {trade['Direction']}</b>
+                                    <span style='background:#ff4b4b22;color:#ff4b4b;border:1px solid #ff4b4b;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>❌ CANNOT CAPTURE — {conf_val:.0f}%</span>
+                                </div>
+                                <div style='color:#888;font-size:12px;margin-bottom:6px;'>
+                                    <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span> &nbsp;|&nbsp;
+                                    Entry: {trade['Entry']} &nbsp;|&nbsp; SL: {trade['SL']} &nbsp;|&nbsp; TP: {trade['TP']} &nbsp;|&nbsp; Live: {live_display}
+                                </div>
+                                <div style='background:#0d0000;border-radius:6px;padding:8px 10px;margin-top:4px;'>
+                                    <b style='color:#ff4b4b;font-size:12px;'>❌ Reasons this trade cannot be captured:</b>
+                                    <ul style='margin:6px 0 0 0;padding-left:16px;'>{reason_html}</ul>
+                                </div>
+                                <small style='color:#555;'>Tracked since: {trade['Timestamp']}</small>
+                            </div>""", unsafe_allow_html=True)
             else: st.info("No active ongoing trades.")
         with tab2:
             st.subheader("Closed Trades History")
