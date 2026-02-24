@@ -45,6 +45,23 @@ _gsheets_limiter = RateLimiter(max_calls_per_minute=45)
 # yfinance unofficial API: no hard limit but 30/min avoids throttle bans
 _yfinance_limiter = RateLimiter(max_calls_per_minute=30)
 
+# ==================== GSPREAD CLIENT CACHE ====================
+# Reusing the same gspread client across calls avoids an OAuth round-trip
+# (which itself costs an extra Sheets API request) on every sheet access.
+_gspread_client_cache = {"client": None, "created_at": 0}
+_GSPREAD_CLIENT_TTL = 1800  # re-authenticate every 30 min (tokens last 1 hr)
+
+def get_gspread_client():
+    """Return a cached gspread client, refreshing after TTL expires."""
+    global _gspread_client_cache
+    now = time.time()
+    if _gspread_client_cache["client"] is None or (now - _gspread_client_cache["created_at"]) > _GSPREAD_CLIENT_TTL:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        _gspread_client_cache["client"] = gspread.authorize(creds)
+        _gspread_client_cache["created_at"] = now
+    return _gspread_client_cache["client"]
+
 # --- 1. SETUP & STYLE ---
 st.set_page_config(page_title="Infinite Algo Terminal v29.0 (EW+ICT+SMC+Fib Theory Engine)", layout="wide", page_icon="⚡")
 
@@ -172,6 +189,8 @@ if "historical_data_cache" not in st.session_state: st.session_state.historical_
 if "beginner_mode" not in st.session_state: st.session_state.beginner_mode = False
 if "backtest_results" not in st.session_state: st.session_state.backtest_results = None
 if "price_cache" not in st.session_state: st.session_state.price_cache = {}
+if "scanner_active_trades" not in st.session_state: st.session_state.scanner_active_trades = []
+if "refresh_active_trades" not in st.session_state: st.session_state.refresh_active_trades = True
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -293,8 +312,8 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
                     merged = merged[~merged.index.duplicated(keep='last')]
                     merged = merged.sort_index()
 
-                    # Save updated data back to Sheets (only new rows to save API quota)
-                    save_history_to_sheets(symbol, interval, new_rows)
+                    # Append only new rows to Sheets (incremental)
+                    save_history_to_sheets(symbol, interval, new_rows, mode="append")
                 else:
                     merged = gs_df
             else:
@@ -326,8 +345,8 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
         if hasattr(df.index, 'tz') and df.index.tz is not None:
             df.index = df.index.tz_localize(None)
 
-        # Save full history to Google Sheets
-        save_history_to_sheets(symbol, interval, df)
+        # Save full history to Google Sheets (replace mode — fresh write)
+        save_history_to_sheets(symbol, interval, df, mode="replace")
 
         # Store in memory cache
         st.session_state.historical_data_cache[key] = (df, current_time)
@@ -345,11 +364,11 @@ def get_history_sheet(symbol, interval):
     Get or create a worksheet for historical data cache.
     Sheet name format: H_{symbol}_{interval}  (max 100 chars, sanitized)
     Each sheet stores OHLCV candles with timestamp.
+    Uses cached gspread client to avoid extra OAuth round-trips.
     """
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
+        _gsheets_limiter.wait_if_needed()
+        client = get_gspread_client()
         spreadsheet = client.open("Forex_User_DB")
 
         # Sanitize sheet name: remove special chars, limit length
@@ -369,11 +388,35 @@ def get_history_sheet(symbol, interval):
         return None
 
 
-def save_history_to_sheets(symbol, interval, df):
+def _normalize_ohlcv_df(df):
+    """
+    Normalise a yfinance DataFrame so columns are always simple strings
+    like 'Open', 'High', 'Low', 'Close', 'Volume' regardless of whether
+    yfinance returned a MultiIndex or single-level index.
+    Returns a clean copy, or None on failure.
+    """
+    if df is None or df.empty:
+        return None
+    d = df.copy()
+    # Flatten MultiIndex columns  e.g. ('Close', 'EURUSD=X') → 'Close'
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = d.columns.get_level_values(0)
+    # Remove timezone from index
+    if hasattr(d.index, 'tz') and d.index.tz is not None:
+        d.index = d.index.tz_localize(None)
+    # Rename lowercase variants just in case
+    rename_map = {c: c.capitalize() for c in d.columns if c.lower() in ('open','high','low','close','volume','adj close')}
+    d = d.rename(columns=rename_map)
+    return d
+
+
+def save_history_to_sheets(symbol, interval, df, mode="append"):
     """
     Save OHLCV DataFrame to Google Sheets history cache.
-    Only saves if df has data. Appends rows efficiently using batch_update.
-    Skips very large DFs for 1m (too many rows) — only saves last 1000 rows.
+    mode='append'  → append new rows only (incremental update)
+    mode='replace' → clear sheet and write fresh (full download)
+
+    Column access uses positional iloc to avoid MultiIndex / case issues.
     """
     if df is None or df.empty:
         return False
@@ -383,31 +426,52 @@ def save_history_to_sheets(symbol, interval, df):
         if sheet is None:
             return False
 
-        # Limit rows to save (to stay within Sheets limits)
+        # Normalise columns
+        save_df = _normalize_ohlcv_df(df)
+        if save_df is None or save_df.empty:
+            return False
+
+        # Limit rows per timeframe
         max_rows = {
             "1m": 500, "5m": 800, "15m": 1000,
             "1h": 1000, "4h": 1000, "1d": 1000, "1wk": 500
         }
         limit = max_rows.get(interval, 1000)
-        save_df = df.tail(limit).copy()
+        save_df = save_df.tail(limit)
 
         saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        rows_to_append = []
+        rows_to_write = []
         for ts, row in save_df.iterrows():
             try:
-                ts_str = str(ts)[:19]  # trim microseconds
-                o = round(float(row.get('Open', 0)), 8)
-                h = round(float(row.get('High', 0)), 8)
-                lo = round(float(row.get('Low', 0)), 8)
-                c = round(float(row.get('Close', 0)), 8)
-                v = int(float(row.get('Volume', 0))) if 'Volume' in row else 0
-                rows_to_append.append([ts_str, o, h, lo, c, v, saved_at])
-            except:
+                ts_str = str(ts)[:19]
+                # Use .get() with fallback to 0 — works on pandas Series
+                o  = round(float(row['Open'])   if 'Open'   in row.index else 0, 8)
+                h  = round(float(row['High'])   if 'High'   in row.index else 0, 8)
+                lo = round(float(row['Low'])    if 'Low'    in row.index else 0, 8)
+                c  = round(float(row['Close'])  if 'Close'  in row.index else 0, 8)
+                v  = int(float(row['Volume']))  if 'Volume' in row.index else 0
+                rows_to_write.append([ts_str, o, h, lo, c, v, saved_at])
+            except Exception as row_err:
+                print(f"Row skip ({ts}): {row_err}")
                 continue
 
-        if rows_to_append:
+        if not rows_to_write:
+            return False
+
+        if mode == "replace":
+            # Clear all data rows (keep header row 1)
             _gsheets_limiter.wait_if_needed()
-            sheet.append_rows(rows_to_append, value_input_option='RAW')
+            sheet.resize(rows=1)          # shrink to header only
+            _gsheets_limiter.wait_if_needed()
+            sheet.resize(rows=5000)       # expand again
+            _gsheets_limiter.wait_if_needed()
+            sheet.append_rows(rows_to_write, value_input_option='RAW')
+        else:
+            # Append only
+            _gsheets_limiter.wait_if_needed()
+            sheet.append_rows(rows_to_write, value_input_option='RAW')
+
+        print(f"[Sheets] Saved {len(rows_to_write)} rows → {symbol}/{interval} (mode={mode})")
         return True
 
     except Exception as e:
@@ -477,9 +541,8 @@ def clear_history_cache_for_symbol(symbol, interval=None):
     Used when data appears stale or corrupted.
     """
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
+        _gsheets_limiter.wait_if_needed()
+        client = get_gspread_client()
         spreadsheet = client.open("Forex_User_DB")
 
         tfs = [interval] if interval else ["1m","5m","15m","1h","4h","1d","1wk"]
@@ -512,9 +575,8 @@ def get_history_cache_stats():
     Returns stats about all history cache sheets (for admin panel display).
     """
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
+        _gsheets_limiter.wait_if_needed()
+        client = get_gspread_client()
         spreadsheet = client.open("Forex_User_DB")
 
         stats = []
@@ -550,20 +612,20 @@ def get_period_for_tf(tf):
 
 # --- Google Sheets Functions ---
 def get_user_sheet():
+    """Use cached gspread client — avoids a new OAuth round-trip on every call."""
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
+        _gsheets_limiter.wait_if_needed()
+        client = get_gspread_client()
         try: sheet = client.open("Forex_User_DB").sheet1
         except: sheet = None
         return sheet, client
     except: return None, None
 
 def get_ongoing_sheet():
+    """Use cached gspread client — avoids a new OAuth round-trip on every call."""
     try:
-        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
-        client = gspread.authorize(creds)
+        _gsheets_limiter.wait_if_needed()
+        client = get_gspread_client()
         spreadsheet = client.open("Forex_User_DB")
         try:
             sheet = spreadsheet.worksheet("Ongoing_Trades")
@@ -2513,10 +2575,16 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                 ai_trade['timeframe'] = tf
                 trade_id = f"{clean_sym}_{tf}_{direction}_{ai_trade['entry']:.5f}"
 
+                # Always add to UI results list
+                all_trades.append(ai_trade)
+
+                # Auto-save to Google Sheets if not already tracked this session
                 if trade_id not in st.session_state.tracked_trades:
                     if save_trade_to_ongoing(ai_trade, user_info['Username'], tf, ai_trade.get('forecast', 'N/A')):
                         st.session_state.tracked_trades.add(trade_id)
-                        all_trades.append(ai_trade)
+                    else:
+                        # Sheets save failed — trade shows in UI, user can manually capture
+                        print(f"[WARN] Auto-save failed for {trade_id}. Trade visible in UI — user can capture manually.")
 
         except Exception as e:
             print(f"Error scanning {symbol}: {e}")
@@ -2932,6 +3000,12 @@ else:
     elif app_mode == "Market Scanner":
         st.title("📡 Theory-Based Market Scanner (EW + ICT + SMC + Fibonacci)")
         st.markdown("<div class='scan-header'><h3>🔍 Elliott Wave + ICT (Swing) | SMC + Fibonacci (Short) — Multi-Timeframe Analysis</h3></div>", unsafe_allow_html=True)
+
+        # Load active trades once for duplicate-capture detection
+        if "scanner_active_trades" not in st.session_state or st.session_state.get("refresh_active_trades", True):
+            st.session_state.scanner_active_trades = load_user_trades(user_info['Username'], status='Active')
+            st.session_state.refresh_active_trades = False
+        scanner_active_trades = st.session_state.scanner_active_trades
         col1, col2 = st.columns(2)
         with col1:
             market_choice = st.selectbox("Market", options=["All","Forex","Crypto","Metals"], index=0, key="market_selector")
@@ -2958,6 +3032,7 @@ else:
                         results, rejected = scan_market_with_ai(scan_assets, user_info, selected_timeframes, min_accuracy=min_acc)
                         st.session_state.scan_results = results
                         st.session_state.rejected_trades = rejected
+                        st.session_state.refresh_active_trades = True  # reload after scan
                         if not results and not rejected:
                             st.warning(f"No signals found above {min_acc}% accuracy.")
                         else:
@@ -2966,7 +3041,10 @@ else:
                             st.success(f"Scan Complete! ✅ {approved_count} approved | ❌ {rejected_count} rejected across {len(selected_timeframes)} timeframe(s).")
         with col2:
             if st.button("🗑️ Clear Results", use_container_width=True):
-                st.session_state.scan_results = []; st.session_state.rejected_trades = []; st.rerun()
+                st.session_state.scan_results = []
+                st.session_state.rejected_trades = []
+                st.session_state.refresh_active_trades = True
+                st.rerun()
 
         st.markdown("---")
 
@@ -3055,12 +3133,20 @@ else:
                             with col2:
                                 st.progress(progress, text="Approach")
                             with col3:
-                                # --- Capture Trade Button ---
+                                # --- Capture / Status Button ---
                                 trade_id = f"{sig['pair']}_{sig.get('timeframe', tf)}_{sig['dir']}_{sig['entry']:.5f}"
-                                already_captured = trade_id in st.session_state.tracked_trades
-                                if already_captured:
-                                    st.markdown("<div style='color:#00ff99;font-size:12px;text-align:center;padding:6px;'>✅ Captured</div>", unsafe_allow_html=True)
+                                auto_saved = trade_id in st.session_state.tracked_trades
+                                sheets_saved = is_trade_tracked(sig, scanner_active_trades)
+
+                                if auto_saved or sheets_saved:
+                                    # Trade already saved — show status + option to re-save if needed
+                                    st.markdown("""<div style='color:#00ff99;font-size:12px;text-align:center;
+                                        padding:6px 4px;border:1px solid #00ff9944;border-radius:8px;
+                                        background:rgba(0,255,153,0.05);'>✅ Auto-Saved<br>
+                                        <span style='font-size:10px;color:#aaa;'>to Ongoing</span></div>""",
+                                        unsafe_allow_html=True)
                                 else:
+                                    # Trade NOT saved (auto-save failed) — show manual capture button
                                     if st.button("💾 Capture", key=f"capture_cap_{tf}_{idx}", use_container_width=True, type="primary"):
                                         capture_dict = {
                                             "pair": sig['pair'],
@@ -3073,13 +3159,14 @@ else:
                                             "tp3":   sig.get('tp3', sig['entry']),
                                             "conf":  sig.get('conf', 0),
                                         }
-                                        forecast_text = sig.get('forecast', sig.get('sinhala_summary', 'Captured from scanner'))
+                                        forecast_text = sig.get('forecast', sig.get('sinhala_summary', 'Manual capture'))
                                         if save_trade_to_ongoing(capture_dict, user_info['Username'], sig.get('timeframe', tf), forecast_text):
                                             st.session_state.tracked_trades.add(trade_id)
+                                            st.session_state.refresh_active_trades = True
                                             st.success(f"✅ {sig['pair']} captured!")
                                             st.rerun()
                                         else:
-                                            st.error("❌ Capture failed. Check Google Sheets connection.")
+                                            st.error("❌ Capture failed. Check Google Sheets.")
                                 if not st.session_state.beginner_mode:
                                     if st.button("🔍 Deep", key=f"deep_cap_{tf}_{idx}", use_container_width=True):
                                         st.session_state.selected_trade = sig
