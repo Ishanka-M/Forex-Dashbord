@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
 
 # --- 1. SETUP & STYLE ---
-st.set_page_config(page_title="Infinite Algo Terminal v28.0 (AI-Powered Scanner)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Infinite Algo Terminal v29.0 (EW+ICT+SMC+Fib Theory Engine)", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -589,10 +589,20 @@ def get_multi_timeframe_analysis(symbol, primary_tf, news_items=None):
 def validate_signal_confluence(theory_signals, direction):
     if not theory_signals: return 0, False, {}
     dir_key = "bull" if direction == "BUY" else "bear"
+    # Theory weights - primary theories get higher weight per user spec
     weighted_signals = {
-        'TREND': 3.0, 'SMC': 2.5, 'ICT': 2.0, 'ELLIOTT': 2.0,
-        'LIQ': 1.5, 'FIB': 1.5, 'PATT': 1.5, 'BB': 1.0,
-        'STOCH': 1.0, 'CCI': 1.0, 'VOL': 1.0, 'ADX': 0.5,
+        'ELLIOTT': 3.5,  # Elliott Wave — PRIMARY (swing direction)
+        'ICT':     3.0,  # ICT — PRIMARY (swing direction + FVG/BOS)
+        'SMC':     3.0,  # SMC — PRIMARY (structure + OB)
+        'FIB':     2.5,  # Fibonacci — PRIMARY (entry + TP)
+        'TREND':   2.0,  # Trend direction
+        'LIQ':     1.5,  # Liquidity grabs
+        'PATT':    1.5,  # Candlestick patterns
+        'BB':      1.0,
+        'STOCH':   1.0,
+        'CCI':     1.0,
+        'VOL':     1.0,
+        'ADX':     0.5,
     }
     bull_weight = 0; bear_weight = 0; total_weight = 0; conflict_details = {}
     for sig_name, sig_val in theory_signals.items():
@@ -822,6 +832,457 @@ def calculate_advanced_signals(df, tf, news_items=None):
 
     atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
     return signals, atr, confidence, score_breakdown, theory_signals
+
+
+# ==================== THEORY ENGINE v2: ELLIOTT WAVE + ICT DIRECTION ====================
+def detect_elliott_wave_ict_direction(df, tf):
+    """
+    Swing Trade Direction: Elliott Wave wave count + ICT Concepts.
+    Returns: (direction "BUY"/"SELL"/"NEUTRAL", wave_label, ict_context, confidence_pct)
+    
+    Logic:
+    - Elliott Wave: identify current wave position using swing structure
+    - ICT: Fair Value Gaps, Market Structure Shift, Inducement, Optimal Trade Entry
+    - Combined: both must agree for high-confidence direction
+    """
+    if df is None or len(df) < 100:
+        return "NEUTRAL", "Insufficient Data", "N/A", 0
+
+    c = df['Close'].iloc[-1]
+    high_50 = df['High'].tail(50).max()
+    low_50  = df['Low'].tail(50).min()
+    high_100 = df['High'].tail(100).max()
+    low_100  = df['Low'].tail(100).min()
+    range_50 = high_50 - low_50
+    if range_50 == 0:
+        return "NEUTRAL", "Flat Market", "N/A", 0
+
+    # --- Elliott Wave Position ---
+    current_pos = (c - low_50) / range_50  # 0=bottom, 1=top
+
+    # Trend direction from MA + slope
+    ma_20 = df['Close'].rolling(20).mean().iloc[-1]
+    ma_50 = df['Close'].rolling(50).mean().iloc[-1]
+    slope = (df['Close'].tail(20).values[-1] - df['Close'].tail(20).values[0]) / 20
+
+    # Wave identification
+    ew_direction = "NEUTRAL"; ew_label = "Wave Unknown"; ew_score = 0
+    if slope > 0 and c > ma_50:  # Uptrend
+        if current_pos < 0.25:
+            ew_label = "Wave 1 (Impulse Start)"; ew_direction = "BUY"; ew_score = 70
+        elif 0.25 <= current_pos < 0.45:
+            ew_label = "Wave 2 (Correction - BUY Zone)"; ew_direction = "BUY"; ew_score = 90  # Best buy entry
+        elif 0.45 <= current_pos < 0.75:
+            ew_label = "Wave 3 (Strong Impulse)"; ew_direction = "BUY"; ew_score = 85
+        elif 0.75 <= current_pos < 0.88:
+            ew_label = "Wave 4 (Pullback - BUY)"; ew_direction = "BUY"; ew_score = 75
+        elif current_pos >= 0.88:
+            ew_label = "Wave 5 (Exhaustion - AVOID)"; ew_direction = "NEUTRAL"; ew_score = 20
+    elif slope < 0 and c < ma_50:  # Downtrend
+        if current_pos > 0.75:
+            ew_label = "Wave A (Impulse Drop Start)"; ew_direction = "SELL"; ew_score = 70
+        elif 0.55 <= current_pos <= 0.75:
+            ew_label = "Wave B (Correction - SELL Zone)"; ew_direction = "SELL"; ew_score = 90  # Best sell entry
+        elif 0.25 <= current_pos < 0.55:
+            ew_label = "Wave C (Strong Drop)"; ew_direction = "SELL"; ew_score = 85
+        else:
+            ew_label = "Wave C End (Reversal Watch)"; ew_direction = "NEUTRAL"; ew_score = 30
+    else:
+        ew_label = "Corrective Structure"; ew_direction = "NEUTRAL"; ew_score = 30
+
+    # --- ICT Concepts ---
+    ict_direction = "NEUTRAL"; ict_label = "No ICT Setup"; ict_score = 0
+
+    # 1. Market Structure Shift (MSS) - Break of Structure
+    recent_highs = df['High'].tail(20).values
+    recent_lows  = df['Low'].tail(20).values
+    last_high = recent_highs[-1]; last_low = recent_lows[-1]
+    prev_high = df['High'].tail(30).values[-10]; prev_low = df['Low'].tail(30).values[-10]
+
+    bos_bull = c > prev_high and df['High'].iloc[-2] > df['High'].tail(20)[:-2].max()  # Break of structure bullish
+    bos_bear = c < prev_low  and df['Low'].iloc[-2] < df['Low'].tail(20)[:-2].min()   # Break of structure bearish
+
+    # 2. Fair Value Gaps (Imbalance zones)
+    fvg_bull = df['Low'].iloc[-1] > df['High'].iloc[-3]    # Bullish FVG
+    fvg_bear = df['High'].iloc[-1] < df['Low'].iloc[-3]   # Bearish FVG
+
+    # 3. Inducement (Liquidity sweep before move)
+    equal_lows_swept = df['Low'].iloc[-1] < df['Low'].tail(10)[:-1].min() and c > df['Low'].iloc[-1]  # swept lows → bullish
+    equal_highs_swept = df['High'].iloc[-1] > df['High'].tail(10)[:-1].max() and c < df['High'].iloc[-1]  # swept highs → bearish
+
+    # 4. OTE (Optimal Trade Entry) - Price in 61.8%–79% retracement
+    # Bullish: price retraced into 61.8-79% of last impulse
+    impulse_range = high_50 - low_50
+    ote_bull_lo = high_50 - impulse_range * 0.786
+    ote_bull_hi = high_50 - impulse_range * 0.618
+    ote_bear_lo = low_50  + impulse_range * 0.618
+    ote_bear_hi = low_50  + impulse_range * 0.786
+    in_ote_bull = ote_bull_lo <= c <= ote_bull_hi
+    in_ote_bear = ote_bear_lo <= c <= ote_bear_hi
+
+    # ICT Score
+    if bos_bull or fvg_bull or equal_lows_swept or in_ote_bull:
+        ict_score = sum([20 if bos_bull else 0, 15 if fvg_bull else 0,
+                         25 if equal_lows_swept else 0, 20 if in_ote_bull else 0])
+        ict_direction = "BUY"
+        parts = []
+        if bos_bull: parts.append("BOS Bullish")
+        if fvg_bull: parts.append("FVG Bullish")
+        if equal_lows_swept: parts.append("Liquidity Swept ↑")
+        if in_ote_bull: parts.append("OTE Zone")
+        ict_label = " + ".join(parts) if parts else "ICT Bullish"
+    elif bos_bear or fvg_bear or equal_highs_swept or in_ote_bear:
+        ict_score = sum([20 if bos_bear else 0, 15 if fvg_bear else 0,
+                         25 if equal_highs_swept else 0, 20 if in_ote_bear else 0])
+        ict_direction = "SELL"
+        parts = []
+        if bos_bear: parts.append("BOS Bearish")
+        if fvg_bear: parts.append("FVG Bearish")
+        if equal_highs_swept: parts.append("Liquidity Swept ↓")
+        if in_ote_bear: parts.append("OTE Zone")
+        ict_label = " + ".join(parts) if parts else "ICT Bearish"
+
+    # --- Combined Direction ---
+    if ew_direction == ict_direction and ew_direction != "NEUTRAL":
+        final_direction = ew_direction
+        combined_conf = int((ew_score + ict_score) / 2)
+        combined_conf = min(95, combined_conf)
+    elif ew_direction != "NEUTRAL" and ict_direction == "NEUTRAL":
+        final_direction = ew_direction
+        combined_conf = int(ew_score * 0.7)
+    elif ict_direction != "NEUTRAL" and ew_direction == "NEUTRAL":
+        final_direction = ict_direction
+        combined_conf = int(ict_score * 0.7)
+    else:
+        final_direction = "NEUTRAL"
+        combined_conf = 20
+
+    ict_context = f"EW: {ew_label} | ICT: {ict_label}"
+    return final_direction, ew_label, ict_context, combined_conf
+
+
+# ==================== SMC + FIBONACCI ENTRY ENGINE ====================
+def calculate_smc_fibonacci_entry(df, direction, current_price, atr):
+    """
+    Short Trade Entry: SMC Order Block + Fibonacci confluence.
+    
+    SMC Entry Rules:
+    - Bullish OB: Last bearish candle before impulse move up (50-75% of OB body)
+    - Bearish OB: Last bullish candle before impulse move down (25-50% of OB body)
+    
+    Fibonacci Entry Rules:
+    - 0.618 (Golden Ratio) = primary entry
+    - 0.705 = secondary entry
+    - 0.786 = deep entry (aggressive)
+    
+    Returns: (entry_price, entry_source, confidence_bonus)
+    """
+    if df is None or len(df) < 30:
+        return current_price, "Current Price (no data)", 0
+
+    recent_high = df['High'].tail(50).max()
+    recent_low  = df['Low'].tail(50).min()
+    fib_range = recent_high - recent_low
+
+    # Fibonacci levels
+    if direction == "BUY":
+        fib_618 = recent_high - fib_range * 0.618
+        fib_705 = recent_high - fib_range * 0.705
+        fib_786 = recent_high - fib_range * 0.786
+        fib_500 = recent_high - fib_range * 0.500
+        golden_lo, golden_hi = fib_786, fib_618
+    else:  # SELL
+        fib_618 = recent_low + fib_range * 0.618
+        fib_705 = recent_low + fib_range * 0.705
+        fib_786 = recent_low + fib_range * 0.786
+        fib_500 = recent_low + fib_range * 0.500
+        golden_lo, golden_hi = fib_618, fib_786
+
+    # SMC Order Block Detection
+    ob_entry = None; ob_source = None; ob_conf = 0
+    scan_start = max(1, len(df) - 40)
+
+    if direction == "BUY":
+        for i in range(scan_start, len(df) - 1):
+            is_bearish = df['Close'].iloc[i] < df['Open'].iloc[i]
+            body = abs(df['Close'].iloc[i] - df['Open'].iloc[i])
+            if is_bearish and body > atr * 0.25:
+                ob_lo = df['Low'].iloc[i]; ob_hi = df['High'].iloc[i]
+                ob_50pct = (ob_lo + ob_hi) / 2
+                ob_75pct = ob_lo + (ob_hi - ob_lo) * 0.75
+                # Check if next candles were bullish (confirms OB validity)
+                if i + 2 < len(df):
+                    next_close = df['Close'].iloc[i+1]
+                    if next_close > ob_hi:  # price left the OB bullishly
+                        if ob_lo - atr * 0.2 <= current_price <= ob_hi + atr * 0.5:
+                            # Prefer 50% of OB (classic SMC Optimal Trade Entry)
+                            ob_entry = ob_50pct if current_price > ob_50pct else ob_75pct
+                            ob_source = f"Bullish OB @ {ob_50pct:.5f} (SMC)"
+                            ob_conf = 30
+                            break
+    else:  # SELL
+        for i in range(scan_start, len(df) - 1):
+            is_bullish = df['Close'].iloc[i] > df['Open'].iloc[i]
+            body = abs(df['Close'].iloc[i] - df['Open'].iloc[i])
+            if is_bullish and body > atr * 0.25:
+                ob_lo = df['Low'].iloc[i]; ob_hi = df['High'].iloc[i]
+                ob_50pct = (ob_lo + ob_hi) / 2
+                ob_25pct = ob_lo + (ob_hi - ob_lo) * 0.25
+                if i + 2 < len(df):
+                    next_close = df['Close'].iloc[i+1]
+                    if next_close < ob_lo:  # price left the OB bearishly
+                        if ob_lo - atr * 0.5 <= current_price <= ob_hi + atr * 0.2:
+                            ob_entry = ob_50pct if current_price < ob_50pct else ob_25pct
+                            ob_source = f"Bearish OB @ {ob_50pct:.5f} (SMC)"
+                            ob_conf = 30
+                            break
+
+    # Fibonacci proximity check
+    fib_entry = None; fib_source = None; fib_conf = 0
+    fib_levels = [(fib_618, "Fib 0.618 Golden", 25), (fib_705, "Fib 0.705", 20), (fib_786, "Fib 0.786", 15), (fib_500, "Fib 0.500", 10)]
+    for fv, fl, fc in fib_levels:
+        if abs(fv - current_price) / max(current_price, 1e-8) < 0.004:  # within 0.4%
+            fib_entry = fv; fib_source = fl; fib_conf = fc
+            break
+
+    # In golden zone check
+    in_golden = golden_lo <= current_price <= golden_hi
+    golden_bonus = 15 if in_golden else 0
+
+    # Prioritize: OB + Fib confluence > OB alone > Fib > current price
+    if ob_entry and fib_entry and abs(ob_entry - fib_entry) / max(fib_entry, 1e-8) < 0.005:
+        # OB + Fib confluence = highest priority
+        entry = (ob_entry + fib_entry) / 2
+        source = f"OB + {fib_source} Confluence ⭐"
+        conf_bonus = ob_conf + fib_conf + golden_bonus + 10  # extra for confluence
+    elif ob_entry:
+        entry = ob_entry
+        source = ob_source + (" + Golden Zone" if in_golden else "")
+        conf_bonus = ob_conf + golden_bonus
+    elif fib_entry:
+        entry = fib_entry
+        source = fib_source + (" + Golden Zone" if in_golden else "")
+        conf_bonus = fib_conf + golden_bonus
+    else:
+        entry = current_price
+        source = "Current Price" + (" (Golden Zone)" if in_golden else "")
+        conf_bonus = golden_bonus
+
+    # Validate entry is within reasonable range
+    if abs(entry - current_price) / max(current_price, 1e-8) > 0.01:  # > 1% away
+        entry = current_price
+        source = "Current Price (OB too far)"
+        conf_bonus = golden_bonus
+
+    return entry, source, conf_bonus
+
+
+# ==================== THEORY-BASED SL/TP ENGINE ====================
+def calculate_theory_sl_tp(df, direction, entry, atr, trade_type, ew_label, theory_signals):
+    """
+    theory-based SL and TP calculation.
+    
+    SWING TRADE (Elliott Wave + ICT):
+    - SL: Below/above the Wave 2/B correction extreme (structural invalidation)
+    - TP1: Elliott Wave target (Wave 3 = 1.618 × Wave 1, Wave C = 1.0 × Wave A)
+    - TP2: 2.618 extension
+    - TP3: 4.236 extension or next liquidity pool
+    
+    SHORT TRADE (SMC + Fibonacci):
+    - SL: Beyond the Order Block high/low (SMC invalidation)
+    - TP1: First FVG fill target (imbalance)
+    - TP2: Next key S/R / Fib extension 1.272
+    - TP3: Liquidity pool / Fib 1.618
+    """
+    if df is None or len(df) < 50:
+        sl = entry - atr * 1.5 if direction == "BUY" else entry + atr * 1.5
+        tp1 = entry + atr * 2.0 if direction == "BUY" else entry - atr * 2.0
+        tp2 = entry + atr * 3.5 if direction == "BUY" else entry - atr * 3.5
+        tp3 = entry + atr * 5.5 if direction == "BUY" else entry - atr * 5.5
+        return sl, tp1, tp2, tp3
+
+    high_50 = df['High'].tail(50).max()
+    low_50  = df['Low'].tail(50).min()
+    high_20 = df['High'].tail(20).max()
+    low_20  = df['Low'].tail(20).min()
+    structure_range = high_50 - low_50
+
+    supports, resistances = find_key_levels(df)
+
+    if trade_type == "SWING":
+        # === SWING TRADE: Elliott Wave + ICT SL/TP ===
+        buffer = atr * 0.35  # structural buffer
+
+        if direction == "BUY":
+            # SL: Below Wave 2 correction (the most recent swing low before entry)
+            # In Elliott Wave, Wave 2 cannot go below Wave 1 start
+            wave2_low = df['Low'].tail(30).min()
+            # ICT confirmation: SL below recent liquidity grab level
+            ict_sl_level = df['Low'].tail(10).min()
+            sl_candidates = [wave2_low - buffer, ict_sl_level - buffer, entry - atr * 2.0]
+            valid_sls = [s for s in sl_candidates if 0 < s < entry]
+            sl = max(valid_sls) if valid_sls else entry - atr * 2.0
+
+            # TP: Elliott Wave extensions
+            # Wave 3 target: 1.618 × (Wave 1 length) above Wave 1 start
+            wave1_len = structure_range * 0.382  # approximate Wave 1
+            ew_tp1 = entry + wave1_len * 1.618    # Wave 3 = 1.618 × Wave 1
+            ew_tp2 = entry + wave1_len * 2.618    # extended Wave 3
+            ew_tp3 = entry + wave1_len * 4.236    # Wave 5 projection
+
+            # ICT: Liquidity pools above (equal highs)
+            liq_pools = find_liquidity_pools(df, "BUY", entry, atr)
+            # FVG targets
+            fvg_targets = find_fvg_levels(df, "BUY", entry)
+            res_above = sorted([r for r in resistances if r > entry + atr * 0.5])
+
+            tp1_candidates = sorted(set([ew_tp1] + fvg_targets + res_above[:2] + liq_pools[:2]))
+            tp1_candidates = [t for t in tp1_candidates if t > entry + abs(entry - sl) * 1.5]
+            tp1 = tp1_candidates[0] if tp1_candidates else entry + abs(entry - sl) * 2.0
+
+            tp2_candidates = sorted(set([ew_tp2] + res_above + liq_pools))
+            tp2_candidates = [t for t in tp2_candidates if t > tp1 + atr * 0.5]
+            tp2 = tp2_candidates[0] if tp2_candidates else tp1 + abs(entry - sl) * 1.5
+
+            tp3_candidates = sorted(set([ew_tp3] + liq_pools))
+            tp3_candidates = [t for t in tp3_candidates if t > tp2 + atr * 0.5]
+            tp3 = tp3_candidates[-1] if tp3_candidates else tp2 + abs(entry - sl) * 2.0
+
+        else:  # SELL
+            wave2_high = df['High'].tail(30).max()
+            ict_sl_level = df['High'].tail(10).max()
+            sl_candidates = [wave2_high + buffer, ict_sl_level + buffer, entry + atr * 2.0]
+            valid_sls = [s for s in sl_candidates if s > entry]
+            sl = min(valid_sls) if valid_sls else entry + atr * 2.0
+
+            wave1_len = structure_range * 0.382
+            ew_tp1 = entry - wave1_len * 1.618
+            ew_tp2 = entry - wave1_len * 2.618
+            ew_tp3 = entry - wave1_len * 4.236
+
+            liq_pools = find_liquidity_pools(df, "SELL", entry, atr)
+            fvg_targets = find_fvg_levels(df, "SELL", entry)
+            sup_below = sorted([s for s in supports if s < entry - atr * 0.5], reverse=True)
+
+            sl_dist = abs(sl - entry)
+            tp1_candidates = sorted(set([ew_tp1] + fvg_targets + sup_below[:2] + liq_pools[:2]), reverse=True)
+            tp1_candidates = [t for t in tp1_candidates if t < entry - sl_dist * 1.5]
+            tp1 = tp1_candidates[0] if tp1_candidates else entry - sl_dist * 2.0
+
+            tp2_candidates = sorted(set([ew_tp2] + sup_below + liq_pools), reverse=True)
+            tp2_candidates = [t for t in tp2_candidates if t < tp1 - atr * 0.5]
+            tp2 = tp2_candidates[0] if tp2_candidates else tp1 - sl_dist * 1.5
+
+            tp3_candidates = sorted(set([ew_tp3] + liq_pools), reverse=True)
+            tp3_candidates = [t for t in tp3_candidates if t < tp2 - atr * 0.5]
+            tp3 = tp3_candidates[-1] if tp3_candidates else tp2 - sl_dist * 2.0
+
+    else:
+        # === SHORT TRADE: SMC + Fibonacci SL/TP ===
+        tight_buf = atr * 0.15
+        normal_buf = atr * 0.30
+
+        if direction == "BUY":
+            # SL: Below the SMC Order Block low (structural invalidation)
+            # Find recent bullish OB low
+            ob_lo = df['Low'].tail(10).min()
+            recent_swing_low = df['Low'].tail(5).min()
+            fib_786_sl = df['High'].tail(50).max() - (df['High'].tail(50).max() - df['Low'].tail(50).min()) * 0.886
+            sl_candidates = [ob_lo - tight_buf, recent_swing_low - tight_buf, fib_786_sl - tight_buf, entry - atr * 1.0]
+            valid_sls = [s for s in sl_candidates if 0 < s < entry]
+            sl = max(valid_sls) if valid_sls else entry - atr * 1.2
+
+            # TP: FVG fill + Fibonacci extension
+            fvg_targets = find_fvg_levels(df, "BUY", entry)
+            high_50 = df['High'].tail(50).max(); low_50 = df['Low'].tail(50).min()
+            fib_range = high_50 - low_50
+            fib_127 = low_50 + fib_range * 1.272
+            fib_162 = low_50 + fib_range * 1.618
+            fib_200 = low_50 + fib_range * 2.000
+            liq_pools = find_liquidity_pools(df, "BUY", entry, atr)
+            res_above = sorted([r for r in resistances if r > entry])
+
+            sl_dist = abs(entry - sl)
+            min_tp1 = entry + sl_dist * 1.5
+            tp1_pool = sorted(set(fvg_targets + res_above[:3] + [fib_127]))
+            tp1_pool = [t for t in tp1_pool if t >= min_tp1]
+            tp1 = tp1_pool[0] if tp1_pool else min_tp1
+
+            min_tp2 = entry + sl_dist * 2.5
+            tp2_pool = sorted(set(res_above + liq_pools + [fib_162]))
+            tp2_pool = [t for t in tp2_pool if t >= min_tp2 and t > tp1 + atr * 0.3]
+            tp2 = tp2_pool[0] if tp2_pool else tp1 + sl_dist * 1.2
+
+            min_tp3 = entry + sl_dist * 4.0
+            tp3_pool = sorted(set(liq_pools + [fib_200]))
+            tp3_pool = [t for t in tp3_pool if t >= min_tp3 and t > tp2 + atr * 0.5]
+            tp3 = tp3_pool[-1] if tp3_pool else tp2 + sl_dist * 1.8
+
+        else:  # SELL
+            ob_hi = df['High'].tail(10).max()
+            recent_swing_high = df['High'].tail(5).max()
+            fib_786_sl = df['Low'].tail(50).min() + (df['High'].tail(50).max() - df['Low'].tail(50).min()) * 0.886
+            sl_candidates = [ob_hi + tight_buf, recent_swing_high + tight_buf, fib_786_sl + tight_buf, entry + atr * 1.0]
+            valid_sls = [s for s in sl_candidates if s > entry]
+            sl = min(valid_sls) if valid_sls else entry + atr * 1.2
+
+            fvg_targets = find_fvg_levels(df, "SELL", entry)
+            high_50 = df['High'].tail(50).max(); low_50 = df['Low'].tail(50).min()
+            fib_range = high_50 - low_50
+            fib_127 = high_50 - fib_range * 1.272
+            fib_162 = high_50 - fib_range * 1.618
+            fib_200 = high_50 - fib_range * 2.000
+            liq_pools = find_liquidity_pools(df, "SELL", entry, atr)
+            sup_below = sorted([s for s in supports if s < entry], reverse=True)
+
+            sl_dist = abs(sl - entry)
+            min_tp1 = entry - sl_dist * 1.5
+            tp1_pool = sorted(set(fvg_targets + sup_below[:3] + [fib_127]), reverse=True)
+            tp1_pool = [t for t in tp1_pool if t <= min_tp1]
+            tp1 = tp1_pool[0] if tp1_pool else min_tp1
+
+            min_tp2 = entry - sl_dist * 2.5
+            tp2_pool = sorted(set(sup_below + liq_pools + [fib_162]), reverse=True)
+            tp2_pool = [t for t in tp2_pool if t <= min_tp2 and t < tp1 - atr * 0.3]
+            tp2 = tp2_pool[0] if tp2_pool else tp1 - sl_dist * 1.2
+
+            min_tp3 = entry - sl_dist * 4.0
+            tp3_pool = sorted(set(liq_pools + [fib_200]), reverse=True)
+            tp3_pool = [t for t in tp3_pool if t <= min_tp3 and t < tp2 - atr * 0.5]
+            tp3 = tp3_pool[-1] if tp3_pool else tp2 - sl_dist * 1.8
+
+    # Final safety checks
+    sl_dist = abs(entry - sl)
+    max_sl = atr * (3.5 if trade_type == "SWING" else 2.5)
+    min_sl = atr * (0.8 if trade_type == "SWING" else 0.5)
+    if sl_dist > max_sl:
+        sl = (entry - max_sl) if direction == "BUY" else (entry + max_sl)
+    if sl_dist < min_sl:
+        sl = (entry - min_sl) if direction == "BUY" else (entry + min_sl)
+
+    return sl, tp1, tp2, tp3
+
+
+# ==================== TRADE TYPE CLASSIFIER ====================
+def classify_trade_type(tf, ew_label="", ict_conf=0):
+    """
+    Classify trade as SWING or SHORT based on timeframe and Elliott Wave context.
+    
+    SWING: 4h, 1d, 1wk → use Elliott Wave + ICT for direction and SL/TP
+    SHORT: 1m, 5m, 15m, 1h → use SMC + Fibonacci for entry and SL/TP
+    
+    Exception: if strong Elliott Wave signal detected on lower TF, treat as swing.
+    """
+    swing_tfs = ["4h", "1d", "1wk"]
+    short_tfs = ["1m", "5m", "15m", "1h"]
+    if tf in swing_tfs:
+        return "SWING"
+    elif tf in short_tfs:
+        # If high ICT confidence on lower TF with clear wave structure, treat as swing
+        if ict_conf >= 70 and ew_label not in ["Wave Unknown", "Insufficient Data", "Corrective Structure"]:
+            return "SWING"
+        return "SHORT"
+    return "SHORT"  # default
 
 # ==================== SL/TP CALCULATION (PRECISION ENGINE v2) ====================
 def find_key_levels(df, lookback=100):
@@ -1118,16 +1579,19 @@ def generate_engine_forecast(df, direction, entry, tp1, tp2, tp3, signals):
     current_price = df['Close'].iloc[-1]
     trend = signals.get('TREND', ("Neutral", "neutral"))[0]
     ew_status = signals.get('ELLIOTT', ("Wave Analysis", "neutral"))[0]
+    smc_status = signals.get('SMC', ("SMC", "neutral"))[0]
+    ict_status = signals.get('ICT', ("ICT", "neutral"))[0]
+    fib_status = signals.get('FIB', ("Fib", "neutral"))[0]
     if direction == "BUY":
         dist1 = ((tp1 - current_price) / current_price) * 100
         dist2 = ((tp2 - current_price) / current_price) * 100
         dist3 = ((tp3 - current_price) / current_price) * 100
-        forecast = f"📈 Bullish: Target 1: {tp1:.5f} ({dist1:.2f}%), Target 2: {tp2:.5f} ({dist2:.2f}%), Target 3: {tp3:.5f} ({dist3:.2f}%). {trend}. {ew_status}."
+        forecast = f"📈 Bullish | Target 1: {tp1:.5f} ({dist1:.2f}%), Target 2: {tp2:.5f} ({dist2:.2f}%), Target 3: {tp3:.5f} ({dist3:.2f}%). EW: {ew_status}. SMC: {smc_status}. ICT: {ict_status}."
     else:
         dist1 = ((current_price - tp1) / current_price) * 100
         dist2 = ((current_price - tp2) / current_price) * 100
         dist3 = ((current_price - tp3) / current_price) * 100
-        forecast = f"📉 Bearish: Target 1: {tp1:.5f} ({dist1:.2f}%), Target 2: {tp2:.5f} ({dist2:.2f}%), Target 3: {tp3:.5f} ({dist3:.2f}%). {trend}. {ew_status}."
+        forecast = f"📉 Bearish | Target 1: {tp1:.5f} ({dist1:.2f}%), Target 2: {tp2:.5f} ({dist2:.2f}%), Target 3: {tp3:.5f} ({dist3:.2f}%). EW: {ew_status}. SMC: {smc_status}. ICT: {ict_status}."
     return forecast
 
 # ==================== AI FUNCTIONS ====================
@@ -1232,9 +1696,10 @@ def get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items
     score_str = ""
     if score_breakdown:
         for k, v in score_breakdown.items(): score_str += f"  {k}: {v}\n"
-    prompt = f"""Act as a Senior Hedge Fund Risk Manager.
+    prompt = f"""Act as a Senior Hedge Fund Risk Manager specializing in Elliott Wave, ICT, and SMC analysis.
 Analyze the following recent news headlines for {pair} and determine if they support a {direction} trade.
 Current Price: {current_price:.5f}
+Trade Type: {"SWING (Elliott Wave + ICT)" if "SWING" in str(mtf_details) else "SHORT (SMC + Fibonacci)"}
 Multi-Timeframe Confluence:
 {mtf_str}
 Indicator Score Breakdown:
@@ -1309,162 +1774,74 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
     if regime == "ranging" and abs(conf) < 30:
         return None, f"Gate 3 FAILED: Ranging market (ADX: {adx_strength}) with weak signal ({abs(conf)}%)"
 
-    if progress_callback: progress_callback(0.40, "Gate 4: Precision entry calculation...")
-    recent_low = df_hist['Low'].tail(50).min(); recent_high = df_hist['High'].tail(50).max()
-    fib_range = recent_high - recent_low
-    optimized_entry = current_price; entry_source = "Current Price"
-    ob_tolerance = atr * 0.5
-    best_entry_score = 0  # score system: higher = better entry
+    if progress_callback: progress_callback(0.38, "Gate 4: Elliott Wave + ICT direction analysis...")
+    # ── THEORY ENGINE: Direction + Entry + SL/TP ─────────────────────────
 
-    # ── Helper: EMA levels ────────────────────────────────────────────────
-    ema_8  = df_hist['Close'].ewm(span=8, adjust=False).mean().iloc[-1]
-    ema_21 = df_hist['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
-    ema_50 = df_hist['Close'].ewm(span=50, adjust=False).mean().iloc[-1]
+    # Step 1: Elliott Wave + ICT — find swing direction
+    ew_ict_direction, ew_label, ict_context, ew_ict_conf = detect_elliott_wave_ict_direction(df_hist, tf_clean)
 
-    # ── Helper: VWAP approximation (session VWAP from last 20 bars) ───────
+    # Step 2: Classify trade type
+    trade_type = classify_trade_type(tf_clean, ew_label, ew_ict_conf)
+
+    # Step 3: Direction validation
+    # Primary direction from engine; Elliott+ICT acts as higher-TF filter
+    # If EW+ICT strongly disagrees with engine direction, reject
+    if ew_ict_conf >= 65 and ew_ict_direction != "NEUTRAL" and ew_ict_direction != direction:
+        return None, f"Gate 4 FAILED: Elliott Wave + ICT direction ({ew_ict_direction}) conflicts with engine signal ({direction}). EW/ICT conf: {ew_ict_conf}%"
+
+    if progress_callback: progress_callback(0.45, f"Gate 4: {trade_type} trade — {'SMC+Fib' if trade_type=='SHORT' else 'EW+ICT'} entry calculation...")
+
+    # Step 4: Entry calculation based on trade type
+    if trade_type == "SHORT":
+        # Short trade: SMC Order Block + Fibonacci entry
+        final_entry, entry_source, entry_conf_bonus = calculate_smc_fibonacci_entry(df_hist, direction, current_price, atr)
+    else:
+        # Swing trade: ICT Optimal Trade Entry (OTE) zone — 61.8-78.6% retracement
+        recent_high = df_hist['High'].tail(50).max()
+        recent_low  = df_hist['Low'].tail(50).min()
+        fib_range = recent_high - recent_low
+        entry_conf_bonus = 0
+
+        if direction == "BUY":
+            ote_lo = recent_high - fib_range * 0.786
+            ote_hi = recent_high - fib_range * 0.618
+            if ote_lo <= current_price <= ote_hi:
+                final_entry = current_price
+                entry_source = f"ICT OTE Zone (0.618-0.786) | {ew_label}"
+                entry_conf_bonus = 20
+            else:
+                final_entry = current_price
+                entry_source = f"Current Price | {ew_label}"
+        else:
+            ote_lo = recent_low + fib_range * 0.618
+            ote_hi = recent_low + fib_range * 0.786
+            if ote_lo <= current_price <= ote_hi:
+                final_entry = current_price
+                entry_source = f"ICT OTE Zone (0.618-0.786) | {ew_label}"
+                entry_conf_bonus = 20
+            else:
+                final_entry = current_price
+                entry_source = f"Current Price | {ew_label}"
+
+    if progress_callback: progress_callback(0.50, "Gate 5: Theory-based SL/TP and RR...")
+
+    # Step 5: Theory-based SL/TP
+    min_rr_required = 1.5 if trade_type == "SHORT" else 2.0
+    sl, tp1, tp2, tp3 = calculate_theory_sl_tp(df_hist, direction, final_entry, atr, trade_type, ew_label, theory_signals)
+
+    # Fallback to advanced SL/TP if theory returns invalid levels
     try:
-        typical = (df_hist['High'] + df_hist['Low'] + df_hist['Close']) / 3
-        if 'Volume' in df_hist.columns and df_hist['Volume'].sum() > 0:
-            vwap = (typical.tail(20) * df_hist['Volume'].tail(20)).sum() / df_hist['Volume'].tail(20).sum()
-        else:
-            vwap = typical.tail(20).mean()
+        sl_dist = abs(final_entry - sl)
+        if sl_dist <= 0 or sl_dist > atr * 8:
+            tf_type_fallback = 'scalp' if tf_clean in ['1m','5m','15m'] else 'swing'
+            sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type_fallback, sigs, theory_signals)
     except:
-        vwap = current_price
-
-    # ── Helper: Fibonacci retracement levels ─────────────────────────────
-    if direction == "BUY":
-        fib_236 = recent_high - 0.236 * fib_range
-        fib_382 = recent_high - 0.382 * fib_range
-        fib_500 = recent_high - 0.500 * fib_range
-        fib_618 = recent_high - 0.618 * fib_range
-        fib_786 = recent_high - 0.786 * fib_range
-        golden_zone_hi = fib_382; golden_zone_lo = fib_618
-        # Discount zone: price below 50% retracement
-        in_discount = current_price <= fib_500
-    else:
-        fib_236 = recent_low + 0.236 * fib_range
-        fib_382 = recent_low + 0.382 * fib_range
-        fib_500 = recent_low + 0.500 * fib_range
-        fib_618 = recent_low + 0.618 * fib_range
-        fib_786 = recent_low + 0.786 * fib_range
-        golden_zone_hi = fib_618; golden_zone_lo = fib_382
-        in_discount = current_price >= fib_500  # premium zone for sells
-
-    # ── 1. Order Block Detection (Priority 1 — SMC) ───────────────────────
-    ob_entry = None; ob_source = None
-    scan_start = max(1, len(df_hist) - 30)
-    if direction == "BUY":
-        for i in range(scan_start, len(df_hist) - 1):
-            # Bullish OB: bearish candle followed by strong bullish move
-            is_bearish = df_hist['Close'].iloc[i] < df_hist['Open'].iloc[i]
-            body_size = abs(df_hist['Close'].iloc[i] - df_hist['Open'].iloc[i])
-            if is_bearish and body_size > atr * 0.3:
-                ob_lo = df_hist['Low'].iloc[i]
-                ob_hi = df_hist['High'].iloc[i]
-                ob_50 = (ob_lo + ob_hi) / 2  # 50% of OB = optimal entry
-                ob_75 = ob_lo + (ob_hi - ob_lo) * 0.75  # 75% = lower premium entry
-                # Price must be inside or just above the OB
-                if ob_lo - atr * 0.1 <= current_price <= ob_hi + ob_tolerance:
-                    # Prefer 50% of OB body as entry (classic SMC optimal trade entry)
-                    candidate = ob_50 if current_price > ob_50 else ob_75
-                    if 0 < candidate < current_price + atr:
-                        ob_entry = candidate
-                        ob_source = f"Bullish OB ({i - scan_start + 1} bars ago)"
-                        break
-    else:
-        for i in range(scan_start, len(df_hist) - 1):
-            is_bullish = df_hist['Close'].iloc[i] > df_hist['Open'].iloc[i]
-            body_size = abs(df_hist['Close'].iloc[i] - df_hist['Open'].iloc[i])
-            if is_bullish and body_size > atr * 0.3:
-                ob_lo = df_hist['Low'].iloc[i]
-                ob_hi = df_hist['High'].iloc[i]
-                ob_50 = (ob_lo + ob_hi) / 2
-                ob_25 = ob_lo + (ob_hi - ob_lo) * 0.25
-                if ob_lo - ob_tolerance <= current_price <= ob_hi + atr * 0.1:
-                    candidate = ob_50 if current_price < ob_50 else ob_25
-                    if candidate > current_price - atr:
-                        ob_entry = candidate
-                        ob_source = f"Bearish OB ({i - scan_start + 1} bars ago)"
-                        break
-
-    # ── 2. Fibonacci Golden Zone Entry (Priority 2) ───────────────────────
-    fib_entry = None; fib_source = None
-    fibs_ranked = [(fib_618, "Fib 0.618 (Golden)"), (fib_500, "Fib 0.500"), (fib_382, "Fib 0.382"), (fib_786, "Fib 0.786")]
-    for fib_val, fib_lbl in fibs_ranked:
-        if abs(fib_val - current_price) / max(current_price, 1e-10) < 0.003:  # within 0.3%
-            fib_entry = fib_val
-            fib_source = fib_lbl
-            break
-
-    # ── 3. EMA Confluence Entry (Priority 3) ─────────────────────────────
-    ema_entry = None; ema_source = None
-    ema_levels = [(ema_8, "EMA 8"), (ema_21, "EMA 21"), (ema_50, "EMA 50")]
-    for ema_val, ema_lbl in ema_levels:
-        if abs(ema_val - current_price) / max(current_price, 1e-10) < 0.002:  # within 0.2%
-            if (direction == "BUY" and ema_val <= current_price) or (direction == "SELL" and ema_val >= current_price):
-                ema_entry = ema_val
-                ema_source = f"{ema_lbl} confluence"
-                break
-
-    # ── 4. VWAP Entry (Priority 4) ───────────────────────────────────────
-    vwap_entry = None; vwap_source = None
-    if abs(vwap - current_price) / max(current_price, 1e-10) < 0.003:
-        vwap_entry = vwap
-        vwap_source = "VWAP level"
-
-    # ── Entry Selection Logic (score-based) ──────────────────────────────
-    # Combine signals: OB > FVG > Fib > EMA > VWAP > current price
-    # Extra bonus if entry is in discount/premium zone AND in golden fib zone
-    candidates = []
-    if ob_entry:
-        score = 100
-        if in_discount: score += 20
-        if fib_entry and abs(ob_entry - fib_entry) / max(fib_entry, 1e-10) < 0.003: score += 30  # OB+Fib confluence!
-        if ema_entry and abs(ob_entry - ema_entry) / max(ema_entry, 1e-10) < 0.002: score += 15
-        candidates.append((ob_entry, ob_source + (" + Fib" if score >= 130 else ""), score))
-
-    if fib_entry:
-        score = 70
-        if in_discount: score += 15
-        if ema_entry and abs(fib_entry - ema_entry) / max(ema_entry, 1e-10) < 0.002: score += 20
-        candidates.append((fib_entry, fib_source + (" + EMA" if score >= 90 else ""), score))
-
-    if ema_entry:
-        score = 50
-        if in_discount: score += 10
-        candidates.append((ema_entry, ema_source, score))
-
-    if vwap_entry:
-        score = 40
-        if in_discount: score += 10
-        candidates.append((vwap_entry, vwap_source, score))
-
-    # Sort by score descending, pick best
-    if candidates:
-        candidates.sort(key=lambda x: x[2], reverse=True)
-        best_val, best_src, best_score = candidates[0]
-        # Only use if within reasonable distance of current price
-        if abs(best_val - current_price) / max(current_price, 1e-10) < 0.008:  # within 0.8%
-            optimized_entry = best_val
-            entry_source = best_src
-        else:
-            # Fall back to current price with zone context
-            zone_label = "Discount Zone" if in_discount else "Premium Zone"
-            entry_source = f"Current Price ({zone_label})"
-    else:
-        zone_label = "Discount Zone" if in_discount else "Premium Zone"
-        entry_source = f"Current Price ({zone_label})"
-
-    final_entry = optimized_entry
-
-    if progress_callback: progress_callback(0.50, "Gate 5: Calculating SL/TP and RR...")
-    tf_type = 'scalp' if tf_clean in ['1m', '5m', '15m'] else 'swing'
-    min_rr_required = 1.5 if tf_type == 'scalp' else 2.0
-    sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type, sigs, theory_signals)
+        tf_type_fallback = 'scalp' if tf_clean in ['1m','5m','15m'] else 'swing'
+        sl, tp1, tp2, tp3 = calculate_advanced_sl_tp(df_hist, direction, final_entry, atr, tf_type_fallback, sigs, theory_signals)
     sl_distance = abs(final_entry - sl); tp1_distance = abs(tp1 - final_entry)
     rr_ratio = round(tp1_distance / sl_distance, 2) if sl_distance > 0 else 0
     if rr_ratio < min_rr_required:
-        return None, f"Gate 5 FAILED: R:R ratio 1:{rr_ratio} < minimum 1:{min_rr_required} required"
+        return None, f"Gate 5 FAILED: R:R ratio 1:{rr_ratio} < minimum 1:{min_rr_required} required (Trade type: {trade_type})"
 
     if progress_callback: progress_callback(0.65, "Gate 6: AI news confirmation...")
     ai_result = get_ai_news_confirmation(pair, direction, current_price, df_hist, news_items, user_info, progress_callback, mtf_details, score_breakdown)
@@ -1496,6 +1873,12 @@ def get_ai_trade_setup(pair, primary_tf, direction, current_price, df_hist, news
         "provider": ai_result['provider'], "sinhala_summary": ai_result['sinhala_summary'],
         "entry_source": entry_source, "timeframe": tf_clean,
         "theory_signals": theory_signals, "score_breakdown": score_breakdown,
+        # ── NEW: Theory classification & labels ──
+        "trade_type": trade_type,           # "SWING" or "SHORT"
+        "ew_label": ew_label,               # e.g. "Wave 3 (Strong Impulse)"
+        "ict_context": ict_context,         # ICT setup description
+        "ew_ict_conf": ew_ict_conf,         # EW+ICT confidence %
+        "entry_conf_bonus": entry_conf_bonus,
     }
     return trade, None
 
@@ -1986,7 +2369,7 @@ TIME: [most relevant news time]"""
 
 # ==================== MAIN APPLICATION ====================
 if not st.session_state.logged_in:
-    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI EDITION TERMINAL v28.0 (AI-Powered Scanner)</h1><p>Professional Trading Intelligence</p></div>", unsafe_allow_html=True)
+    st.markdown("<div class='main-title'><h1>⚡ INFINITE AI TERMINAL v29.0 (Theory Engine)</h1><p>Elliott Wave + ICT | SMC + Fibonacci | Multi-Timeframe | AI-Powered</p></div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         with st.form("login_form"):
@@ -2156,7 +2539,7 @@ else:
             st.caption(f"Provider: {st.session_state.news_impact_provider}")
             st.markdown(f"<div class='entry-box'>{st.session_state.news_impact_analysis}</div>", unsafe_allow_html=True)
 
-        st.markdown("### 🔥 Recent Scanner Signals")
+        st.markdown("### 🔔 Trade Notifications — Theory-Based Signals")
         if st.session_state.scan_results:
             trades_by_tf = {}
             for t in st.session_state.scan_results:
@@ -2164,15 +2547,56 @@ else:
                 if tf not in trades_by_tf: trades_by_tf[tf] = []
                 trades_by_tf[tf].append(t)
             for tf, trades in trades_by_tf.items():
-                with st.expander(f"⏰ {tf} Timeframe ({len(trades)} trades)", expanded=False):
-                    for t in trades[:3]:
-                        st.info(f"{t['pair']} {t['dir']} @ {t['entry']:.4f} (Combined Conf: {t['conf']}% | RR: 1:{t.get('rr_ratio','N/A')})")
+                trades_sorted = sorted(trades, key=lambda x: x.get('conf', 0), reverse=True)
+                st.markdown(f"<div style='color:#00ff99;font-weight:bold;margin:8px 0 4px;'>⏰ {tf} Timeframe — {len(trades_sorted)} Signal(s)</div>", unsafe_allow_html=True)
+                for t in trades_sorted[:3]:
+                    dir_color = "#00ff00" if t['dir'] == "BUY" else "#ff4b4b"
+                    notif_cls = "notif-buy" if t['dir'] == "BUY" else "notif-sell"
+                    trade_type_v = t.get('trade_type', 'SHORT')
+                    tt_color = "#00aaff" if trade_type_v == "SWING" else "#ffaa00"
+                    ew_lbl = t.get('ew_label', '')
+                    ict_ctx = t.get('ict_context', '')
+                    ew_conf = t.get('ew_ict_conf', 0)
+                    entry_src = t.get('entry_source', '')
+
+                    # MTF summary for notification
+                    mtf_det = t.get('mtf_details', {})
+                    mtf_html = ""
+                    for mtf_tf, mtf_d in mtf_det.items():
+                        ic = "🟢" if mtf_d['direction'] == "bull" else ("🔴" if mtf_d['direction'] == "bear" else "⚪")
+                        mtf_html += f"<span style='font-size:11px;margin-right:8px;'>{ic} {mtf_tf}: {mtf_d['direction'].upper()} ({mtf_d['confidence']:.0f}%)</span>"
+
+                    # News info
+                    news_smr = t.get('sinhala_summary', '')
+                    ai_fcast = t.get('ai_forecast', t.get('forecast', ''))
+
+                    st.markdown(f"""<div class='notif-container {notif_cls}' style='border-radius:12px;'>
+                        <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;'>
+                            <span style='font-size:20px;font-weight:bold;color:{dir_color};'>{'📈' if t['dir']=='BUY' else '📉'} {t['pair']} — {t['dir']}</span>
+                            <span style='background:{tt_color}22;color:{tt_color};border:1px solid {tt_color};border-radius:6px;padding:2px 10px;font-size:13px;font-weight:bold;'>⚡ {trade_type_v} TRADE</span>
+                        </div>
+                        <div style='color:#fff;font-size:14px;margin-bottom:6px;'>
+                            📊 <b>Theory:</b> {ew_lbl} | EW+ICT Conf: {ew_conf}%<br>
+                            <span style='color:#aaa;font-size:12px;'>{ict_ctx}</span>
+                        </div>
+                        <div style='background:rgba(0,0,0,0.3);padding:8px 12px;border-radius:8px;margin-bottom:6px;font-size:13px;'>
+                            <span style='color:#ffff00;'>Entry:</span> <b>{t['entry']:.5f}</b> &nbsp;|&nbsp;
+                            <span style='color:#ff6666;'>SL:</span> <b>{t['sl']:.5f}</b> &nbsp;|&nbsp;
+                            <span style='color:#66ff66;'>TP1:</span> <b>{t.get('tp1',0):.5f}</b> &nbsp;|&nbsp;
+                            <span style='color:#44cc44;'>TP2:</span> <b>{t.get('tp2',0):.5f}</b> &nbsp;|&nbsp;
+                            <span style='color:#228822;'>TP3:</span> <b>{t.get('tp3',0):.5f}</b><br>
+                            <span style='color:#aaa;font-size:11px;'>Entry Source: {entry_src} | R:R 1:{t.get('rr_ratio','N/A')} | Combined Conf: {t['conf']}%</span>
+                        </div>
+                        <div style='margin-bottom:4px;'>{mtf_html}</div>
+                        {"<div style='color:#ffcc44;font-size:12px;background:rgba(255,200,0,0.1);padding:6px 10px;border-radius:6px;border-left:3px solid #ffcc44;margin-top:4px;'>📰 AI News Analysis: " + ai_fcast[:120] + "...</div>" if ai_fcast else ""}
+                        {"<div style='color:#00ff99;font-size:11px;margin-top:4px;'>🇱🇰 " + news_smr + "</div>" if news_smr else ""}
+                    </div>""", unsafe_allow_html=True)
         else:
             st.info("No recent scans. Run Market Scanner to see signals.")
 
     elif app_mode == "Market Scanner":
-        st.title("📡 AI-Powered Market Scanner (Multi-Timeframe)")
-        st.markdown("<div class='scan-header'><h3>🔍 Select Markets & Timeframes to Scan</h3></div>", unsafe_allow_html=True)
+        st.title("📡 Theory-Based Market Scanner (EW + ICT + SMC + Fibonacci)")
+        st.markdown("<div class='scan-header'><h3>🔍 Elliott Wave + ICT (Swing) | SMC + Fibonacci (Short) — Multi-Timeframe Analysis</h3></div>", unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
             market_choice = st.selectbox("Market", options=["All","Forex","Crypto","Metals"], index=0, key="market_selector")
@@ -2270,8 +2694,20 @@ else:
                             with col1:
                                 color = "#00ff00" if sig['dir'] == "BUY" else "#ff4b4b"
                                 session_tag = f"<span style='color:#00ff99; font-size:0.9em;'> [{current_session}]</span>"
+                                # Trade type badge
+                                trade_type_val = sig.get('trade_type', 'SHORT')
+                                tt_color = "#00aaff" if trade_type_val == "SWING" else "#ffaa00"
+                                tt_badge = f"<span style='background:{tt_color}22;color:{tt_color};border:1px solid {tt_color};border-radius:6px;padding:1px 8px;font-size:11px;font-weight:bold;margin-left:4px;'>⚡ {trade_type_val}</span>"
+                                # EW + ICT info
+                                ew_label_val = sig.get('ew_label', '')
+                                ict_ctx = sig.get('ict_context', '')
+                                ew_ict_c = sig.get('ew_ict_conf', 0)
+                                theory_line = ""
+                                if ew_label_val:
+                                    ew_color = "#00ff99" if "BUY" in sig['dir'] or "Wave 3" in ew_label_val or "Wave B" in ew_label_val else "#ff8888"
+                                    theory_line = f"<div style='color:{ew_color};font-size:11px;margin-top:3px;'>📊 {ew_label_val} | {ict_ctx} (EW+ICT: {ew_ict_c}%)</div>"
                                 st.markdown(f"""<div style='background:#0d2a1a; padding:10px; border-radius:8px; border-left:5px solid {color}; margin-bottom:10px;'>
-                                    <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge} {cap_badge}<br>
+                                    <b>{sig['pair']} | {sig['dir']}{session_tag}</b> {conf_badge} {cap_badge} {tt_badge}<br>
                                     Entry: {sig['entry']:.5f} | SL: {sig['sl']:.5f}<br>
                                     TP1: {sig.get('tp1',0):.5f} | TP2: {sig.get('tp2',0):.5f} | TP3: {sig.get('tp3',0):.5f}<br>
                                     Live: {sig['live_price']:.5f}<br>
@@ -2279,7 +2715,7 @@ else:
                                     <b>Confluence: {sig.get('confluence_pct','N/A')}% | R:R = 1:{sig.get('rr_ratio','N/A')} | {mtf_icon} | {regime_icon} ADX:{sig.get('adx_strength','N/A')}</b><br>
                                     <small>Entry Source: {sig.get('entry_source','N/A')} | Provider: {sig.get('provider','AI')}</small><br>
                                     <small>🇱🇰 {sig.get('sinhala_summary','')}</small><br>
-                                    {theory_badges}
+                                    {theory_badges}{theory_line}
                                 </div>""", unsafe_allow_html=True)
                             with col2:
                                 st.progress(progress, text="Approach")
@@ -2924,5 +3360,5 @@ else:
                 st.dataframe(df_res, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v28.0 (AI-Powered Scanner) | Professional Trading Interface | Data delayed by market conditions</div>", unsafe_allow_html=True)
+    st.markdown("<div class='footer'>⚡ Infinite AI Terminal v29.0 (EW+ICT+SMC+Fibonacci Theory Engine) | Elliott Wave + ICT → Swing Direction | SMC + Fibonacci → Short Entry | Multi-Timeframe Analysis</div>", unsafe_allow_html=True)
     if auto_refresh: time.sleep(60); st.rerun()
