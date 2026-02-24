@@ -16,6 +16,35 @@ import requests
 import xml.etree.ElementTree as ET
 import pytz  # For Timezone handling
 
+# ==================== RATE LIMITER ====================
+class RateLimiter:
+    """
+    Per-minute call throttle for Google Sheets and yfinance APIs.
+    Ensures we never exceed max_calls per 60-second window.
+    """
+    def __init__(self, max_calls_per_minute: int):
+        self.max_calls = max_calls_per_minute
+        self.call_times = []
+
+    def wait_if_needed(self):
+        """Block until we are within rate limit, then record this call."""
+        now = time.time()
+        self.call_times = [t for t in self.call_times if now - t < 60]
+        if len(self.call_times) >= self.max_calls:
+            oldest = self.call_times[0]
+            sleep_for = 60 - (now - oldest) + 0.1
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            now = time.time()
+            self.call_times = [t for t in self.call_times if now - t < 60]
+        self.call_times.append(time.time())
+
+# Global rate limiters (module-level singletons — persist for entire session)
+# Google Sheets free tier: ~60 req/min — stay at 45 to be safe
+_gsheets_limiter = RateLimiter(max_calls_per_minute=45)
+# yfinance unofficial API: no hard limit but 30/min avoids throttle bans
+_yfinance_limiter = RateLimiter(max_calls_per_minute=30)
+
 # --- 1. SETUP & STYLE ---
 st.set_page_config(page_title="Infinite Algo Terminal v29.0 (EW+ICT+SMC+Fib Theory Engine)", layout="wide", page_icon="⚡")
 
@@ -171,6 +200,7 @@ def get_live_price(clean_pair):
     yf_sym = clean_pair_to_yf_symbol(clean_pair)
     price = None
     try:
+        _yfinance_limiter.wait_if_needed()
         ticker = yf.Ticker(yf_sym)
         hist = ticker.history(period="1d", interval="1m")
         if not hist.empty:
@@ -239,6 +269,7 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
 
             # Download only recent data (last 5 days worth regardless of TF to catch updates)
             incremental_period = "5d" if interval in ["1m","5m"] else "1mo" if interval in ["15m","1h"] else "3mo"
+            _yfinance_limiter.wait_if_needed()
             new_df = yf.download(symbol, period=incremental_period, interval=interval, progress=False)
 
             if new_df is not None and not new_df.empty:
@@ -279,6 +310,7 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
 
     # --- 3. Full download (no cache or cache failed) ---
     try:
+        _yfinance_limiter.wait_if_needed()
         if period:
             df = yf.download(symbol, period=period, interval=interval, progress=False)
         else:
@@ -374,6 +406,7 @@ def save_history_to_sheets(symbol, interval, df):
                 continue
 
         if rows_to_append:
+            _gsheets_limiter.wait_if_needed()
             sheet.append_rows(rows_to_append, value_input_option='RAW')
         return True
 
@@ -393,6 +426,7 @@ def load_history_from_sheets(symbol, interval):
         if sheet is None:
             return None
 
+        _gsheets_limiter.wait_if_needed()
         all_rows = sheet.get_all_values()
         if len(all_rows) < 3:  # header + at least 2 data rows
             return None
@@ -568,6 +602,7 @@ def save_trade_to_ongoing(trade, username, timeframe, forecast):
                 forecast,
                 timeframe
             ]
+            _gsheets_limiter.wait_if_needed()
             sheet.append_row(row)
             return True
         except Exception as e:
@@ -579,6 +614,7 @@ def load_user_trades(username, status=None):
     sheet, _ = get_ongoing_sheet()
     if sheet:
         try:
+            _gsheets_limiter.wait_if_needed()
             all_records = sheet.get_all_records()
             user_trades = []
             for idx, record in enumerate(all_records):
@@ -601,8 +637,10 @@ def update_trade_status_by_row(row_index, new_status, closed_date=""):
             headers = sheet.row_values(1)
             status_col = headers.index("Status") + 1
             closed_col = headers.index("ClosedDate") + 1
+            _gsheets_limiter.wait_if_needed()
             sheet.update_cell(row_index + 2, status_col, new_status)
             if closed_date:
+                _gsheets_limiter.wait_if_needed()
                 sheet.update_cell(row_index + 2, closed_col, closed_date)
             return True
         except Exception as e:
@@ -641,6 +679,7 @@ def check_and_update_trades(username):
     if not sheet:
         return []
     try:
+        _gsheets_limiter.wait_if_needed()
         all_records = sheet.get_all_records()
         for idx, record in enumerate(all_records):
             if record.get('User') == username and record.get('Status') == 'Active':
@@ -693,6 +732,7 @@ def check_login(username, password):
     sheet, _ = get_user_sheet()
     if sheet:
         try:
+            _gsheets_limiter.wait_if_needed()
             records = sheet.get_all_records()
             user = next((i for i in records if str(i.get("Username")) == username), None)
             if user and str(user.get("Password")) == password:
@@ -700,15 +740,19 @@ def check_login(username, password):
                 last_login_date = str(user.get("LastLogin", ""))
                 if last_login_date != current_date:
                     try:
+                        _gsheets_limiter.wait_if_needed()
                         cell = sheet.find(username)
                         headers = sheet.row_values(1)
                         if "UsageCount" in headers:
+                            _gsheets_limiter.wait_if_needed()
                             sheet.update_cell(cell.row, headers.index("UsageCount") + 1, 0)
                             user["UsageCount"] = 0
                         if "HybridLimit" in headers:
+                            _gsheets_limiter.wait_if_needed()
                             sheet.update_cell(cell.row, headers.index("HybridLimit") + 1, 100)
                             user["HybridLimit"] = 100
                         if "LastLogin" in headers:
+                            _gsheets_limiter.wait_if_needed()
                             sheet.update_cell(cell.row, headers.index("LastLogin") + 1, current_date)
                             user["LastLogin"] = current_date
                     except Exception as e:
@@ -723,11 +767,13 @@ def update_usage_in_db(username, new_usage):
     sheet, _ = get_user_sheet()
     if sheet:
         try:
+            _gsheets_limiter.wait_if_needed()
             cell = sheet.find(username)
             if cell:
                 headers = sheet.row_values(1)
                 if "UsageCount" in headers:
                     col_idx = headers.index("UsageCount") + 1
+                    _gsheets_limiter.wait_if_needed()
                     sheet.update_cell(cell.row, col_idx, new_usage)
         except Exception as e: print(f"DB Update Error: {e}")
 
@@ -3009,8 +3055,33 @@ else:
                             with col2:
                                 st.progress(progress, text="Approach")
                             with col3:
+                                # --- Capture Trade Button ---
+                                trade_id = f"{sig['pair']}_{sig.get('timeframe', tf)}_{sig['dir']}_{sig['entry']:.5f}"
+                                already_captured = trade_id in st.session_state.tracked_trades
+                                if already_captured:
+                                    st.markdown("<div style='color:#00ff99;font-size:12px;text-align:center;padding:6px;'>✅ Captured</div>", unsafe_allow_html=True)
+                                else:
+                                    if st.button("💾 Capture", key=f"capture_cap_{tf}_{idx}", use_container_width=True, type="primary"):
+                                        capture_dict = {
+                                            "pair": sig['pair'],
+                                            "dir":  sig['dir'],
+                                            "entry": sig['entry'],
+                                            "sl":    sig['sl'],
+                                            "tp":    sig.get('tp1', sig['entry']),
+                                            "tp1":   sig.get('tp1', sig['entry']),
+                                            "tp2":   sig.get('tp2', sig['entry']),
+                                            "tp3":   sig.get('tp3', sig['entry']),
+                                            "conf":  sig.get('conf', 0),
+                                        }
+                                        forecast_text = sig.get('forecast', sig.get('sinhala_summary', 'Captured from scanner'))
+                                        if save_trade_to_ongoing(capture_dict, user_info['Username'], sig.get('timeframe', tf), forecast_text):
+                                            st.session_state.tracked_trades.add(trade_id)
+                                            st.success(f"✅ {sig['pair']} captured!")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Capture failed. Check Google Sheets connection.")
                                 if not st.session_state.beginner_mode:
-                                    if st.button("🔍 Deep", key=f"deep_cap_{tf}_{idx}"):
+                                    if st.button("🔍 Deep", key=f"deep_cap_{tf}_{idx}", use_container_width=True):
                                         st.session_state.selected_trade = sig
                                         st.session_state.deep_analysis_result = None
                                         st.session_state.deep_analysis_provider = None
@@ -3589,6 +3660,7 @@ else:
             st.metric("Total System API Requests", st.session_state.total_api_requests)
             sheet, _ = get_user_sheet()
             if sheet:
+                _gsheets_limiter.wait_if_needed()
                 all_records = sheet.get_all_records()
                 df_users = pd.DataFrame(all_records)
                 st.dataframe(df_users, use_container_width=True)
