@@ -2072,51 +2072,163 @@ else:
 
     elif app_mode == "Ongoing Trades":
         st.title("📋 Ongoing Trades")
-        col1, col2 = st.columns(2)
-        with col1: start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
-        with col2: end_date = st.date_input("End Date", value=datetime.now())
+
+        # ── Filters row ────────────────────────────────────────────────────
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1: start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=7))
+        with col_f2: end_date = st.date_input("End Date", value=datetime.now())
+        with col_f3:
+            ongoing_min_acc = st.slider(
+                "Minimum Accuracy (%)",
+                min_value=0, max_value=100,
+                value=st.session_state.get("ongoing_min_acc", 40),
+                step=5,
+                key="ongoing_min_acc_slider",
+                help="Trades with Confidence >= this value will be shown as capturable. Others will be shown with reasons why they cannot be captured."
+            )
+            st.session_state["ongoing_min_acc"] = ongoing_min_acc
+
         if active_trades:
             all_timeframes = sorted(set([t.get('Timeframe', 'Unknown') for t in active_trades]))
             timeframe_options = ["All"] + all_timeframes
             selected_tf_filter = st.selectbox("Filter by Timeframe", options=timeframe_options, index=0)
         else: selected_tf_filter = "All"
+
         tab1, tab2 = st.tabs(["🟢 Active Trades", "📜 History"])
         with tab1:
             if active_trades:
                 filtered_trades = active_trades if selected_tf_filter == "All" else [t for t in active_trades if t.get('Timeframe', 'Unknown') == selected_tf_filter]
-                for trade in filtered_trades:
-                    color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
-                    pair = trade['Pair']; live = get_live_price(pair)
-                    live_display = f"{live:.4f}" if live else "N/A"
-                    progress = 0.5; direction_text = ""
-                    if live is not None:
-                        try:
-                            entry = float(trade['Entry']); tp3 = float(trade['TP'])
-                            if trade['Direction'] == "BUY":
-                                if tp3 > entry: progress = (live - entry) / (tp3 - entry)
-                                direction_text = "⚠️ Moving towards **STOP LOSS**" if live < entry else ("✅ Moving towards **TAKE PROFIT**" if live > entry else "⚖️ At entry level")
-                            else:
-                                if entry > tp3: progress = (entry - live) / (entry - tp3)
-                                direction_text = "⚠️ Moving towards **STOP LOSS**" if live > entry else ("✅ Moving towards **TAKE PROFIT**" if live < entry else "⚖️ At entry level")
-                            progress = max(0, min(1, progress))
-                        except: progress = 0.5; direction_text = "❌ Error calculating"
-                    else: direction_text = "❌ Live price unavailable"
-                    forecast = trade.get('Forecast', 'No forecast available')
-                    col1, col2 = st.columns([5,1])
-                    with col1:
-                        st.markdown(f"""<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b> | <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span><br>
-                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                            Live: {live_display} | Confidence: {trade['Confidence']}%<br>
-                            <small>Tracked since: {trade['Timestamp']}</small>
+
+                # ── Split trades by minimum accuracy threshold ──────────────
+                capturable = []
+                not_capturable = []
+                for t in filtered_trades:
+                    try:
+                        conf_val = float(str(t.get('Confidence', 0)).replace('%','').strip())
+                    except:
+                        conf_val = 0
+                    if conf_val >= ongoing_min_acc:
+                        capturable.append((t, conf_val))
+                    else:
+                        not_capturable.append((t, conf_val))
+
+                # ── Summary banner ──────────────────────────────────────────
+                total_ongoing = len(filtered_trades)
+                cap_count = len(capturable)
+                nocap_count = len(not_capturable)
+                st.markdown(f"""<div style='background:linear-gradient(135deg,#0a1f2e,#1e3c3f);border:1px solid #00ff99;border-radius:12px;padding:12px 20px;margin-bottom:16px;display:flex;gap:30px;align-items:center;'>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>TOTAL ACTIVE</div><div style='color:#fff;font-size:20px;font-weight:bold;'>{total_ongoing}</div></div>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>✅ CAPTURABLE (≥{ongoing_min_acc}%)</div><div style='color:#00ff00;font-size:20px;font-weight:bold;'>{cap_count}</div></div>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>❌ BELOW THRESHOLD</div><div style='color:#ff4b4b;font-size:20px;font-weight:bold;'>{nocap_count}</div></div>
+                    <div style='text-align:center;'><div style='color:#aaa;font-size:12px;'>MIN ACCURACY</div><div style='color:#ffaa00;font-size:20px;font-weight:bold;'>{ongoing_min_acc}%</div></div>
+                </div>""", unsafe_allow_html=True)
+
+                # ──────────────────────────────────────────────────────────────
+                # SECTION 1 — CAPTURABLE TRADES
+                # ──────────────────────────────────────────────────────────────
+                if capturable:
+                    st.markdown(f"""<div style='background:linear-gradient(135deg,#0a2010,#0d3020);border:1px solid #00ff99;border-left:5px solid #00ff00;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
+                        <b style='color:#00ff00;font-size:15px;'>✅ CAPTURABLE TRADES — Accuracy ≥ {ongoing_min_acc}%</b>
+                        <span style='color:#aaa;font-size:12px;'> — These trades meet your minimum accuracy threshold and can be taken.</span>
+                    </div>""", unsafe_allow_html=True)
+
+                    for trade, conf_val in sorted(capturable, key=lambda x: x[1], reverse=True):
+                        color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                        pair = trade['Pair']; live = get_live_price(pair)
+                        live_display = f"{live:.4f}" if live else "N/A"
+                        progress = 0.5; direction_text = ""
+                        if live is not None:
+                            try:
+                                entry = float(trade['Entry']); tp3 = float(trade['TP'])
+                                if trade['Direction'] == "BUY":
+                                    if tp3 > entry: progress = (live - entry) / (tp3 - entry)
+                                    direction_text = "⚠️ Moving towards **STOP LOSS**" if live < entry else ("✅ Moving towards **TAKE PROFIT**" if live > entry else "⚖️ At entry level")
+                                else:
+                                    if entry > tp3: progress = (entry - live) / (entry - tp3)
+                                    direction_text = "⚠️ Moving towards **STOP LOSS**" if live > entry else ("✅ Moving towards **TAKE PROFIT**" if live < entry else "⚖️ At entry level")
+                                progress = max(0, min(1, progress))
+                            except: progress = 0.5; direction_text = "❌ Error calculating"
+                        else: direction_text = "❌ Live price unavailable"
+                        forecast = trade.get('Forecast', 'No forecast available')
+                        col1, col2 = st.columns([5,1])
+                        with col1:
+                            st.markdown(f"""<div style='background:#0d2a1a; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
+                                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>
+                                    <b style='color:{color};font-size:15px;'>{trade['Pair']} | {trade['Direction']}</b>
+                                    <span style='background:#00ff0022;color:#00ff00;border:1px solid #00ff00;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>✅ CAPTURABLE — {conf_val:.0f}% Confidence</span>
+                                </div>
+                                <span style='color:#00ff99;font-size:12px;'>{trade.get('Timeframe', 'N/A')}</span><br>
+                                Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
+                                Live: {live_display}<br>
+                                <small style='color:#aaa;'>Tracked since: {trade['Timestamp']}</small>
+                            </div>""", unsafe_allow_html=True)
+                            st.progress(progress, text="Progress to Target")
+                            st.caption(direction_text)
+                            st.caption(f"📊 Engine Forecast: {forecast}")
+                        with col2:
+                            if not st.session_state.beginner_mode:
+                                if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
+                                    if delete_trade_by_row_number(trade['row_num']): st.success("Trade deleted."); st.rerun()
+                else:
+                    st.info(f"No active trades meet the minimum accuracy threshold of {ongoing_min_acc}%.")
+
+                # ──────────────────────────────────────────────────────────────
+                # SECTION 2 — NOT CAPTURABLE TRADES (with reasons)
+                # ──────────────────────────────────────────────────────────────
+                if not_capturable:
+                    st.markdown("---")
+                    with st.expander(f"❌ Cannot Be Captured — Below {ongoing_min_acc}% Threshold ({nocap_count} trades)", expanded=False):
+                        st.markdown(f"""<div style='background:#1a0a0a;border:1px solid #ff4b4b44;border-left:5px solid #ff4b4b;border-radius:10px;padding:10px 16px;margin-bottom:12px;'>
+                            <b style='color:#ff4b4b;font-size:14px;'>⚠️ These trades do NOT meet your minimum accuracy of {ongoing_min_acc}%</b>
+                            <span style='color:#aaa;font-size:12px;'> — Reasons are shown below for each trade.</span>
                         </div>""", unsafe_allow_html=True)
-                        st.progress(progress, text="Progress to Target")
-                        st.caption(direction_text)
-                        st.caption(f"📊 Engine Forecast: {forecast}")
-                    with col2:
-                        if not st.session_state.beginner_mode:
-                            if st.button("🗑️ Delete", key=f"del_active_{trade['row_num']}"):
-                                if delete_trade_by_row_number(trade['row_num']): st.success("Trade deleted."); st.rerun()
+
+                        for trade, conf_val in sorted(not_capturable, key=lambda x: x[1], reverse=True):
+                            dir_color = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+                            # Build reasons list
+                            reasons = []
+                            gap = ongoing_min_acc - conf_val
+                            reasons.append(f"Confidence is {conf_val:.0f}% — needs {ongoing_min_acc:.0f}% (gap: {gap:.0f}%)")
+                            if conf_val < 30:
+                                reasons.append("Very low confidence — signal is weak or conflicting indicators")
+                            elif conf_val < 40:
+                                reasons.append("Low confidence — insufficient indicator confluence")
+                            elif conf_val < ongoing_min_acc:
+                                reasons.append(f"Moderate confidence but below your set threshold of {ongoing_min_acc}%")
+                            # Check for additional issues
+                            live = get_live_price(trade['Pair'])
+                            if live is None:
+                                reasons.append("Live price unavailable — cannot verify current market position")
+                            else:
+                                try:
+                                    entry_f = float(trade['Entry']); sl_f = float(trade['SL']); tp_f = float(trade['TP'])
+                                    if trade['Direction'] == "BUY" and live < sl_f:
+                                        reasons.append(f"Price ({live:.5f}) has already crossed below SL ({sl_f:.5f})")
+                                    elif trade['Direction'] == "SELL" and live > sl_f:
+                                        reasons.append(f"Price ({live:.5f}) has already crossed above SL ({sl_f:.5f})")
+                                    if trade['Direction'] == "BUY" and live > tp_f:
+                                        reasons.append(f"Price ({live:.5f}) has already passed TP ({tp_f:.5f})")
+                                    elif trade['Direction'] == "SELL" and live < tp_f:
+                                        reasons.append(f"Price ({live:.5f}) has already passed TP ({tp_f:.5f})")
+                                except: pass
+
+                            reason_html = "".join([f"<li style='color:#ff9966;margin-bottom:3px;'>⚠️ {r}</li>" for r in reasons])
+                            live_display = f"{live:.4f}" if live else "N/A"
+                            st.markdown(f"""<div style='background:#1a0505;border:1px solid #ff4b4b33;border-left:4px solid #ff4b4b;border-radius:8px;padding:12px 16px;margin-bottom:10px;opacity:0.9;'>
+                                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>
+                                    <b style='color:{dir_color};font-size:14px;'>{trade['Pair']} | {trade['Direction']}</b>
+                                    <span style='background:#ff4b4b22;color:#ff4b4b;border:1px solid #ff4b4b;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>❌ CANNOT CAPTURE — {conf_val:.0f}%</span>
+                                </div>
+                                <div style='color:#888;font-size:12px;margin-bottom:6px;'>
+                                    <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span> &nbsp;|&nbsp;
+                                    Entry: {trade['Entry']} &nbsp;|&nbsp; SL: {trade['SL']} &nbsp;|&nbsp; TP: {trade['TP']} &nbsp;|&nbsp; Live: {live_display}
+                                </div>
+                                <div style='background:#0d0000;border-radius:6px;padding:8px 10px;margin-top:4px;'>
+                                    <b style='color:#ff4b4b;font-size:12px;'>❌ Reasons this trade cannot be captured:</b>
+                                    <ul style='margin:6px 0 0 0;padding-left:16px;'>{reason_html}</ul>
+                                </div>
+                                <small style='color:#555;'>Tracked since: {trade['Timestamp']}</small>
+                            </div>""", unsafe_allow_html=True)
             else: st.info("No active ongoing trades.")
         with tab2:
             st.subheader("Closed Trades History")
