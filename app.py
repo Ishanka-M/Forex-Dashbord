@@ -1703,14 +1703,27 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                 # Dynamic: if confluence >= min_accuracy, allow it even if hardcoded 65% gate failed
                 confluence_gate_passed = score_bd.get('Confluence_Gate', '') == 'PASSED' or confluence_pct >= min_accuracy
                 if not confluence_gate_passed:
+                    # Calculate basic SL/TP so we can show levels and allow manual save
+                    try:
+                        sigs_r, atr_r, _, _, theory_r = calculate_advanced_signals(df, tf, news_items=None)
+                        tf_type_r = 'scalp' if tf in ['1m','5m','15m'] else 'swing'
+                        sl_r, tp1_r, tp2_r, tp3_r = calculate_advanced_sl_tp(df, direction, curr_price, atr_r, tf_type_r, sigs_r or {}, theory_r or {})
+                    except:
+                        atr_r = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
+                        sl_r  = curr_price - atr_r * 1.5 if direction == "BUY" else curr_price + atr_r * 1.5
+                        tp1_r = curr_price + atr_r * 2.0 if direction == "BUY" else curr_price - atr_r * 2.0
+                        tp2_r = curr_price + atr_r * 3.0 if direction == "BUY" else curr_price - atr_r * 3.0
+                        tp3_r = curr_price + atr_r * 4.5 if direction == "BUY" else curr_price - atr_r * 4.5
                     rejected_trades.append({
                         "pair": clean_sym, "tf": tf, "dir": direction,
                         "price": curr_price,
+                        "entry": curr_price, "sl": sl_r, "tp1": tp1_r, "tp2": tp2_r, "tp3": tp3_r,
                         "reject_reason": f"Confluence {confluence_pct:.1f}% < {min_accuracy}% (your minimum accuracy)",
                         "failed_gate": "Gate 1",
                         "engine_conf": abs(conf),
                         "confluence_pct": confluence_pct,
                         "quality_sc": quality_sc,
+                        "conf": round(abs(conf)),
                     })
                     continue
 
@@ -1723,19 +1736,31 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                 )
 
                 if ai_trade is None:
-                    # Determine which gate failed from the reason string
                     gate = "Unknown Gate"
                     if reject_reason and "Gate" in reject_reason:
                         gate_match = re.search(r"(Gate \d+)", reject_reason)
                         if gate_match: gate = gate_match.group(1)
+                    # Calculate levels so user can manually save if desired
+                    try:
+                        sigs_r2, atr_r2, _, _, theory_r2 = calculate_advanced_signals(df, tf, news_items=None)
+                        tf_type_r2 = 'scalp' if tf in ['1m','5m','15m'] else 'swing'
+                        sl_r2, tp1_r2, tp2_r2, tp3_r2 = calculate_advanced_sl_tp(df, direction, curr_price, atr_r2, tf_type_r2, sigs_r2 or {}, theory_r2 or {})
+                    except:
+                        atr_r2 = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
+                        sl_r2  = curr_price - atr_r2 * 1.5 if direction == "BUY" else curr_price + atr_r2 * 1.5
+                        tp1_r2 = curr_price + atr_r2 * 2.0 if direction == "BUY" else curr_price - atr_r2 * 2.0
+                        tp2_r2 = curr_price + atr_r2 * 3.0 if direction == "BUY" else curr_price - atr_r2 * 3.0
+                        tp3_r2 = curr_price + atr_r2 * 4.5 if direction == "BUY" else curr_price - atr_r2 * 4.5
                     rejected_trades.append({
                         "pair": clean_sym, "tf": tf, "dir": direction,
                         "price": curr_price,
+                        "entry": curr_price, "sl": sl_r2, "tp1": tp1_r2, "tp2": tp2_r2, "tp3": tp3_r2,
                         "reject_reason": reject_reason or "Unknown reason",
                         "failed_gate": gate,
                         "engine_conf": abs(conf),
                         "confluence_pct": confluence_pct,
                         "quality_sc": quality_sc,
+                        "conf": round(abs(conf)),
                     })
                     continue
 
@@ -1744,12 +1769,26 @@ def scan_market_with_ai(assets_list, user_info, timeframes, min_accuracy=40):
                     rejected_trades.append({
                         "pair": clean_sym, "tf": tf, "dir": direction,
                         "price": curr_price,
+                        # Full trade data available since ai_trade was computed
+                        "entry": ai_trade.get('entry', curr_price),
+                        "sl": ai_trade.get('sl', curr_price),
+                        "tp1": ai_trade.get('tp1', curr_price),
+                        "tp2": ai_trade.get('tp2', curr_price),
+                        "tp3": ai_trade.get('tp3', curr_price),
                         "reject_reason": f"Combined confidence {ai_trade['conf']}% < minimum {min_accuracy}%",
                         "failed_gate": "Post-filter",
                         "engine_conf": abs(conf),
                         "confluence_pct": confluence_pct,
                         "quality_sc": quality_sc,
                         "combined_conf": ai_trade['conf'],
+                        "conf": ai_trade['conf'],
+                        "rr_ratio": ai_trade.get('rr_ratio', 'N/A'),
+                        "mtf_score": ai_trade.get('mtf_score', 'N/A'),
+                        "mtf_agrees": ai_trade.get('mtf_agrees', True),
+                        "regime": ai_trade.get('regime', ''),
+                        "sinhala_summary": ai_trade.get('sinhala_summary', ''),
+                        "forecast": ai_trade.get('forecast', ''),
+                        "timeframe": tf,
                     })
                     continue
 
@@ -2321,20 +2360,44 @@ else:
                             mtf_icon = "✅ MTF OK" if sig.get('mtf_agrees', True) else "⚠️ MTF Conflict"
                             regime_icon = {"trending":"📈 Trending","ranging":"↔️ Ranging","transitioning":"🔄 Transitioning"}.get(sig.get('regime',''),'')
 
-                            st.markdown(f"""<div style='background:#1a1200;border:1px solid #ffaa0033;border-left:4px solid #ffaa00;border-radius:8px;padding:12px 16px;margin-bottom:10px;'>
-                                <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>
-                                    <b style='color:{dir_color};font-size:14px;'>{sig['pair']} | {sig['dir']}</b>
-                                    <span style='background:#ffaa0022;color:#ffaa00;border:1px solid #ffaa00;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>⚠️ CANNOT CAPTURE — {conf_val}%</span>
-                                </div>
-                                <div style='color:#888;font-size:12px;margin-bottom:8px;'>
-                                    Entry: {sig['entry']:.5f} | SL: {sig['sl']:.5f} | TP1: {sig.get('tp1',0):.5f} | Live: {sig['live_price']:.5f}<br>
-                                    Engine: {engine}% | AI: {ai_c}% | MTF: {mtf_s}% | {mtf_icon} | {regime_icon} | R:R 1:{sig.get('rr_ratio','N/A')}
-                                </div>
-                                <div style='background:#0d0900;border-radius:6px;padding:8px 12px;'>
-                                    <b style='color:#ffaa00;font-size:12px;'>❌ Reasons this trade CANNOT be captured:</b>
-                                    <ul style='margin:6px 0 0 0;padding-left:16px;'>{reason_html}</ul>
-                                </div>
-                            </div>""", unsafe_allow_html=True)
+                            unc_col1, unc_col2 = st.columns([5, 1])
+                            with unc_col1:
+                                st.markdown(f"""<div style='background:#1a1200;border:1px solid #ffaa0033;border-left:4px solid #ffaa00;border-radius:8px;padding:12px 16px;margin-bottom:4px;'>
+                                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>
+                                        <b style='color:{dir_color};font-size:14px;'>{sig['pair']} | {sig['dir']}</b>
+                                        <span style='background:#ffaa0022;color:#ffaa00;border:1px solid #ffaa00;border-radius:8px;padding:2px 10px;font-size:12px;font-weight:bold;'>⚠️ CANNOT CAPTURE — {conf_val}%</span>
+                                    </div>
+                                    <div style='color:#aaa;font-size:12px;margin-bottom:6px;'>
+                                        <span style='color:#00ff99;'>Entry:</span> <b>{sig['entry']:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#ff6666;'>SL:</span> <b>{sig['sl']:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP1:</span> <b>{sig.get('tp1',0):.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP2:</span> <b>{sig.get('tp2',0):.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP3:</span> <b>{sig.get('tp3',0):.5f}</b>
+                                    </div>
+                                    <div style='color:#888;font-size:12px;margin-bottom:6px;'>
+                                        Live: {sig['live_price']:.5f} | Engine: {engine}% | AI: {ai_c}% | MTF: {mtf_s}% | {mtf_icon} | {regime_icon} | R:R 1:{sig.get('rr_ratio','N/A')}
+                                    </div>
+                                    <div style='background:#0d0900;border-radius:6px;padding:8px 12px;'>
+                                        <b style='color:#ffaa00;font-size:12px;'>❌ Reasons this trade CANNOT be captured:</b>
+                                        <ul style='margin:6px 0 0 0;padding-left:16px;'>{reason_html}</ul>
+                                    </div>
+                                </div>""", unsafe_allow_html=True)
+                            with unc_col2:
+                                unc_trade_id = f"unc_{sig['pair']}_{sig.get('timeframe','')}"
+                                if st.button("💾 Save", key=f"save_unc_{unc_trade_id}_{conf_val}", help="Manually save to Ongoing Trades", use_container_width=True):
+                                    save_dict = {
+                                        "pair": sig['pair'], "dir": sig['dir'],
+                                        "entry": sig['entry'], "sl": sig['sl'],
+                                        "tp": sig.get('tp1', sig.get('tp', sig['entry'])),
+                                        "tp1": sig.get('tp1', sig['entry']),
+                                        "tp2": sig.get('tp2', sig['entry']),
+                                        "tp3": sig.get('tp3', sig['entry']),
+                                        "conf": sig.get('conf', conf_val),
+                                    }
+                                    if save_trade_to_ongoing(save_dict, user_info['Username'], sig.get('timeframe', tf), sig.get('forecast', f'⚠️ Below threshold ({conf_val}%)')):
+                                        st.success(f"✅ {sig['pair']} saved to Ongoing!")
+                                    else:
+                                        st.error("Save failed.")
         else:
             if st.session_state.scan_results == [] and not st.session_state.rejected_trades:
                 st.info("No scan results. Run a scan to see setups.")
@@ -2380,19 +2443,49 @@ else:
                             bar_color = "#ffcc00" if engine_conf >= 60 else "#ff9900"
                             score_bar = int(engine_conf / 100 * 20)
                             score_visual = "█" * score_bar + "░" * (20 - score_bar)
-                            st.markdown(f"""<div style='background:#1a1500;border:1px solid #ffaa0055;border-left:4px solid #ffaa00;border-radius:8px;padding:10px 14px;margin-bottom:8px;'>
-                                <div style='display:flex;justify-content:space-between;align-items:center;'>
-                                    <b style='color:{dir_color};font-size:14px;'>{rt['pair']}</b>
-                                    <span style='color:#ffaa00;font-size:13px;font-weight:bold;'>Engine: {engine_conf:.0f}%</span>
-                                </div>
-                                <div style='color:{bar_color};font-size:11px;letter-spacing:0;'>{score_visual}</div>
-                                <div style='margin-top:4px;'>
-                                    <span style='color:#aaa;font-size:12px;'>{rt['dir']}</span>
-                                    <span style='background:#33200a;color:#ffaa00;border:1px solid #ffaa0066;border-radius:4px;padding:1px 6px;font-size:11px;margin-left:6px;'>{gate_label} FAILED</span>
-                                </div>
-                                <div style='color:#ff9966;font-size:12px;margin-top:3px;'>⚠️ {reason}</div>
-                                <div style='color:#666;font-size:11px;margin-top:3px;'>Price: {rt['price']:.5f} | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</div>
-                            </div>""", unsafe_allow_html=True)
+                            nm_col1, nm_col2 = st.columns([5, 1])
+                            with nm_col1:
+                                nm_entry = rt.get('entry', rt['price'])
+                                nm_sl    = rt.get('sl', rt['price'])
+                                nm_tp1   = rt.get('tp1', rt['price'])
+                                nm_tp2   = rt.get('tp2', rt['price'])
+                                nm_tp3   = rt.get('tp3', rt['price'])
+                                st.markdown(f"""<div style='background:#1a1500;border:1px solid #ffaa0055;border-left:4px solid #ffaa00;border-radius:8px;padding:10px 14px;margin-bottom:4px;'>
+                                    <div style='display:flex;justify-content:space-between;align-items:center;'>
+                                        <b style='color:{dir_color};font-size:14px;'>{rt['pair']} | {rt['dir']}</b>
+                                        <span style='color:#ffaa00;font-size:13px;font-weight:bold;'>Engine: {engine_conf:.0f}%</span>
+                                    </div>
+                                    <div style='color:{bar_color};font-size:11px;letter-spacing:0;margin:3px 0;'>{score_visual}</div>
+                                    <div style='color:#aaa;font-size:12px;margin:4px 0;'>
+                                        <span style='color:#00ff99;'>Entry:</span> <b>{nm_entry:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#ff6666;'>SL:</span> <b>{nm_sl:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP1:</span> <b>{nm_tp1:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP2:</span> <b>{nm_tp2:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP3:</span> <b>{nm_tp3:.5f}</b>
+                                    </div>
+                                    <div style='margin-top:2px;'>
+                                        <span style='background:#33200a;color:#ffaa00;border:1px solid #ffaa0066;border-radius:4px;padding:1px 6px;font-size:11px;'>{gate_label} FAILED</span>
+                                    </div>
+                                    <div style='color:#ff9966;font-size:12px;margin-top:3px;'>⚠️ {reason}</div>
+                                    <div style='color:#666;font-size:11px;margin-top:3px;'>Price: {rt['price']:.5f} | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</div>
+                                </div>""", unsafe_allow_html=True)
+                            with nm_col2:
+                                nm_id = f"nm_{rt['pair']}_{rt.get('tf','')}"
+                                if st.button("💾 Save", key=f"save_nm_{nm_id}_{engine_conf:.0f}", help="Manually save to Ongoing Trades", use_container_width=True):
+                                    save_dict = {
+                                        "pair": rt['pair'], "dir": rt['dir'],
+                                        "entry": rt.get('entry', rt['price']),
+                                        "sl":    rt.get('sl', rt['price']),
+                                        "tp":    rt.get('tp1', rt['price']),
+                                        "tp1":   rt.get('tp1', rt['price']),
+                                        "tp2":   rt.get('tp2', rt['price']),
+                                        "tp3":   rt.get('tp3', rt['price']),
+                                        "conf":  rt.get('conf', round(engine_conf)),
+                                    }
+                                    if save_trade_to_ongoing(save_dict, user_info['Username'], rt.get('tf', 'N/A'), f'⚡ Near-Miss — {gate_label} failed: {reason}'):
+                                        st.success(f"✅ {rt['pair']} saved to Ongoing!")
+                                    else:
+                                        st.error("Save failed.")
 
             # ── FULLY REJECTED SECTION (<40% score) ───────────────────────
             if fully_rejected:
@@ -2420,12 +2513,46 @@ else:
                             conf_pct = rt.get('confluence_pct','N/A')
                             quality = rt.get('quality_sc','N/A')
                             combined_conf = rt.get('combined_conf','N/A')
-                            st.markdown(f"""<div class='rejected-card'>
-                                <b style='color:{dir_color};'>{rt['pair']}</b> | {rt['dir']} <span class='rejected-badge'>❌ REJECTED</span>
-                                <span class='gate-fail-badge'>{gate_label}</span><br>
-                                <span style='color:#ff8888;'>⚠️ {reason}</span><br>
-                                <small style='color:#888;'>Price: {rt['price']:.5f} | Engine: {engine_conf}% | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</small>
-                            </div>""", unsafe_allow_html=True)
+                            rej_col1, rej_col2 = st.columns([5, 1])
+                            with rej_col1:
+                                rej_entry = rt.get('entry', rt['price'])
+                                rej_sl    = rt.get('sl', rt['price'])
+                                rej_tp1   = rt.get('tp1', rt['price'])
+                                rej_tp2   = rt.get('tp2', rt['price'])
+                                rej_tp3   = rt.get('tp3', rt['price'])
+                                st.markdown(f"""<div class='rejected-card'>
+                                    <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>
+                                        <b style='color:{dir_color};'>{rt['pair']} | {rt['dir']}</b>
+                                        <span class='rejected-badge'>❌ REJECTED</span>
+                                    </div>
+                                    <div style='color:#aaa;font-size:12px;margin:4px 0;'>
+                                        <span style='color:#00ff99;'>Entry:</span> <b>{rej_entry:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#ff6666;'>SL:</span> <b>{rej_sl:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP1:</span> <b>{rej_tp1:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP2:</span> <b>{rej_tp2:.5f}</b> &nbsp;|&nbsp;
+                                        <span style='color:#66ff66;'>TP3:</span> <b>{rej_tp3:.5f}</b>
+                                    </div>
+                                    <span class='gate-fail-badge'>{gate_label}</span>
+                                    <span style='color:#ff8888;'> ⚠️ {reason}</span><br>
+                                    <small style='color:#888;'>Price: {rt['price']:.5f} | Engine: {engine_conf}% | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</small>
+                                </div>""", unsafe_allow_html=True)
+                            with rej_col2:
+                                rej_id = f"rej_{rt['pair']}_{rt.get('tf','')}"
+                                if st.button("💾 Save", key=f"save_rej_{rej_id}_{gate_label}", help="Manually save to Ongoing Trades despite rejection", use_container_width=True):
+                                    save_dict = {
+                                        "pair": rt['pair'], "dir": rt['dir'],
+                                        "entry": rt.get('entry', rt['price']),
+                                        "sl":    rt.get('sl', rt['price']),
+                                        "tp":    rt.get('tp1', rt['price']),
+                                        "tp1":   rt.get('tp1', rt['price']),
+                                        "tp2":   rt.get('tp2', rt['price']),
+                                        "tp3":   rt.get('tp3', rt['price']),
+                                        "conf":  rt.get('conf', round(float(engine_conf)) if engine_conf != 'N/A' else 0),
+                                    }
+                                    if save_trade_to_ongoing(save_dict, user_info['Username'], rt.get('tf', 'N/A'), f'❌ Rejected — {gate_label}: {reason}'):
+                                        st.success(f"✅ {rt['pair']} saved to Ongoing!")
+                                    else:
+                                        st.error("Save failed.")
 
         # ==================== DEEP ANALYSIS ====================
         if not st.session_state.beginner_mode and st.session_state.selected_trade:
