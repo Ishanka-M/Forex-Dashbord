@@ -1933,38 +1933,87 @@ else:
         rejected = st.session_state.rejected_trades
         if rejected and show_rejected:
             st.markdown("---")
-            # Group rejected by timeframe
-            rejected_by_tf = {}
-            for rt in rejected:
-                tf = rt.get('tf', 'Unknown')
-                if tf not in rejected_by_tf: rejected_by_tf[tf] = []
-                rejected_by_tf[tf].append(rt)
 
-            for tf, r_trades in rejected_by_tf.items():
-                with st.expander(f"❌ {tf} Timeframe - REJECTED ({len(r_trades)} trades) — click to inspect", expanded=False):
-                    # Summary counts by gate
-                    gate_counts = {}
-                    for rt in r_trades:
-                        gate = rt.get('failed_gate', 'Unknown')
-                        gate_counts[gate] = gate_counts.get(gate, 0) + 1
-                    gate_summary = " | ".join([f"<span class='gate-fail-badge'>{g}: {c}</span>" for g, c in gate_counts.items()])
-                    st.markdown(f"**Failure breakdown:** {gate_summary}", unsafe_allow_html=True)
-                    st.markdown("")
+            # Split: near-miss (engine_conf >= 40%) vs fully rejected
+            near_miss = [rt for rt in rejected if rt.get('engine_conf', 0) >= 40]
+            fully_rejected = [rt for rt in rejected if rt.get('engine_conf', 0) < 40]
 
-                    for rt in r_trades:
-                        dir_color = "#00ff00" if rt['dir'] == "BUY" else "#ff4b4b"
-                        gate_label = rt.get('failed_gate', 'Unknown')
-                        reason = rt.get('reject_reason', 'Unknown reason')
-                        engine_conf = rt.get('engine_conf', 'N/A')
-                        conf_pct = rt.get('confluence_pct', 'N/A')
-                        quality = rt.get('quality_sc', 'N/A')
-                        combined_conf = rt.get('combined_conf', 'N/A')
-                        st.markdown(f"""<div class='rejected-card'>
-                            <b style='color:{dir_color};'>{rt['pair']}</b> | {rt['dir']} <span class='rejected-badge'>❌ REJECTED</span>
-                            <span class='gate-fail-badge'>{gate_label}</span><br>
-                            <span style='color:#ff8888;'>⚠️ {reason}</span><br>
-                            <small style='color:#888;'>Price: {rt['price']:.5f} | Engine Conf: {engine_conf}% | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</small>
-                        </div>""", unsafe_allow_html=True)
+            # ── NEAR-MISS SECTION (40%+ score but failed a gate) ──────────
+            if near_miss:
+                st.markdown("""<div style='background:linear-gradient(135deg,#1a1500,#2a2000);border:1px solid #ffaa00;border-left:5px solid #ffaa00;border-radius:10px;padding:12px 16px;margin-bottom:12px;'>
+                    <b style='color:#ffaa00;font-size:15px;'>⚡ NEAR-MISS SETUPS</b>
+                    <span style='color:#aaa;font-size:12px;'> — Engine score ≥ 40% but failed a quality gate. Watch these pairs.</span>
+                </div>""", unsafe_allow_html=True)
+
+                # Group near-miss by timeframe
+                nm_by_tf = {}
+                for rt in near_miss:
+                    tf = rt.get('tf','Unknown')
+                    if tf not in nm_by_tf: nm_by_tf[tf] = []
+                    nm_by_tf[tf].append(rt)
+
+                for tf, nm_trades in nm_by_tf.items():
+                    # Sort by engine_conf descending so strongest near-misses show first
+                    nm_trades_sorted = sorted(nm_trades, key=lambda x: x.get('engine_conf',0), reverse=True)
+                    with st.expander(f"⚡ {tf} — Near-Miss Setups ({len(nm_trades_sorted)} pairs)", expanded=True):
+                        for rt in nm_trades_sorted:
+                            dir_color = "#00ff00" if rt['dir'] == "BUY" else "#ff4b4b"
+                            engine_conf = rt.get('engine_conf', 0)
+                            conf_pct = rt.get('confluence_pct', 'N/A')
+                            quality = rt.get('quality_sc', 'N/A')
+                            gate_label = rt.get('failed_gate', 'Unknown')
+                            reason = rt.get('reject_reason', 'Unknown')
+                            combined_conf = rt.get('combined_conf', 'N/A')
+                            # Colour-code score bar
+                            bar_color = "#ffcc00" if engine_conf >= 60 else "#ff9900"
+                            score_bar = int(engine_conf / 100 * 20)
+                            score_visual = "█" * score_bar + "░" * (20 - score_bar)
+                            st.markdown(f"""<div style='background:#1a1500;border:1px solid #ffaa0055;border-left:4px solid #ffaa00;border-radius:8px;padding:10px 14px;margin-bottom:8px;'>
+                                <div style='display:flex;justify-content:space-between;align-items:center;'>
+                                    <b style='color:{dir_color};font-size:14px;'>{rt['pair']}</b>
+                                    <span style='color:#ffaa00;font-size:13px;font-weight:bold;'>Engine: {engine_conf:.0f}%</span>
+                                </div>
+                                <div style='color:{bar_color};font-size:11px;letter-spacing:0;'>{score_visual}</div>
+                                <div style='margin-top:4px;'>
+                                    <span style='color:#aaa;font-size:12px;'>{rt['dir']}</span>
+                                    <span style='background:#33200a;color:#ffaa00;border:1px solid #ffaa0066;border-radius:4px;padding:1px 6px;font-size:11px;margin-left:6px;'>{gate_label} FAILED</span>
+                                </div>
+                                <div style='color:#ff9966;font-size:12px;margin-top:3px;'>⚠️ {reason}</div>
+                                <div style='color:#666;font-size:11px;margin-top:3px;'>Price: {rt['price']:.5f} | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</div>
+                            </div>""", unsafe_allow_html=True)
+
+            # ── FULLY REJECTED SECTION (<40% score) ───────────────────────
+            if fully_rejected:
+                # Group by timeframe
+                rejected_by_tf = {}
+                for rt in fully_rejected:
+                    tf = rt.get('tf','Unknown')
+                    if tf not in rejected_by_tf: rejected_by_tf[tf] = []
+                    rejected_by_tf[tf].append(rt)
+
+                for tf, r_trades in rejected_by_tf.items():
+                    with st.expander(f"❌ {tf} Timeframe — Rejected ({len(r_trades)} weak signals)", expanded=False):
+                        gate_counts = {}
+                        for rt in r_trades:
+                            gate = rt.get('failed_gate','Unknown')
+                            gate_counts[gate] = gate_counts.get(gate,0) + 1
+                        gate_summary = " | ".join([f"<span class='gate-fail-badge'>{g}: {c}</span>" for g,c in gate_counts.items()])
+                        st.markdown(f"**Failure breakdown:** {gate_summary}", unsafe_allow_html=True)
+                        st.markdown("")
+                        for rt in r_trades:
+                            dir_color = "#00ff00" if rt['dir'] == "BUY" else "#ff4b4b"
+                            gate_label = rt.get('failed_gate','Unknown')
+                            reason = rt.get('reject_reason','Unknown reason')
+                            engine_conf = rt.get('engine_conf','N/A')
+                            conf_pct = rt.get('confluence_pct','N/A')
+                            quality = rt.get('quality_sc','N/A')
+                            combined_conf = rt.get('combined_conf','N/A')
+                            st.markdown(f"""<div class='rejected-card'>
+                                <b style='color:{dir_color};'>{rt['pair']}</b> | {rt['dir']} <span class='rejected-badge'>❌ REJECTED</span>
+                                <span class='gate-fail-badge'>{gate_label}</span><br>
+                                <span style='color:#ff8888;'>⚠️ {reason}</span><br>
+                                <small style='color:#888;'>Price: {rt['price']:.5f} | Engine: {engine_conf}% | Confluence: {conf_pct}% | Quality: {quality}%{f" | Combined: {combined_conf}%" if combined_conf != "N/A" else ""}</small>
+                            </div>""", unsafe_allow_html=True)
 
         # ==================== DEEP ANALYSIS ====================
         if not st.session_state.beginner_mode and st.session_state.selected_trade:
@@ -2081,23 +2130,88 @@ else:
                         if start_date <= closed_date <= end_date: filtered_trades.append(trade)
                     except: filtered_trades.append(trade)
                 else: filtered_trades.append(trade)
+
             if filtered_trades:
-                filtered_trades.sort(key=lambda x: x.get('ClosedDate', ''), reverse=True)
+                filtered_trades.sort(key=lambda x: x.get('ClosedDate',''), reverse=True)
+
+                # ── Summary stats bar ──────────────────────────────────────
+                tp_hits  = sum(1 for t in filtered_trades if t['Status'] == 'TP Hit')
+                sl_hits  = sum(1 for t in filtered_trades if t['Status'] == 'SL Hit')
+                total_cl = len(filtered_trades)
+                win_rate = (tp_hits / total_cl * 100) if total_cl > 0 else 0
+                wr_color = "#00ff00" if win_rate >= 55 else ("#ffaa00" if win_rate >= 45 else "#ff4b4b")
+
+                st.markdown(f"""<div style='background:linear-gradient(135deg,#0a1f2e,#1e3c3f);border:1px solid #00ff99;border-radius:12px;padding:14px 20px;margin-bottom:18px;display:flex;gap:30px;align-items:center;'>
+                    <div style='text-align:center;'>
+                        <div style='color:#aaa;font-size:12px;'>TOTAL CLOSED</div>
+                        <div style='color:#fff;font-size:22px;font-weight:bold;'>{total_cl}</div>
+                    </div>
+                    <div style='text-align:center;'>
+                        <div style='color:#aaa;font-size:12px;'>✅ TP HIT</div>
+                        <div style='color:#00ff00;font-size:22px;font-weight:bold;'>{tp_hits}</div>
+                    </div>
+                    <div style='text-align:center;'>
+                        <div style='color:#aaa;font-size:12px;'>❌ SL HIT</div>
+                        <div style='color:#ff4b4b;font-size:22px;font-weight:bold;'>{sl_hits}</div>
+                    </div>
+                    <div style='text-align:center;'>
+                        <div style='color:#aaa;font-size:12px;'>WIN RATE</div>
+                        <div style='color:{wr_color};font-size:22px;font-weight:bold;'>{win_rate:.1f}%</div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+                # ── Trade cards ───────────────────────────────────────────
                 for trade in filtered_trades:
-                    color = "#ff4b4b" if trade['Status'] == 'SL Hit' else "#00ff00"
+                    is_tp = trade['Status'] == 'TP Hit'
+                    status_color  = "#00ff00" if is_tp else "#ff4b4b"
+                    status_bg     = "#004d1a" if is_tp else "#4a0000"
+                    status_icon   = "✅" if is_tp else "❌"
+                    status_label  = "TP HIT — WIN" if is_tp else "SL HIT — LOSS"
+                    dir_color     = "#00ff00" if trade['Direction'] == "BUY" else "#ff4b4b"
+
+                    # Calculate P&L direction from direction + SL/TP
+                    try:
+                        entry_f = float(str(trade['Entry']).replace(',',''))
+                        sl_f    = float(str(trade['SL']).replace(',',''))
+                        tp_f    = float(str(trade['TP']).replace(',',''))
+                        if is_tp:
+                            pips_raw = abs(tp_f - entry_f) / entry_f * 100
+                            pnl_text = f"+{pips_raw:.2f}% move"
+                            pnl_color = "#00ff00"
+                        else:
+                            pips_raw = abs(sl_f - entry_f) / entry_f * 100
+                            pnl_text = f"-{pips_raw:.2f}% move"
+                            pnl_color = "#ff4b4b"
+                    except:
+                        pnl_text = ""; pnl_color = "#aaa"
+
                     col1, col2 = st.columns([5,1])
                     with col1:
-                        st.markdown(f"""<div style='background:#1e1e1e; padding:15px; border-radius:10px; margin-bottom:10px; border-left:5px solid {color};'>
-                            <b>{trade['Pair']} | {trade['Direction']}</b> | <span style='color:#00ff99;'>{trade.get('Timeframe', 'N/A')}</span><br>
-                            Entry: {trade['Entry']} | SL: {trade['SL']} | TP: {trade['TP']}<br>
-                            Confidence: {trade['Confidence']}%<br>
-                            <small>Tracked: {trade['Timestamp']} | Closed: {trade.get('ClosedDate', 'N/A')}</small>
+                        st.markdown(f"""<div style='background:#1a1a1a;padding:14px 16px;border-radius:10px;margin-bottom:10px;border-left:5px solid {status_color};'>
+                            <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>
+                                <span style='color:{dir_color};font-size:15px;font-weight:bold;'>{trade['Pair']} | {trade['Direction']}</span>
+                                <span style='background:{status_bg};color:{status_color};border:1px solid {status_color};border-radius:8px;padding:3px 10px;font-size:13px;font-weight:bold;'>{status_icon} {status_label}</span>
+                            </div>
+                            <div style='color:#ccc;font-size:13px;'>
+                                <span style='color:#aaa;'>Entry:</span> <b>{trade['Entry']}</b> &nbsp;|&nbsp;
+                                <span style='color:#ff6666;'>SL:</span> <b>{trade['SL']}</b> &nbsp;|&nbsp;
+                                <span style='color:#66ff66;'>TP:</span> <b>{trade['TP']}</b>
+                            </div>
+                            <div style='margin-top:5px;display:flex;gap:16px;'>
+                                <span style='color:{pnl_color};font-size:12px;font-weight:bold;'>{pnl_text}</span>
+                                <span style='color:#888;font-size:12px;'>Confidence: {trade['Confidence']}%</span>
+                                <span style='color:#00ff99;font-size:12px;'>{trade.get('Timeframe','N/A')}</span>
+                            </div>
+                            <div style='color:#555;font-size:11px;margin-top:4px;'>
+                                Opened: {trade['Timestamp']} &nbsp;|&nbsp; Closed: <b style='color:#888;'>{trade.get('ClosedDate','N/A')}</b>
+                            </div>
                         </div>""", unsafe_allow_html=True)
                     with col2:
                         if not st.session_state.beginner_mode:
                             if st.button("🗑️ Delete", key=f"del_closed_{trade['row_num']}"):
-                                if delete_trade_by_row_number(trade['row_num']): st.success("Trade deleted."); st.rerun()
-            else: st.info("No closed trades found in selected date range.")
+                                if delete_trade_by_row_number(trade['row_num']): st.success("Deleted."); st.rerun()
+            else:
+                st.info("No closed trades found in selected date range.")
         if st.button("Refresh & Check Status"): st.rerun()
 
     elif app_mode == "Admin Panel":
