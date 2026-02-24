@@ -193,37 +193,326 @@ def get_live_price(clean_pair):
         return None
 
 def get_cached_historical_data(symbol, interval, period=None, start=None, end=None):
+    """
+    Smart historical data fetcher with Google Sheets persistent cache.
+    
+    Strategy:
+    1. Check in-memory session cache (fastest, expires by TF)
+    2. Check Google Sheets persistent cache (survives restarts)
+    3. If cache exists → only fetch NEW candles since last saved timestamp
+    4. If no cache → full download, save to Sheets
+    5. Merge old + new data, return complete DataFrame
+    """
     if period:
         key = f"{symbol}_{interval}_{period}"
     else:
         key = f"{symbol}_{interval}_{start}_{end}"
+
     current_time = time.time()
+
+    # --- Memory cache expiry per timeframe ---
+    mem_cache_ttl = {
+        "1m": 60, "5m": 300, "15m": 600,
+        "1h": 1800, "4h": 3600, "1d": 7200, "1wk": 14400
+    }
+    ttl = mem_cache_ttl.get(interval, 3600)
+
+    # --- 1. Check in-memory cache ---
     cache_entry = st.session_state.historical_data_cache.get(key)
     if cache_entry:
         df, timestamp = cache_entry
-        if current_time - timestamp < 3600:
+        if current_time - timestamp < ttl:
             return df
+
+    # --- 2. Try Google Sheets persistent cache ---
+    gs_df = load_history_from_sheets(symbol, interval)
+
+    if gs_df is not None and len(gs_df) >= 50:
+        # Cache hit: only download new candles since last timestamp
+        last_ts = gs_df.index[-1]
+        try:
+            # Convert to timezone-naive for comparison
+            if hasattr(last_ts, 'tzinfo') and last_ts.tzinfo is not None:
+                last_ts_naive = last_ts.tz_localize(None) if hasattr(last_ts, 'tz_localize') else last_ts.replace(tzinfo=None)
+            else:
+                last_ts_naive = last_ts
+
+            # Download only recent data (last 5 days worth regardless of TF to catch updates)
+            incremental_period = "5d" if interval in ["1m","5m"] else "1mo" if interval in ["15m","1h"] else "3mo"
+            new_df = yf.download(symbol, period=incremental_period, interval=interval, progress=False)
+
+            if new_df is not None and not new_df.empty:
+                if isinstance(new_df.columns, pd.MultiIndex):
+                    new_df.columns = new_df.columns.get_level_values(0)
+
+                # Timezone normalize new_df index
+                if hasattr(new_df.index, 'tz') and new_df.index.tz is not None:
+                    new_df.index = new_df.index.tz_localize(None)
+
+                # Timezone normalize gs_df index
+                if hasattr(gs_df.index, 'tz') and gs_df.index.tz is not None:
+                    gs_df.index = gs_df.index.tz_localize(None)
+
+                # Find truly new rows (after last saved timestamp)
+                new_rows = new_df[new_df.index > last_ts_naive]
+
+                if len(new_rows) > 0:
+                    # Merge: old saved data + new rows
+                    merged = pd.concat([gs_df, new_rows])
+                    merged = merged[~merged.index.duplicated(keep='last')]
+                    merged = merged.sort_index()
+
+                    # Save updated data back to Sheets (only new rows to save API quota)
+                    save_history_to_sheets(symbol, interval, new_rows)
+                else:
+                    merged = gs_df
+            else:
+                merged = gs_df
+
+            # Store in memory cache
+            st.session_state.historical_data_cache[key] = (merged, current_time)
+            return merged
+
+        except Exception as e:
+            print(f"Incremental update error for {symbol}/{interval}: {e}")
+            # Fall through to full download
+
+    # --- 3. Full download (no cache or cache failed) ---
     try:
         if period:
             df = yf.download(symbol, period=period, interval=interval, progress=False)
         else:
             df = yf.download(symbol, start=start, end=end, interval=interval, progress=False)
-        if df.empty or len(df) < 10:
+
+        if df is None or df.empty or len(df) < 10:
             return None
+
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+
+        # Normalize timezone
+        if hasattr(df.index, 'tz') and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
+        # Save full history to Google Sheets
+        save_history_to_sheets(symbol, interval, df)
+
+        # Store in memory cache
         st.session_state.historical_data_cache[key] = (df, current_time)
         return df
+
     except Exception as e:
         print(f"Error downloading {symbol} {interval}: {e}")
         return None
 
+
+# ==================== GOOGLE SHEETS HISTORY CACHE ====================
+
+def get_history_sheet(symbol, interval):
+    """
+    Get or create a worksheet for historical data cache.
+    Sheet name format: H_{symbol}_{interval}  (max 100 chars, sanitized)
+    Each sheet stores OHLCV candles with timestamp.
+    """
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("Forex_User_DB")
+
+        # Sanitize sheet name: remove special chars, limit length
+        safe_sym = symbol.replace("=X","").replace("-","").replace("/","").replace(".","")[:20]
+        sheet_name = f"H_{safe_sym}_{interval}"[:50]
+
+        try:
+            sheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            # Create new worksheet with headers
+            sheet = spreadsheet.add_worksheet(title=sheet_name, rows=5000, cols=7)
+            sheet.append_row(["Timestamp", "Open", "High", "Low", "Close", "Volume", "SavedAt"])
+
+        return sheet
+    except Exception as e:
+        print(f"History sheet error ({symbol}/{interval}): {e}")
+        return None
+
+
+def save_history_to_sheets(symbol, interval, df):
+    """
+    Save OHLCV DataFrame to Google Sheets history cache.
+    Only saves if df has data. Appends rows efficiently using batch_update.
+    Skips very large DFs for 1m (too many rows) — only saves last 1000 rows.
+    """
+    if df is None or df.empty:
+        return False
+
+    try:
+        sheet = get_history_sheet(symbol, interval)
+        if sheet is None:
+            return False
+
+        # Limit rows to save (to stay within Sheets limits)
+        max_rows = {
+            "1m": 500, "5m": 800, "15m": 1000,
+            "1h": 1000, "4h": 1000, "1d": 1000, "1wk": 500
+        }
+        limit = max_rows.get(interval, 1000)
+        save_df = df.tail(limit).copy()
+
+        saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows_to_append = []
+        for ts, row in save_df.iterrows():
+            try:
+                ts_str = str(ts)[:19]  # trim microseconds
+                o = round(float(row.get('Open', 0)), 8)
+                h = round(float(row.get('High', 0)), 8)
+                lo = round(float(row.get('Low', 0)), 8)
+                c = round(float(row.get('Close', 0)), 8)
+                v = int(float(row.get('Volume', 0))) if 'Volume' in row else 0
+                rows_to_append.append([ts_str, o, h, lo, c, v, saved_at])
+            except:
+                continue
+
+        if rows_to_append:
+            sheet.append_rows(rows_to_append, value_input_option='RAW')
+        return True
+
+    except Exception as e:
+        print(f"Error saving history to Sheets ({symbol}/{interval}): {e}")
+        return False
+
+
+def load_history_from_sheets(symbol, interval):
+    """
+    Load OHLCV history from Google Sheets cache.
+    Returns DataFrame with DatetimeIndex, or None if not found / insufficient data.
+    Deduplicates rows and sorts by timestamp.
+    """
+    try:
+        sheet = get_history_sheet(symbol, interval)
+        if sheet is None:
+            return None
+
+        all_rows = sheet.get_all_values()
+        if len(all_rows) < 3:  # header + at least 2 data rows
+            return None
+
+        headers = all_rows[0]
+        data_rows = all_rows[1:]
+
+        if not data_rows:
+            return None
+
+        records = []
+        for row in data_rows:
+            try:
+                if len(row) < 5:
+                    continue
+                ts = pd.to_datetime(row[0])
+                o  = float(row[1])
+                h  = float(row[2])
+                lo = float(row[3])
+                c  = float(row[4])
+                v  = float(row[5]) if len(row) > 5 and row[5] else 0
+                records.append({"Timestamp": ts, "Open": o, "High": h, "Low": lo, "Close": c, "Volume": v})
+            except:
+                continue
+
+        if len(records) < 10:
+            return None
+
+        df = pd.DataFrame(records)
+        df = df.set_index("Timestamp")
+        df = df[~df.index.duplicated(keep='last')]  # remove duplicates
+        df = df.sort_index()
+
+        # Remove timezone info for consistency
+        if hasattr(df.index, 'tz') and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
+        return df
+
+    except Exception as e:
+        print(f"Error loading history from Sheets ({symbol}/{interval}): {e}")
+        return None
+
+
+def clear_history_cache_for_symbol(symbol, interval=None):
+    """
+    Admin utility: clear cached history for a symbol (all TFs or specific TF).
+    Used when data appears stale or corrupted.
+    """
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("Forex_User_DB")
+
+        tfs = [interval] if interval else ["1m","5m","15m","1h","4h","1d","1wk"]
+        cleared = []
+        for tf in tfs:
+            safe_sym = symbol.replace("=X","").replace("-","").replace("/","").replace(".","")[:20]
+            sheet_name = f"H_{safe_sym}_{tf}"[:50]
+            try:
+                ws = spreadsheet.worksheet(sheet_name)
+                # Keep header, clear data rows
+                ws.resize(rows=1)
+                ws.resize(rows=5000)
+                cleared.append(sheet_name)
+            except gspread.WorksheetNotFound:
+                pass
+
+        # Also clear memory cache
+        keys_to_clear = [k for k in st.session_state.historical_data_cache.keys()
+                         if symbol.replace("=X","").replace("-","") in k]
+        for k in keys_to_clear:
+            del st.session_state.historical_data_cache[k]
+
+        return cleared
+    except Exception as e:
+        return []
+
+
+def get_history_cache_stats():
+    """
+    Returns stats about all history cache sheets (for admin panel display).
+    """
+    try:
+        scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("Forex_User_DB")
+
+        stats = []
+        for ws in spreadsheet.worksheets():
+            if ws.title.startswith("H_"):
+                row_count = ws.row_count
+                parts = ws.title.split("_")
+                sym = parts[1] if len(parts) > 1 else "?"
+                tf = parts[2] if len(parts) > 2 else "?"
+                # Get last row to find latest timestamp
+                try:
+                    last_row = ws.row_values(ws.row_count)
+                    last_ts = last_row[0] if last_row else "N/A"
+                except:
+                    last_ts = "N/A"
+                stats.append({"Symbol": sym, "TF": tf, "Rows": row_count, "Last Update": last_ts})
+        return stats
+    except:
+        return []
+
 def get_period_for_tf(tf):
+    # Extended periods for better Elliott Wave + ICT structure identification
     period_map = {
-        "1m": "1d", "5m": "5d", "15m": "1mo",
-        "1h": "3mo", "4h": "6mo", "1d": "1y", "1wk": "5y"
+        "1m":  "5d",   # 1d -> 5d  (~1950 candles, enough for intraday wave structure)
+        "5m":  "1mo",  # 5d -> 1mo (~2600 candles, multi-day swing structure)
+        "15m": "3mo",  # 1mo-> 3mo (~3900 candles, clear wave cycles)
+        "1h":  "6mo",  # 3mo-> 6mo (~1080 candles, weekly structure visible)
+        "4h":  "1y",   # 6mo-> 1y  (~540 candles, multi-month waves)
+        "1d":  "2y",   # 1y -> 2y  (~500 candles, full bull/bear cycles)
+        "1wk": "5y"    # already optimal (~260 candles)
     }
-    return period_map.get(tf, "1mo")
+    return period_map.get(tf, "3mo")
 
 # --- Google Sheets Functions ---
 def get_user_sheet():
@@ -3332,6 +3621,50 @@ else:
                         if st.button("🔄 Update Usage"):
                             update_usage_in_db(target_user, new_usage_val); st.success(f"Usage count set to {new_usage_val}"); time.sleep(1); st.rerun()
             else: st.error("Database Connection Failed")
+
+            # ── History Cache Management Section ──────────────────────────
+            st.markdown("---")
+            st.markdown("### 📊 Historical Data Cache (Google Sheets)")
+            st.markdown("""<div style='background:#0a1f2e;border:1px solid #00ff9944;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#ccc;'>
+                <b style='color:#00ff99;'>How it works:</b><br>
+                • First scan: Full history downloaded from yfinance → saved to Google Sheets<br>
+                • Subsequent scans: Only <b>new candles</b> fetched (incremental update) → merged with saved data<br>
+                • Memory cache: Expires per timeframe (1m=1min, 1h=30min, 1d=2hr)<br>
+                • Sheets cache: Persistent across sessions → <b>faster startup, fewer API calls</b><br>
+                <br>
+                <b style='color:#00ff99;'>History Length:</b>
+                1m=5d | 5m=1mo | 15m=3mo | 1h=6mo | 4h=1y | 1d=2y | 1wk=5y
+            </div>""", unsafe_allow_html=True)
+
+            col_h1, col_h2 = st.columns(2)
+            with col_h1:
+                if st.button("📋 Show Cache Stats", use_container_width=True):
+                    with st.spinner("Loading cache stats..."):
+                        stats = get_history_cache_stats()
+                        if stats:
+                            df_stats = pd.DataFrame(stats)
+                            st.dataframe(df_stats, use_container_width=True)
+                        else:
+                            st.info("No history cache sheets found yet. Run a scan to populate.")
+
+            with col_h2:
+                st.subheader("🗑️ Clear Cache for Symbol")
+                clear_sym = st.text_input("Symbol (e.g. EURUSD, XAUUSD, BTC-USD)", key="clear_cache_sym")
+                clear_tf_opts = ["All TFs", "1m", "5m", "15m", "1h", "4h", "1d", "1wk"]
+                clear_tf_sel = st.selectbox("Timeframe", clear_tf_opts, key="clear_cache_tf")
+                if st.button("🗑️ Clear Cache", key="clear_cache_btn", use_container_width=True):
+                    if clear_sym:
+                        tf_arg = None if clear_tf_sel == "All TFs" else clear_tf_sel
+                        # Format symbol
+                        sym_fmt = clear_sym.upper().strip()
+                        cleared = clear_history_cache_for_symbol(sym_fmt, tf_arg)
+                        if cleared:
+                            st.success(f"Cleared: {', '.join(cleared)}")
+                        else:
+                            st.warning("No cache found for that symbol.")
+                    else:
+                        st.warning("Enter a symbol first.")
+
         else: st.error("Access Denied.")
 
     elif app_mode == "Backtest" and not st.session_state.beginner_mode:
