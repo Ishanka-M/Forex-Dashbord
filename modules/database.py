@@ -3,15 +3,8 @@ modules/database.py
 Google Sheets Database Layer for FX-WavePulse Pro
 """
 
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    GSPREAD_AVAILABLE = True
-except ImportError:
-    GSPREAD_AVAILABLE = False
-    gspread = None
-    Credentials = None
-
+import gspread
+from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
 import json
@@ -55,8 +48,6 @@ ADMIN_USER = {
 
 def get_gspread_client():
     """Initialize gspread client from Streamlit secrets or service account file."""
-    if not GSPREAD_AVAILABLE:
-        return None, "gspread / google-auth not installed. Check requirements.txt."
     try:
         if "gcp_service_account" in st.secrets:
             creds = Credentials.from_service_account_info(
