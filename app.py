@@ -26,7 +26,8 @@ try:
         get_users, get_active_trades, add_active_trade, close_trade, get_trade_history
     )
     from modules.market_data import (
-        get_all_live_prices, get_ohlcv, get_session_status, get_colombo_time, SYMBOL_MAP, MAJOR_PAIRS
+        get_all_live_prices, get_ohlcv, get_session_status, get_colombo_time,
+        SYMBOL_MAP, MAJOR_PAIRS, SYMBOL_CATEGORIES, get_all_symbols
     )
     from modules.elliott_wave import identify_elliott_waves
     from modules.smc_analysis import analyze_smc
@@ -461,7 +462,7 @@ def render_dashboard():
     with col_left:
         st.markdown("### 🎯 Top Signals")
         with st.spinner("Generating signals..."):
-            signals = generate_all_signals(MAJOR_PAIRS[:5], "swing")
+            signals = generate_all_signals(MAJOR_PAIRS[:6], "swing", min_score=20)
         
         if not signals:
             st.info("No high-confidence signals at the moment. Market may be ranging.")
@@ -544,65 +545,99 @@ def render_signals():
 
     col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
-        strategy = st.selectbox("Strategy", ["swing", "short"], format_func=lambda x: f"{'📈 Swing' if x=='swing' else '⚡ Short-Term'}")
+        strategy = st.selectbox("Strategy", ["swing", "short"],
+                                format_func=lambda x: "📈 Swing (H4/D1)" if x == "swing" else "⚡ Short-Term (M15/H1)")
     with col2:
-        selected_symbols = st.multiselect("Symbols", MAJOR_PAIRS, default=MAJOR_PAIRS[:6])
+        category = st.selectbox("Category", list(SYMBOL_CATEGORIES.keys()))
+        cat_symbols = SYMBOL_CATEGORIES[category]
     with col3:
-        min_score = st.slider("Min Score (%)", 0, 100, 40, 5)
+        min_score = st.slider("Min Score (%)", 0, 100, 20, 5)
+
+    selected_symbols = st.multiselect(
+        "Select Symbols", cat_symbols,
+        default=cat_symbols[:6],
+        help="Select up to 10 pairs for analysis"
+    )
+    if len(selected_symbols) > 10:
+        st.warning("⚠️ Maximum 10 symbols at a time to avoid timeouts.")
+        selected_symbols = selected_symbols[:10]
 
     if st.button("🔄 Refresh Signals", use_container_width=False):
         st.cache_data.clear()
 
-    with st.spinner("Analyzing markets with EW + SMC..."):
-        signals = generate_all_signals(selected_symbols or MAJOR_PAIRS[:5], strategy)
-    
-    filtered = [s for s in signals if s.probability_score >= min_score]
-
-    if not filtered:
-        st.info(f"No signals meeting the {min_score}% threshold. Try lowering the score or checking back later.")
+    if not selected_symbols:
+        st.info("Please select at least one symbol.")
         return
 
-    st.markdown(f"**{len(filtered)} signal(s) found**")
+    with st.spinner(f"Analysing {len(selected_symbols)} pairs with EW + SMC…"):
+        signals = generate_all_signals(selected_symbols, strategy, min_score=min_score)
 
-    for sig in filtered:
-        with st.expander(f"{'🟢' if sig.direction=='BUY' else '🔴'} {sig.symbol} {sig.direction} — Score: {sig.probability_score}%", expanded=sig.probability_score >= 70):
+    if not signals:
+        st.info(
+            f"No signals found for the selected pairs at **{min_score}%** threshold.\n\n"
+            f"Try: lowering Min Score → 20%, or selecting different pairs / strategy."
+        )
+        # Show raw trend table as fallback
+        st.markdown("#### 📊 Trend Overview (fallback)")
+        rows = []
+        for sym in selected_symbols[:8]:
+            try:
+                tf = "D1" if strategy == "swing" else "H1"
+                df = get_ohlcv(sym, tf)
+                if df is not None and not df.empty:
+                    c = df["close"]
+                    trend = "🟢 Bullish" if c.iloc[-1] > c.iloc[-20] else "🔴 Bearish"
+                    chg = (c.iloc[-1] - c.iloc[-20]) / c.iloc[-20] * 100
+                    rows.append({"Symbol": sym, "Trend": trend, "20-bar Chg %": f"{chg:+.2f}%",
+                                 "Price": f"{c.iloc[-1]:.5f}"})
+            except Exception:
+                pass
+        if rows:
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        return
+
+    st.markdown(f"**{len(signals)} signal(s) found**")
+
+    for sig in signals:
+        with st.expander(
+            f"{'🟢' if sig.direction=='BUY' else '🔴'} {sig.symbol} "
+            f"{sig.direction} — Score: {sig.probability_score}%",
+            expanded=sig.probability_score >= 60
+        ):
             _render_signal_card(sig)
-            
+
             col_a, col_b = st.columns(2)
             with col_a:
                 st.markdown(f"""
-                **EW Pattern:** `{sig.ew_pattern}`  
-                **SMC Bias:** `{sig.smc_bias[:50]}...`  
+                **EW Pattern:** `{sig.ew_pattern}`
+                **SMC Bias:** `{sig.smc_bias[:60]}`
                 **Generated:** `{sig.generated_at} LKT`
                 """)
             with col_b:
                 st.markdown("**Confluences:**")
                 for c in sig.confluences:
                     st.markdown(f"- ✅ {c}")
-            
+
             if st.session_state.db:
                 if st.button(f"➕ Add to Active Trades", key=f"add_{sig.trade_id}"):
                     trade = {
-                        "trade_id": sig.trade_id,
-                        "username": st.session_state.user.get("username"),
-                        "symbol": sig.symbol,
-                        "direction": sig.direction,
-                        "entry_price": sig.entry_price,
-                        "sl_price": sig.sl_price,
-                        "tp_price": sig.tp_price,
-                        "lot_size": sig.lot_size,
-                        "open_time": sig.generated_at,
-                        "strategy": sig.strategy,
-                        "probability_score": sig.probability_score,
-                        "status": "open",
-                        "current_price": sig.entry_price,
-                        "pnl": 0,
+                        "trade_id":         sig.trade_id,
+                        "username":         st.session_state.user.get("username"),
+                        "symbol":           sig.symbol,
+                        "direction":        sig.direction,
+                        "entry_price":      sig.entry_price,
+                        "sl_price":         sig.sl_price,
+                        "tp_price":         sig.tp_price,
+                        "lot_size":         sig.lot_size,
+                        "open_time":        sig.generated_at,
+                        "strategy":         sig.strategy,
+                        "probability_score":sig.probability_score,
+                        "status":           "open",
+                        "current_price":    sig.entry_price,
+                        "pnl":              0,
                     }
                     ok, msg = add_active_trade(st.session_state.db, trade)
-                    if ok:
-                        st.success(f"✅ {msg}")
-                    else:
-                        st.error(f"❌ {msg}")
+                    st.success(f"✅ {msg}") if ok else st.error(f"❌ {msg}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -613,15 +648,16 @@ def render_analysis():
 
     col1, col2 = st.columns([1, 1])
     with col1:
-        symbol = st.selectbox("Symbol", list(SYMBOL_MAP.keys()), index=0)
+        category = st.selectbox("Category", list(SYMBOL_CATEGORIES.keys()), key="analysis_cat")
+        symbol   = st.selectbox("Symbol", SYMBOL_CATEGORIES[category], key="analysis_sym")
     with col2:
-        timeframe = st.selectbox("Timeframe", ["M5", "M15", "H1", "H4", "D1"], index=2)
+        timeframe = st.selectbox("Timeframe", ["M5","M15","H1","H4","D1"], index=2)
 
     col3, col4 = st.columns([1, 1])
     with col3:
-        show_ew = st.checkbox("Elliott Wave", value=True)
+        show_ew  = st.checkbox("Elliott Wave", value=True)
     with col4:
-        show_smc = st.checkbox("SMC Zones (OB/FVG/BOS)", value=True)
+        show_smc = st.checkbox("SMC Zones (OB / FVG / BOS)", value=True)
 
     with st.spinner(f"Fetching {symbol} {timeframe} data..."):
         df = get_ohlcv(symbol, timeframe)
@@ -858,21 +894,62 @@ def render_admin():
                 st.markdown('</div>', unsafe_allow_html=True)
 
     with tab2:
-        st.markdown("#### System Status")
+        st.markdown("#### 🔌 Database Connection Status")
+
+        db   = st.session_state.db
+        err  = st.session_state.db_error
+
+        if db:
+            st.success("✅ Google Sheets connected — `Forex_User_DB` is active.")
+        else:
+            st.error(f"❌ Not connected — **{err}**")
+            st.markdown("""
+            **How to fix:**
+
+            1. Go to [console.cloud.google.com](https://console.cloud.google.com)
+            2. Enable **Google Sheets API** + **Google Drive API**
+            3. Create a **Service Account** → download JSON key
+            4. On Streamlit Cloud → **Settings → Secrets** → paste:
+
+            ```toml
+            [gcp_service_account]
+            type = "service_account"
+            project_id = "your-project-id"
+            private_key_id = "..."
+            private_key = "-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----\\n"
+            client_email = "your-sa@your-project.iam.gserviceaccount.com"
+            client_id = "..."
+            auth_uri = "https://accounts.google.com/o/oauth2/auth"
+            token_uri = "https://oauth2.googleapis.com/token"
+            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+            client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/your-sa%40your-project.iam.gserviceaccount.com"
+            ```
+
+            5. Share the `Forex_User_DB` spreadsheet with the `client_email` as **Editor**
+            6. Click **Retry Connection** below
+            """)
+            if st.button("🔄 Retry Connection"):
+                st.cache_resource.clear()
+                st.session_state.db       = None
+                st.session_state.db_error = None
+                st.rerun()
+
+        st.markdown("---")
+        st.markdown("#### ⚙️ System Status")
         st.markdown(f"""
         <div class="metric-card">
             <div style="font-size:0.85rem; display:grid; grid-template-columns:1fr 1fr; gap:8px;">
                 <div>🗄️ <b>Database:</b> {'🟢 Connected' if db else '🔴 Disconnected'}</div>
-                <div>📊 <b>Pairs:</b> {len(MAJOR_PAIRS)} tracked</div>
+                <div>📊 <b>Pairs:</b> {len(SYMBOL_MAP)} tracked</div>
                 <div>🕐 <b>Server Time:</b> {datetime.now(COLOMBO_TZ).strftime('%H:%M:%S LKT')}</div>
-                <div>⚙️ <b>Engine:</b> EW + SMC v2.0</div>
+                <div>⚙️ <b>Engine:</b> EW + SMC v2.1</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        all_active = get_active_trades(db)
-        all_history = get_trade_history(db)
-        st.markdown(f"**Total Active Trades:** {len(all_active)} | **Total History:** {len(all_history)}")
+
+        all_active  = get_active_trades(db)  if db else pd.DataFrame()
+        all_history = get_trade_history(db)  if db else pd.DataFrame()
+        st.markdown(f"**Total Active Trades:** {len(all_active)} &nbsp;|&nbsp; **Total History:** {len(all_history)}")
 
 
 # ══════════════════════════════════════════════════════════════
