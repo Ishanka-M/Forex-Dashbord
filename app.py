@@ -22,8 +22,9 @@ st.set_page_config(
 # ── Imports ──────────────────────────────────────────────────────────────────
 try:
     from modules.database import (
-        get_database, authenticate_user, create_user, delete_user,
-        get_users, get_active_trades, add_active_trade, close_trade, get_trade_history
+        get_database, get_fresh_spreadsheet, authenticate_user, create_user, delete_user,
+        get_users, get_active_trades, add_active_trade, close_trade,
+        get_trade_history, update_trade_pnl
     )
     from modules.market_data import (
         get_all_live_prices, get_ohlcv, get_session_status, get_colombo_time,
@@ -33,6 +34,10 @@ try:
     from modules.smc_analysis import analyze_smc
     from modules.signal_engine import generate_all_signals, generate_signal, TradeSignal
     from modules.charts import create_candlestick_chart, create_pnl_chart
+    from modules.gemini_ai import (
+        get_gemini_confirmation, get_market_sentiment,
+        get_key_rotation_status, _get_api_keys
+    )
 except ImportError as e:
     st.error(f"""
     ❌ **Module Import Error:** `{e}`
@@ -595,6 +600,42 @@ def _render_signal_card(sig: TradeSignal):
 
 
 # ══════════════════════════════════════════════════════════════
+# GEMINI VERDICT CARD
+# ══════════════════════════════════════════════════════════════
+def _render_gemini_verdict(gemini: dict):
+    verdict    = gemini.get("verdict", "CAUTION")
+    confidence = gemini.get("confidence", 50)
+    reason     = gemini.get("reason", "")
+    risk_note  = gemini.get("risk_note", "")
+    best_entry = gemini.get("best_entry", "").replace("_", " ")
+    ai_powered = gemini.get("ai_powered", True)
+
+    color = {"CONFIRM": "#00D4AA", "REJECT": "#FF4B6E", "CAUTION": "#F5C518"}.get(verdict, "#6B7A99")
+    icon  = {"CONFIRM": "✅", "REJECT": "❌", "CAUTION": "⚠️"}.get(verdict, "🤖")
+    label = "AI Confirmed" if ai_powered else "Rule-based"
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,{color}11,{color}05);
+         border:1px solid {color}44; border-radius:10px;
+         padding:1rem 1.2rem; margin:0.5rem 0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-weight:700; color:{color}; font-size:1rem;">
+                {icon} Gemini AI — {verdict}
+            </span>
+            <span style="font-size:0.72rem; color:#6B7A99; font-family:'JetBrains Mono';">
+                🤖 {label} · Confidence: {confidence}%
+            </span>
+        </div>
+        <div style="font-size:0.85rem; color:#E8EDF5; margin-bottom:6px;">{reason}</div>
+        <div style="display:flex; gap:1.5rem; font-size:0.78rem; margin-top:6px;">
+            <span style="color:#6B7A99;">⚡ Entry: <span style="color:#E8EDF5">{best_entry}</span></span>
+            <span style="color:#6B7A99;">⚠️ Risk: <span style="color:#F5C518">{risk_note}</span></span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════
 # SIGNALS PAGE
 # ══════════════════════════════════════════════════════════════
 def render_signals():
@@ -653,15 +694,49 @@ def render_signals():
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         return
 
-    st.markdown(f"**{len(signals)} signal(s) found**")
+    # Gemini available check
+    gemini_keys_available = len(_get_api_keys()) > 0
+
+    st.markdown(f"**{len(signals)} signal(s) found** {'🤖 Gemini AI confirmation enabled' if gemini_keys_available else '⚠️ Add Gemini keys for AI confirmation'}")
 
     for sig in signals:
+        # Get Gemini verdict
+        gemini = None
+        if gemini_keys_available:
+            try:
+                gemini = get_gemini_confirmation(
+                    symbol            = sig.symbol,
+                    direction         = sig.direction,
+                    entry_price       = sig.entry_price,
+                    sl_price          = sig.sl_price,
+                    tp_price          = sig.tp_price,
+                    risk_reward       = sig.risk_reward,
+                    probability_score = sig.probability_score,
+                    strategy          = sig.strategy,
+                    timeframe         = sig.timeframe,
+                    ew_pattern        = sig.ew_pattern,
+                    smc_bias          = sig.smc_bias,
+                    confluences_str   = "|".join(sig.confluences),
+                )
+            except Exception:
+                gemini = None
+
+        # Verdict badge for expander title
+        verdict_icon = ""
+        if gemini:
+            v = gemini.get("verdict", "")
+            verdict_icon = " ✅" if v == "CONFIRM" else (" ⚠️" if v == "CAUTION" else " ❌")
+
         with st.expander(
             f"{'🟢' if sig.direction=='BUY' else '🔴'} {sig.symbol} "
-            f"{sig.direction} — Score: {sig.probability_score}%",
+            f"{sig.direction} — Score: {sig.probability_score}%{verdict_icon}",
             expanded=sig.probability_score >= 60
         ):
             _render_signal_card(sig)
+
+            # ── Gemini AI Verdict ─────────────────────────────────
+            if gemini:
+                _render_gemini_verdict(gemini)
 
             col_a, col_b = st.columns(2)
             with col_a:
@@ -675,12 +750,16 @@ def render_signals():
                 for c in sig.confluences:
                     st.markdown(f"- ✅ {c}")
 
-            # ── Add to Active Trades ─────────────────────────────
-            db = st.session_state.get("db")
-            if db:
-                col_btn, col_status = st.columns([1, 2])
+            # ── Add to Active Trades ──────────────────────────────
+            # Only allow if Gemini didn't REJECT (or no Gemini)
+            gemini_verdict = gemini.get("verdict", "CONFIRM") if gemini else "CONFIRM"
+            if gemini_verdict == "REJECT":
+                st.error("🤖 Gemini AI rejected this signal — not recommended to trade.")
+            else:
+                col_btn, col_info = st.columns([1, 2])
                 with col_btn:
-                    if st.button(f"➕ Add to Active Trades", key=f"add_{sig.trade_id}",
+                    if st.button(f"➕ Add to Active Trades",
+                                 key=f"add_{sig.trade_id}",
                                  use_container_width=True):
                         trade = {
                             "trade_id":          sig.trade_id,
@@ -698,17 +777,21 @@ def render_signals():
                             "current_price":     str(sig.entry_price),
                             "pnl":               "0",
                         }
-                        try:
-                            ok, msg = add_active_trade(db, trade)
+                        # Always use fresh connection for writes
+                        ss_w, err = get_fresh_spreadsheet()
+                        if err:
+                            st.error(f"❌ DB Error: {err}")
+                        else:
+                            ok, msg = add_active_trade(ss_w, trade)
                             if ok:
-                                st.cache_resource.clear()
-                                st.success(f"✅ Trade saved! → Go to **Active Trades**")
+                                st.success("✅ Trade saved! → Go to **Active Trades**")
                             else:
-                                st.error(f"❌ Save failed: {msg}")
-                        except Exception as ex:
-                            st.error(f"❌ Error: {ex}")
-            else:
-                st.warning("⚠️ Database not connected — trades cannot be saved. Configure Google Sheets secrets.")
+                                st.error(f"❌ {msg}")
+                with col_info:
+                    if gemini and gemini_verdict == "CAUTION":
+                        st.warning(f"⚠️ Gemini: {gemini.get('reason', '')}")
+                    elif gemini and gemini_verdict == "CONFIRM":
+                        st.info(f"🤖 AI: {gemini.get('best_entry','').replace('_',' ')}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1030,10 +1113,48 @@ def render_admin():
                 <div>🗄️ <b>Database:</b> {'🟢 Connected' if db else '🔴 Disconnected'}</div>
                 <div>📊 <b>Pairs:</b> {len(SYMBOL_MAP)} tracked</div>
                 <div>🕐 <b>Server Time:</b> {datetime.now(COLOMBO_TZ).strftime('%H:%M:%S LKT')}</div>
-                <div>⚙️ <b>Engine:</b> EW + SMC v2.1</div>
+                <div>⚙️ <b>Engine:</b> EW + SMC v2.1 + Gemini AI</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── Gemini Key Rotation Status ─────────────────────────────
+        st.markdown("#### 🤖 Gemini API Key Rotation")
+        try:
+            key_status = get_key_rotation_status()
+            total  = key_status["total_keys"]
+            avail  = key_status["available"]
+
+            if total == 0:
+                st.warning("⚠️ No Gemini API keys configured. Add keys to Streamlit Secrets.")
+                st.code("""# secrets.toml — Gemini keys add කරන ක්‍රම 2ක්:
+
+# ක්‍රමය 1 — comma separated list
+gemini_api_keys = "AIza...key1,AIza...key2,AIza...key3"
+
+# ක්‍රමය 2 — individual keys
+gemini_key_1 = "AIzaSy..."
+gemini_key_2 = "AIzaSy..."
+gemini_key_3 = "AIzaSy..."
+# ... up to gemini_key_7""", language="toml")
+            else:
+                st.markdown(f"**{avail}/{total} keys available**")
+                cols = st.columns(min(total, 7))
+                for i, ki in enumerate(key_status["keys"]):
+                    with cols[i % len(cols)]:
+                        color  = "#00D4AA" if ki["available"] else "#FF4B6E"
+                        status = "✅" if ki["available"] else f"⏳ {ki['cooldown']}s"
+                        st.markdown(f"""
+                        <div style="background:#111827; border:1px solid #1E2A42;
+                             border-radius:8px; padding:0.6rem; text-align:center; font-size:0.75rem;">
+                            <div style="color:{color}; font-weight:700;">Key {ki['index']}</div>
+                            <div style="color:#6B7A99; font-family:'JetBrains Mono';">{ki['key_hint']}</div>
+                            <div style="color:{color};">{status}</div>
+                            <div style="color:#6B7A99;">Used: {ki['usage']} · Err: {ki['errors']}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+        except Exception as e:
+            st.info(f"Gemini status unavailable: {e}")
 
         all_active  = get_active_trades(db)  if db else pd.DataFrame()
         all_history = get_trade_history(db)  if db else pd.DataFrame()
