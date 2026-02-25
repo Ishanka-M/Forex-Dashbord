@@ -380,7 +380,12 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
                 last_ts_naive = last_ts
 
             # Download only recent data (incremental update)
-            incremental_period = "5d" if interval in ["1m","5m"] else "1mo" if interval in ["15m","1h"] else "3mo"
+            # Periods must match get_period_for_tf to avoid missing candles
+            incremental_period = {
+                "1m": "5d", "5m": "1mo",
+                "15m": "3mo", "1h": "6mo",
+                "4h": "1y", "1d": "2y", "1wk": "5y"
+            }.get(interval, "1mo")
             _api_limiter.wait_if_needed("yf")
             new_df = yf.download(symbol, period=incremental_period, interval=interval, progress=False)
 
@@ -598,11 +603,19 @@ def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
     last_saved  = st.session_state.get(last_ts_key)
 
     if last_saved is None:
-        # Try to read last row from sheet to find last timestamp
+        # Try to read last data row from sheet to find last timestamp.
+        # NOTE: ws.row_count returns ALLOCATED rows (6000), not actual data rows.
+        # We must find the last non-empty row using get_all_values.
         try:
             _api_limiter.wait_if_needed("gs")
-            last_row = ws.row_values(ws.row_count)
-            if last_row and last_row[0] not in ("", "Timestamp"):
+            all_vals = ws.get_all_values()
+            # Find last non-empty row (skip header row 0)
+            last_row = None
+            for row in reversed(all_vals[1:]):
+                if row and row[0] not in ("", "Timestamp"):
+                    last_row = row
+                    break
+            if last_row:
                 last_saved = pd.to_datetime(last_row[0])
                 st.session_state[last_ts_key] = last_saved
         except Exception:
@@ -650,8 +663,8 @@ def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
 
         # Update session-state last-saved pointer
         last_new_ts = new_rows_df.index[-1]
-        if hasattr(last_new_ts, 'tzinfo') and last_new_ts.tzinfo:
-            last_new_ts = last_new_ts.tz_localize(None)
+        if hasattr(last_new_ts, 'tzinfo') and last_new_ts.tzinfo is not None:
+            last_new_ts = last_new_ts.tz_convert(None)
         st.session_state[last_ts_key] = last_new_ts
         return True
 
@@ -792,12 +805,15 @@ def get_history_cache_stats() -> list:
         parts  = ws.title.split("_")
         sym    = parts[1] if len(parts) > 1 else "?"
         tf     = parts[2] if len(parts) > 2 else "?"
-        rows   = ws.row_count
         try:
             _api_limiter.wait_if_needed("gs")
-            last_row = ws.row_values(rows)
-            last_ts  = last_row[0] if last_row else "N/A"
+            all_vals = ws.get_all_values()
+            # Count real data rows (exclude header)
+            data_rows = [r for r in all_vals[1:] if r and r[0] not in ("", "Timestamp")]
+            rows   = len(data_rows)
+            last_ts = data_rows[-1][0] if data_rows else "N/A"
         except Exception:
+            rows   = 0
             last_ts = "N/A"
         stats.append({"Symbol": sym, "TF": tf, "Rows": rows, "Last Update": last_ts})
     return stats
@@ -1149,13 +1165,15 @@ def calculate_news_score(news_items):
     return max(min(score, 20), -20)
 
 def get_data_period(tf):
-    if tf in ["1m", "5m"]: return "5d"
-    elif tf == "15m": return "1mo"
+    # Aligned with get_period_for_tf to ensure consistency
+    if tf in ["1m"]: return "5d"
+    elif tf == "5m": return "1mo"
+    elif tf == "15m": return "3mo"
     elif tf == "1h": return "6mo"
     elif tf == "4h": return "1y"
     elif tf == "1d": return "2y"
     elif tf == "1wk": return "5y"
-    return "1mo"
+    return "3mo"
 
 # ==================== RISK ASSESSMENT BADGE ENGINE ====================
 def assess_trade_risk(trade):
