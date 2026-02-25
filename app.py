@@ -375,7 +375,7 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
         try:
             # Convert to timezone-naive for comparison
             if hasattr(last_ts, 'tzinfo') and last_ts.tzinfo is not None:
-                last_ts_naive = last_ts.tz_localize(None) if hasattr(last_ts, 'tz_localize') else last_ts.replace(tzinfo=None)
+                last_ts_naive = last_ts.tz_convert(None)
             else:
                 last_ts_naive = last_ts
 
@@ -395,11 +395,11 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
 
                 # Timezone normalize new_df index
                 if hasattr(new_df.index, 'tz') and new_df.index.tz is not None:
-                    new_df.index = new_df.index.tz_localize(None)
+                    new_df.index = new_df.index.tz_convert(None)
 
                 # Timezone normalize gs_df index
                 if hasattr(gs_df.index, 'tz') and gs_df.index.tz is not None:
-                    gs_df.index = gs_df.index.tz_localize(None)
+                    gs_df.index = gs_df.index.tz_convert(None)
 
                 # Find truly new rows (after last saved timestamp)
                 new_rows = new_df[new_df.index > last_ts_naive]
@@ -441,7 +441,7 @@ def get_cached_historical_data(symbol, interval, period=None, start=None, end=No
 
         # Normalize timezone
         if hasattr(df.index, 'tz') and df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
+            df.index = df.index.tz_convert(None)
 
         # Save full history to Google Sheets
         save_history_to_sheets(symbol, interval, df)
@@ -594,7 +594,7 @@ def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
 
     # Normalize index to timezone-naive
     if hasattr(save_df.index, 'tz') and save_df.index.tz is not None:
-        save_df.index = save_df.index.tz_localize(None)
+        save_df.index = save_df.index.tz_convert(None)
 
     saved_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -623,7 +623,7 @@ def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
 
     if last_saved is not None:
         try:
-            last_saved_naive = (last_saved.tz_localize(None)
+            last_saved_naive = (last_saved.tz_convert(None)
                                 if hasattr(last_saved, 'tzinfo') and last_saved.tzinfo
                                 else last_saved)
             new_rows_df = save_df[save_df.index > last_saved_naive]
@@ -667,8 +667,6 @@ def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
             last_new_ts = last_new_ts.tz_convert(None)
         st.session_state[last_ts_key] = last_new_ts
         return True
-
-    except Exception as e:
         print(f"save_history_to_sheets error ({symbol}/{interval}): {e}")
         return False
 
@@ -734,7 +732,7 @@ def load_history_from_sheets(symbol: str, interval: str):
     df = df[~df.index.duplicated(keep='last')].sort_index()
 
     if hasattr(df.index, 'tz') and df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
+        df.index = df.index.tz_convert(None)
 
     st.session_state[mem_key] = (df, time.time())
     return df
