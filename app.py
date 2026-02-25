@@ -20,17 +20,34 @@ st.set_page_config(
 )
 
 # ── Imports ──────────────────────────────────────────────────────────────────
-from modules.database import (
-    get_database, authenticate_user, create_user, delete_user,
-    get_users, get_active_trades, add_active_trade, close_trade, get_trade_history
-)
-from modules.market_data import (
-    get_all_live_prices, get_ohlcv, get_session_status, get_colombo_time, SYMBOL_MAP, MAJOR_PAIRS
-)
-from modules.elliott_wave import identify_elliott_waves
-from modules.smc_analysis import analyze_smc
-from modules.signal_engine import generate_all_signals, generate_signal, TradeSignal
-from modules.charts import create_candlestick_chart, create_pnl_chart
+try:
+    from modules.database import (
+        get_database, authenticate_user, create_user, delete_user,
+        get_users, get_active_trades, add_active_trade, close_trade, get_trade_history
+    )
+    from modules.market_data import (
+        get_all_live_prices, get_ohlcv, get_session_status, get_colombo_time, SYMBOL_MAP, MAJOR_PAIRS
+    )
+    from modules.elliott_wave import identify_elliott_waves
+    from modules.smc_analysis import analyze_smc
+    from modules.signal_engine import generate_all_signals, generate_signal, TradeSignal
+    from modules.charts import create_candlestick_chart, create_pnl_chart
+except ImportError as e:
+    st.error(f"""
+    ❌ **Module Import Error:** `{e}`
+
+    **Fix:** Make sure all files in the `modules/` folder are uploaded to GitHub:
+    - `modules/__init__.py`
+    - `modules/database.py`
+    - `modules/market_data.py`
+    - `modules/elliott_wave.py`
+    - `modules/smc_analysis.py`
+    - `modules/signal_engine.py`
+    - `modules/charts.py`
+
+    Also verify `requirements.txt` is in the root folder.
+    """)
+    st.stop()
 
 COLOMBO_TZ = pytz.timezone("Asia/Colombo")
 
