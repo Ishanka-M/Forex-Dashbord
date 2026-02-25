@@ -662,8 +662,27 @@ def render_analysis():
     with st.spinner(f"Fetching {symbol} {timeframe} data..."):
         df = get_ohlcv(symbol, timeframe)
 
+    with st.spinner(f"Fetching {symbol} {timeframe} data..."):
+        df = get_ohlcv(symbol, timeframe)
+
     if df is None or df.empty:
-        st.error("Could not fetch data. Check your connection or try another symbol.")
+        st.error(f"⚠️ Could not fetch data for **{symbol}** on **{timeframe}**.")
+        with st.expander("🔧 Troubleshooting"):
+            st.markdown(f"""
+            **Possible reasons:**
+            - `{symbol}` may not have data at `{timeframe}` granularity on Yahoo Finance
+            - Intraday data (M5/M15) is only available for the **last 60 days**
+            - Some exotic pairs have limited history — try **H1** or **D1**
+            - Yahoo Finance rate limit — wait 30 seconds and retry
+
+            **Try these instead:**
+            - Change timeframe to `H1` or `D1`
+            - Switch to a Major pair: EURUSD, GBPUSD, XAUUSD
+            - Click **Refresh** below to clear the cache
+            """)
+            if st.button("🔄 Clear Cache & Retry"):
+                st.cache_data.clear()
+                st.rerun()
         return
 
     ew_result = identify_elliott_waves(df) if show_ew else None
@@ -744,6 +763,7 @@ def render_active_trades():
         score = trade.get("probability_score", 0)
 
         # Get live price
+        from modules.market_data import get_live_price
         live = get_live_price(symbol) if symbol else {}
         live_price = live.get("price") or entry
         pnl = (live_price - entry) * (1 if direction == "BUY" else -1) * float(trade.get("lot_size", 0.01) or 0.01) * 100000
