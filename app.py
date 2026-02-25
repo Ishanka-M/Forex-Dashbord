@@ -215,12 +215,7 @@ def inject_css():
     footer { visibility: hidden; }
     [data-testid="stToolbar"] { display: none; }
 
-    /* ── Sidebar Toggle Button (☰) ─────────────────────────── */
-    /* Show the native Streamlit collapse button always */
-    [data-testid="collapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
+    
     }
     /* Style it nicely */
     [data-testid="collapsedControl"] button {
