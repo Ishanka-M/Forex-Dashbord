@@ -667,6 +667,8 @@ def save_history_to_sheets(symbol: str, interval: str, df) -> bool:
             last_new_ts = last_new_ts.tz_convert(None)
         st.session_state[last_ts_key] = last_new_ts
         return True
+
+    except Exception as e:
         print(f"save_history_to_sheets error ({symbol}/{interval}): {e}")
         return False
 
