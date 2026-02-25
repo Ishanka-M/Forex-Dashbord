@@ -210,6 +210,49 @@ def inject_css():
     footer { visibility: hidden; }
     [data-testid="stToolbar"] { display: none; }
 
+    /* ── Sidebar Toggle Button (☰) ─────────────────────────── */
+    /* Show the native Streamlit collapse button always */
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+    /* Style it nicely */
+    [data-testid="collapsedControl"] button {
+        background: linear-gradient(135deg, #00D4AA22, #3B82F622) !important;
+        border: 1px solid #1E2A42 !important;
+        border-radius: 8px !important;
+        color: #00D4AA !important;
+        width: 38px !important;
+        height: 38px !important;
+        font-size: 1.1rem !important;
+    }
+    [data-testid="collapsedControl"] button:hover {
+        background: linear-gradient(135deg, #00D4AA44, #3B82F644) !important;
+        border-color: #00D4AA !important;
+    }
+    /* Custom floating toggle button for mobile / collapsed state */
+    .sidebar-toggle-btn {
+        position: fixed;
+        top: 0.6rem;
+        left: 0.6rem;
+        z-index: 999999;
+        background: linear-gradient(135deg, #0D1220, #111827);
+        border: 1px solid #1E2A42;
+        border-radius: 8px;
+        width: 38px; height: 38px;
+        display: flex; align-items: center; justify-content: center;
+        cursor: pointer;
+        font-size: 1.1rem;
+        color: #00D4AA;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+        transition: all 0.2s;
+    }
+    .sidebar-toggle-btn:hover {
+        border-color: #00D4AA;
+        background: linear-gradient(135deg, #0D1220, #162030);
+    }
+
     /* Input styling */
     .stTextInput input, .stSelectbox select, .stNumberInput input {
         background: var(--bg-card2) !important;
@@ -244,11 +287,12 @@ def inject_css():
 def init_session():
     defaults = {
         "authenticated": False,
-        "user": None,
-        "db": None,
-        "db_error": None,
-        "page": "dashboard",
-        "last_refresh": None,
+        "user":          None,
+        "db":            None,
+        "db_error":      None,
+        "page":          "dashboard",
+        "last_refresh":  None,
+        "sidebar_open":  True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -370,12 +414,25 @@ def render_sidebar():
 # DASHBOARD PAGE
 # ══════════════════════════════════════════════════════════════
 def render_dashboard():
+    # Sidebar toggle button (floating, always visible)
+    st.markdown("""
+    <script>
+    function toggleSidebar() {
+        const btn = window.parent.document.querySelector('[data-testid="collapsedControl"] button');
+        if (btn) btn.click();
+    }
+    </script>
+    """, unsafe_allow_html=True)
+
     # Header
     st.markdown("""
     <div class="brand-header">
         <div>
             <div class="brand-title">📈 FX-WavePulse Pro</div>
             <div class="brand-subtitle">Elliott Wave · Smart Money Concepts · Multi-Timeframe Analysis</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <div onclick="toggleSidebar()" class="sidebar-toggle-btn" title="Toggle Menu">☰</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -618,26 +675,40 @@ def render_signals():
                 for c in sig.confluences:
                     st.markdown(f"- ✅ {c}")
 
-            if st.session_state.db:
-                if st.button(f"➕ Add to Active Trades", key=f"add_{sig.trade_id}"):
-                    trade = {
-                        "trade_id":         sig.trade_id,
-                        "username":         st.session_state.user.get("username"),
-                        "symbol":           sig.symbol,
-                        "direction":        sig.direction,
-                        "entry_price":      sig.entry_price,
-                        "sl_price":         sig.sl_price,
-                        "tp_price":         sig.tp_price,
-                        "lot_size":         sig.lot_size,
-                        "open_time":        sig.generated_at,
-                        "strategy":         sig.strategy,
-                        "probability_score":sig.probability_score,
-                        "status":           "open",
-                        "current_price":    sig.entry_price,
-                        "pnl":              0,
-                    }
-                    ok, msg = add_active_trade(st.session_state.db, trade)
-                    st.success(f"✅ {msg}") if ok else st.error(f"❌ {msg}")
+            # ── Add to Active Trades ─────────────────────────────
+            db = st.session_state.get("db")
+            if db:
+                col_btn, col_status = st.columns([1, 2])
+                with col_btn:
+                    if st.button(f"➕ Add to Active Trades", key=f"add_{sig.trade_id}",
+                                 use_container_width=True):
+                        trade = {
+                            "trade_id":          sig.trade_id,
+                            "username":          st.session_state.user.get("username"),
+                            "symbol":            sig.symbol,
+                            "direction":         sig.direction,
+                            "entry_price":       str(sig.entry_price),
+                            "sl_price":          str(sig.sl_price),
+                            "tp_price":          str(sig.tp_price),
+                            "lot_size":          str(sig.lot_size),
+                            "open_time":         sig.generated_at,
+                            "strategy":          sig.strategy,
+                            "probability_score": str(sig.probability_score),
+                            "status":            "open",
+                            "current_price":     str(sig.entry_price),
+                            "pnl":               "0",
+                        }
+                        try:
+                            ok, msg = add_active_trade(db, trade)
+                            if ok:
+                                st.cache_resource.clear()
+                                st.success(f"✅ Trade saved! → Go to **Active Trades**")
+                            else:
+                                st.error(f"❌ Save failed: {msg}")
+                        except Exception as ex:
+                            st.error(f"❌ Error: {ex}")
+            else:
+                st.warning("⚠️ Database not connected — trades cannot be saved. Configure Google Sheets secrets.")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -658,9 +729,6 @@ def render_analysis():
         show_ew  = st.checkbox("Elliott Wave", value=True)
     with col4:
         show_smc = st.checkbox("SMC Zones (OB / FVG / BOS)", value=True)
-
-    with st.spinner(f"Fetching {symbol} {timeframe} data..."):
-        df = get_ohlcv(symbol, timeframe)
 
     with st.spinner(f"Fetching {symbol} {timeframe} data..."):
         df = get_ohlcv(symbol, timeframe)
