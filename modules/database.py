@@ -3,8 +3,15 @@ modules/database.py
 Google Sheets Database Layer for FX-WavePulse Pro
 """
 
-import gspread
-from google.oauth2.service_account import Credentials
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+    gspread = None
+    Credentials = None
+
 import pandas as pd
 import streamlit as st
 import json
@@ -48,6 +55,8 @@ ADMIN_USER = {
 
 def get_gspread_client():
     """Initialize gspread client from Streamlit secrets or service account file."""
+    if not GSPREAD_AVAILABLE:
+        return None, "gspread / google-auth not installed. Check requirements.txt."
     try:
         if "gcp_service_account" in st.secrets:
             creds = Credentials.from_service_account_info(
@@ -65,9 +74,9 @@ def get_gspread_client():
         return None, str(e)
 
 
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=600, show_spinner=False)
 def get_database():
-    """Get or create the Google Sheets database."""
+    """Get or create the Google Sheets database connection."""
     client, error = get_gspread_client()
     if error:
         return None, error
@@ -75,30 +84,37 @@ def get_database():
     try:
         try:
             spreadsheet = client.open(SPREADSHEET_NAME)
-        except gspread.SpreadsheetNotFound:
-            spreadsheet = client.create(SPREADSHEET_NAME)
-            spreadsheet.share(None, perm_type="anyone", role="writer")
+        except Exception:
+            # Try creating if not found
+            try:
+                spreadsheet = client.create(SPREADSHEET_NAME)
+                spreadsheet.share(None, perm_type="anyone", role="writer")
+            except Exception as e:
+                return None, f"Cannot open or create '{SPREADSHEET_NAME}': {e}"
 
         existing_sheets = [ws.title for ws in spreadsheet.worksheets()]
 
         for sheet_name, headers in SHEET_SCHEMAS.items():
             if sheet_name not in existing_sheets:
-                ws = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=len(headers))
+                ws = spreadsheet.add_worksheet(
+                    title=sheet_name,
+                    rows=1000,
+                    cols=len(headers)
+                )
                 ws.append_row(headers)
-            
+
         # Remove default Sheet1 if exists
         if "Sheet1" in existing_sheets:
             try:
                 spreadsheet.del_worksheet(spreadsheet.worksheet("Sheet1"))
-            except:
+            except Exception:
                 pass
 
-        # Initialize admin user if not exists
         _ensure_admin_exists(spreadsheet)
-
         return spreadsheet, None
+
     except Exception as e:
-        return None, str(e)
+        return None, f"Database init failed: {str(e)}"
 
 
 def _ensure_admin_exists(spreadsheet):
@@ -200,14 +216,22 @@ def get_active_trades(spreadsheet, username=None) -> pd.DataFrame:
         return pd.DataFrame(columns=SHEET_SCHEMAS["ActiveTrades"])
 
 
-def add_active_trade(spreadsheet, trade: dict) -> tuple[bool, str]:
+def add_active_trade(spreadsheet, trade: dict) -> tuple:
+    """Add a trade to ActiveTrades sheet."""
     try:
-        ws = spreadsheet.worksheet("ActiveTrades")
-        row = [trade.get(col, "") for col in SHEET_SCHEMAS["ActiveTrades"]]
-        ws.append_row(row)
-        return True, "Trade added."
+        ws  = spreadsheet.worksheet("ActiveTrades")
+
+        # Ensure all values are strings (Google Sheets safe)
+        row = []
+        for col in SHEET_SCHEMAS["ActiveTrades"]:
+            val = trade.get(col, "")
+            # Convert any numeric types to string
+            row.append(str(val) if val != "" else "")
+
+        ws.append_row(row, value_input_option="USER_ENTERED")
+        return True, "Trade saved to Google Sheets ✅"
     except Exception as e:
-        return False, str(e)
+        return False, f"Sheet error: {str(e)}"
 
 
 def close_trade(spreadsheet, trade_id, close_price, result) -> tuple[bool, str]:
