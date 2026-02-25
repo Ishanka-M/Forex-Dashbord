@@ -16,7 +16,7 @@ import pytz
 COLOMBO_TZ = pytz.timezone("Asia/Colombo")
 
 # ── Gemini Model ─────────────────────────────────────────────────────────────
-GEMINI_MODEL = "emini-3-flash-preview"          # Free tier, fast
+GEMINI_MODEL = "gemini-3-flash-preview"          # Free tier, fast
 GEMINI_URL   = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key="
