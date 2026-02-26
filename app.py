@@ -37,8 +37,13 @@ try:
     from modules.gemini_ai import (
         get_gemini_confirmation, get_market_sentiment,
         get_key_rotation_status, _get_api_keys,
-        get_news_impact_alert
     )
+    # get_news_impact_alert — older gemini_ai.py versions එකේ නැත හැකියාව
+    try:
+        from modules.gemini_ai import get_news_impact_alert
+    except ImportError:
+        def get_news_impact_alert(symbol: str):
+            return None
 except ImportError as e:
     st.error(f"""
     ❌ **Module Import Error:** `{e}`
