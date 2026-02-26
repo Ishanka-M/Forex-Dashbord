@@ -38,14 +38,8 @@ try:
     from modules.charts import create_candlestick_chart, create_pnl_chart
     from modules.gemini_ai import (
         get_gemini_confirmation, get_market_sentiment,
-        get_key_rotation_status, _get_api_keys,
+        get_key_rotation_status, _get_api_keys, get_news_impact_alert,
     )
-    # get_news_impact_alert — older gemini_ai.py versions එකේ නැත හැකියාව
-    try:
-        from modules.gemini_ai import get_news_impact_alert
-    except ImportError:
-        def get_news_impact_alert(symbol: str):
-            return None
 except ImportError as e:
     st.error(f"""
     ❌ **Module Import Error:** `{e}`
@@ -665,48 +659,94 @@ def _render_signal_card(sig: TradeSignal):
 # GEMINI VERDICT CARD
 # ══════════════════════════════════════════════════════════════
 def _render_gemini_verdict(gemini: dict):
+    """Rich Gemini v4 verdict card."""
     verdict      = gemini.get("verdict", "CAUTION")
     confidence   = gemini.get("confidence", 50)
     reason       = gemini.get("reason", "")
     risk_note    = gemini.get("risk_note", "")
     best_entry   = gemini.get("best_entry", "").replace("_", " ")
-    ai_powered   = gemini.get("ai_powered", True)
+    sl_quality   = gemini.get("sl_quality", "")
+    tp1_prob     = int(gemini.get("tp1_probability", 0) or 0)
+    pos_size     = gemini.get("position_size", "FULL")
+    close_plan   = gemini.get("partial_close", "")
     news_impact  = gemini.get("news_impact", False)
     news_sinhala = gemini.get("news_sinhala", "")
+    sl_adjust    = gemini.get("sl_adjust")
+    ai_powered   = gemini.get("ai_powered", True)
+    pre_filtered = gemini.get("pre_filtered", False)
 
-    color = {"CONFIRM": "#00D4AA", "REJECT": "#FF4B6E", "CAUTION": "#F5C518"}.get(verdict, "#6B7A99")
-    icon  = {"CONFIRM": "✅", "REJECT": "❌", "CAUTION": "⚠️"}.get(verdict, "🤖")
-    label = "Gemini AI" if ai_powered else "Rule-based"
+    color = {"CONFIRM":"#00D4AA","REJECT":"#FF4B6E","CAUTION":"#F5C518"}.get(verdict,"#6B7A99")
+    icon  = {"CONFIRM":"✅","REJECT":"❌","CAUTION":"⚠️"}.get(verdict,"🤖")
+    badge = "🤖 Gemini AI" if ai_powered else "📊 Rule-based"
+    if pre_filtered: badge += " · Pre-filtered"
 
-    # Sinhala news alert block
+    # SL quality badge
+    slq_colors = {"GOOD":"#00D4AA","TOO_TIGHT":"#F5C518","TOO_WIDE":"#FF4B6E","MISPLACED":"#FF4B6E"}
+    slq_c = slq_colors.get(sl_quality, "#6B7A99")
+    slq_html = (f'<span style="font-size:0.72rem;background:{slq_c}22;color:{slq_c};'
+                f'border:1px solid {slq_c}44;border-radius:6px;padding:1px 8px;margin-left:8px;">'
+                f'SL: {sl_quality.replace("_"," ")}</span>') if sl_quality else ""
+
+    # TP1 probability bar
+    tp_c = "#00D4AA" if tp1_prob >= 60 else ("#F5C518" if tp1_prob >= 40 else "#FF4B6E")
+    tp_bar = (f'<div style="margin:6px 0 4px;">'
+              f'<span style="font-size:0.72rem;color:#6B7A99;">TP1 Probability: </span>'
+              f'<span style="font-size:0.72rem;color:{tp_c};font-weight:700;">{tp1_prob}%</span>'
+              f'<div style="background:#1E2A42;border-radius:4px;height:5px;margin-top:3px;">'
+              f'<div style="background:{tp_c};width:{min(tp1_prob,100)}%;height:5px;border-radius:4px;"></div>'
+              f'</div></div>') if tp1_prob else ""
+
+    # Position size badge
+    ps_c = {"FULL":"#00D4AA","HALF":"#F5C518","QUARTER":"#8B5CF6","SKIP":"#FF4B6E"}.get(pos_size,"#6B7A99")
+    pos_html = (f'<span style="font-size:0.72rem;background:{ps_c}22;color:{ps_c};'
+                f'border:1px solid {ps_c}44;border-radius:6px;padding:1px 8px;">'
+                f'📊 {pos_size} size</span>')
+
+    # News alert
     news_html = ""
     if news_impact and news_sinhala:
-        news_html = f"""
-        <div style="margin-top:8px; padding:8px 12px;
-             background:rgba(245,197,24,0.1); border-left:3px solid #F5C518;
-             border-radius:0 6px 6px 0; font-size:0.83rem;">
-            <span style="color:#F5C518; font-weight:700;">📰 News Alert — </span>
-            <span style="color:#E8EDF5;">{news_sinhala}</span>
-        </div>"""
+        news_html = (f'<div style="margin-top:8px;padding:8px 12px;'
+                     f'background:rgba(245,197,24,0.08);border-left:3px solid #F5C518;'
+                     f'border-radius:0 6px 6px 0;font-size:0.82rem;">'
+                     f'<b style="color:#F5C518;">📰 News Alert — </b>'
+                     f'<span style="color:#E8EDF5;">{news_sinhala}</span></div>')
+
+    # SL adjust suggestion
+    sl_adj_html = ""
+    if sl_adjust and isinstance(sl_adjust, dict):
+        sl_adj_html = (f'<div style="margin-top:6px;padding:6px 10px;'
+                       f'background:rgba(139,92,246,0.08);border-left:3px solid #8B5CF6;'
+                       f'border-radius:0 6px 6px 0;font-size:0.8rem;">'
+                       f'<b style="color:#8B5CF6;">🎯 SL Adjust: </b>'
+                       f'<code>{sl_adjust.get("price","")}</code>'
+                       f' — {sl_adjust.get("reason","")}</div>')
 
     st.markdown(f"""
-    <div style="background:linear-gradient(135deg,{color}11,{color}05);
-         border:1px solid {color}44; border-radius:10px;
-         padding:1rem 1.2rem; margin:0.5rem 0;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <span style="font-weight:700; color:{color}; font-size:1rem;">
-                {icon} {label} — {verdict}
+    <div style="background:linear-gradient(135deg,{color}0D,{color}04);
+         border:1px solid {color}33;border-radius:12px;
+         padding:1rem 1.2rem;margin:0.6rem 0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;
+             margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+            <span style="font-weight:700;color:{color};font-size:1.05rem;">
+                {icon} {verdict}{slq_html}
             </span>
-            <span style="font-size:0.72rem; color:#6B7A99; font-family:'JetBrains Mono';">
-                Confidence: {confidence}%
-            </span>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                {pos_html}
+                <span style="font-size:0.72rem;color:#6B7A99;font-family:monospace;">
+                    {badge} · conf {confidence}%
+                </span>
+            </div>
         </div>
-        <div style="font-size:0.85rem; color:#E8EDF5; margin-bottom:6px;">{reason}</div>
-        <div style="display:flex; gap:1.5rem; font-size:0.78rem; margin-top:6px; flex-wrap:wrap;">
-            <span style="color:#6B7A99;">⚡ Entry: <span style="color:#E8EDF5">{best_entry}</span></span>
-            <span style="color:#6B7A99;">⚠️ Risk: <span style="color:#F5C518">{risk_note}</span></span>
+        <div style="font-size:0.85rem;color:#E8EDF5;margin-bottom:4px;line-height:1.5;">
+            {reason}
         </div>
-        {news_html}
+        {tp_bar}
+        <div style="display:flex;gap:1.5rem;font-size:0.78rem;margin-top:4px;flex-wrap:wrap;">
+            <span style="color:#6B7A99;">⚡ Entry: <b style="color:#E8EDF5">{best_entry}</b></span>
+            <span style="color:#6B7A99;">📋 <span style="color:#8B5CF6">{close_plan}</span></span>
+        </div>
+        <div style="font-size:0.78rem;color:#F5C518;margin-top:5px;">⚠️ {risk_note}</div>
+        {news_html}{sl_adj_html}
     </div>
     """, unsafe_allow_html=True)
 
@@ -792,43 +832,18 @@ def render_signals():
 
     st.markdown(
         f"**{len(signals)} signal(s) found** "
-        f"{'🤖 Gemini AI enabled' if gemini_keys_available else '⚠️ Add Gemini keys'}"
+        f"{'🤖 Gemini AI — CONFIRM-only auto-capture' if gemini_keys_available else '⚠️ Add Gemini keys for AI analysis'}"
     )
 
-    # ── Auto-capture all qualifying signals ───────────────────────────────
-    if auto_on and db:
-        auto_results = []
-        for sig in signals:
-            gemini_v = ""
-            if gemini_keys_available:
-                try:
-                    tp2 = getattr(sig,"tp2_price",None)
-                    tp3 = getattr(sig,"tp3_price",None)
-                    gm  = get_gemini_confirmation(
-                        symbol=sig.symbol, direction=sig.direction,
-                        entry_price=sig.entry_price, sl_price=sig.sl_price,
-                        tp_price=sig.tp_price, tp2=tp2 or 0.0, tp3=tp3 or 0.0,
-                        risk_reward=sig.risk_reward, probability_score=sig.probability_score,
-                        strategy=sig.strategy, timeframe=sig.timeframe,
-                        ew_pattern=sig.ew_pattern, smc_bias=sig.smc_bias,
-                        confluences_str="|".join(sig.confluences),
-                    )
-                    gemini_v = gm.get("verdict","") if gm else ""
-                except Exception:
-                    pass
-            ok, msg = auto_capture_signal(db, sig, username, gemini_v)
-            if ok:
-                auto_results.append(f"✅ {sig.symbol} {sig.direction} ({sig.probability_score}%)")
-        if auto_results:
-            with st.expander(f"🤖 Auto-captured {len(auto_results)} trade(s) to Active Trades", expanded=True):
-                for r in auto_results:
-                    st.markdown(r)
+    if not gemini_keys_available:
+        st.info("💡 Add Gemini API keys in Streamlit Secrets to enable AI analysis and auto-capture.")
 
+    # ── Per-signal loop ─────────────────────────────────────────────────────
     for sig in signals:
-        tp2 = getattr(sig, "tp2_price", None)
-        tp3 = getattr(sig, "tp3_price", None)
+        tp2 = sig.tp2_price
+        tp3 = sig.tp3_price
 
-        # ── Gemini confirmation ───────────────────────────────
+        # ── Call Gemini with ALL new v4 fields ──────────────────────────
         gemini = None
         if gemini_keys_available:
             try:
@@ -847,52 +862,121 @@ def render_signals():
                     ew_pattern        = sig.ew_pattern,
                     smc_bias          = sig.smc_bias,
                     confluences_str   = "|".join(sig.confluences),
+                    ew_trend          = getattr(sig, "ew_trend", ""),
+                    current_wave      = getattr(sig, "current_wave", ""),
+                    ew_confidence     = getattr(sig, "ew_confidence", 0.0),
+                    wave3_extended    = getattr(sig, "wave3_extended", False),
+                    last_bos          = getattr(sig, "last_bos", "None"),
+                    last_choch        = getattr(sig, "last_choch", "None"),
+                    current_ob        = getattr(sig, "current_ob_str", "None"),
+                    nearest_fvg       = getattr(sig, "nearest_fvg_str", "None"),
+                    price_zone        = getattr(sig, "price_zone", "?"),
+                    liq_sweeps        = getattr(sig, "liq_sweeps_str", "None"),
                 )
             except Exception:
                 gemini = None
 
-        verdict_icon = ""
-        if gemini:
-            v = gemini.get("verdict", "")
-            verdict_icon = " ✅" if v=="CONFIRM" else (" ⚠️" if v=="CAUTION" else " ❌")
-            if gemini.get("news_impact"):
-                verdict_icon += " 📰"
+        gemini_verdict = gemini.get("verdict", "CAUTION") if gemini else "CAUTION"
+        tp1_prob       = gemini.get("tp1_probability", 0) if gemini else 0
+        ai_powered     = gemini.get("ai_powered", False) if gemini else False
 
-        with st.expander(
-            f"{'🟢' if sig.direction=='BUY' else '🔴'} {sig.symbol} "
-            f"{sig.direction} — Score: {sig.probability_score}%{verdict_icon}",
-            expanded=sig.probability_score >= 60
-        ):
+        # ── Auto-capture: CONFIRM only ─────────────────────────────────
+        auto_captured = False
+        auto_msg      = ""
+        if auto_on and db and gemini_verdict == "CONFIRM":
+            ok, msg = auto_capture_signal(db, sig, username, gemini_verdict)
+            if ok:
+                auto_captured = True
+                auto_msg      = msg
+
+        # ── Expander title ─────────────────────────────────────────────
+        v_icon = {"CONFIRM":"✅","REJECT":"❌","CAUTION":"⚠️"}.get(gemini_verdict,"🤖")
+        ai_tag = f" {v_icon}" if gemini else ""
+        news_tag = " 📰" if (gemini and gemini.get("news_impact")) else ""
+        capture_tag = " 💾" if auto_captured else ""
+        prob_tag = f" TP:{tp1_prob}%" if tp1_prob else ""
+        qf = getattr(sig, "quality_flags", [])
+        w3_tag = " ⚡" if any("Wave 3" in f for f in qf) else ""
+
+        expander_label = (
+            f"{'🟢' if sig.direction=='BUY' else '🔴'} "
+            f"{sig.symbol} {sig.direction}"
+            f" — Score: {sig.probability_score}%"
+            f"{ai_tag}{prob_tag}{w3_tag}{news_tag}{capture_tag}"
+        )
+
+        with st.expander(expander_label, expanded=(sig.probability_score >= 65
+                                                    or gemini_verdict == "CONFIRM")):
+
+            # ── Quality flags row ──────────────────────────────────────
+            if qf:
+                flags_html = " &nbsp;".join(
+                    f'<span style="font-size:0.72rem;background:#1E2A42;'
+                    f'color:#E8EDF5;border-radius:6px;padding:2px 8px;">{f}</span>'
+                    for f in qf[:6]
+                )
+                st.markdown(f'<div style="margin-bottom:8px;">{flags_html}</div>',
+                            unsafe_allow_html=True)
+
+            # ── Signal card ────────────────────────────────────────────
             _render_signal_card(sig)
 
+            # SL structure label
+            sl_struct = getattr(sig, "sl_structure", "")
+            if sl_struct:
+                st.markdown(
+                    f'<div style="font-size:0.75rem;color:#8B5CF6;margin:4px 0 8px;">'
+                    f'🛡️ SL behind: {sl_struct}</div>',
+                    unsafe_allow_html=True
+                )
+
+            # ── Gemini verdict card ────────────────────────────────────
             if gemini:
                 _render_gemini_verdict(gemini)
 
+            # Auto-capture success banner
+            if auto_captured:
+                st.success(f"🤖 Auto-captured → Active Trades ✅ {auto_msg}")
+
+            # ── Confluence + EW/SMC details ────────────────────────────
             col_a, col_b = st.columns(2)
             with col_a:
-                st.markdown(f"""
-                **EW Pattern:** `{sig.ew_pattern}`
-                **SMC Bias:** `{sig.smc_bias[:60]}`
-                **Generated:** `{sig.generated_at} LKT`
-                """)
-            with col_b:
-                st.markdown("**Confluences:**")
+                st.markdown("**📊 Confluences:**")
                 for c in sig.confluences:
-                    st.markdown(f"- ✅ {c}")
+                    clr = "#00D4AA" if "✅" in c else ("#F5C518" if "⚠️" in c else "#E8EDF5")
+                    st.markdown(
+                        f'<div style="font-size:0.82rem;color:{clr};margin:2px 0;">{c}</div>',
+                        unsafe_allow_html=True
+                    )
+            with col_b:
+                zone   = getattr(sig, "price_zone", "?")
+                wave   = getattr(sig, "current_wave", "?")
+                ew_cf  = getattr(sig, "ew_confidence", 0)
+                zc     = {"DISCOUNT":"#00D4AA","PREMIUM":"#FF4B6E"}.get(zone,"#F5C518")
+                st.markdown(f"""
+                <div style="font-size:0.82rem;line-height:1.9;">
+                    <div><b>EW Pattern:</b> <code>{sig.ew_pattern}</code> · Wave <code>{wave}</code></div>
+                    <div><b>EW Conf:</b> {ew_cf*100:.0f}%</div>
+                    <div><b>Zone:</b> <span style="color:{zc};font-weight:600">{zone}</span></div>
+                    <div><b>BOS:</b> {getattr(sig,"last_bos","?")}</div>
+                    <div><b>CHoCH:</b> {getattr(sig,"last_choch","?")}</div>
+                    <div style="font-size:0.72rem;color:#6B7A99;margin-top:4px;">{sig.generated_at} LKT</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            # ── Add to Active Trades ──────────────────────────
-            gemini_verdict = gemini.get("verdict", "CONFIRM") if gemini else "CONFIRM"
+            # ── Manual add button (for REJECT / CAUTION) ──────────────
             if gemini_verdict == "REJECT":
-                st.error("🤖 Gemini AI rejected this signal — not recommended.")
+                st.error("❌ Gemini REJECT — do NOT trade this setup.")
             else:
-                col_btn, col_info = st.columns([1, 2])
+                col_btn, col_warn = st.columns([1, 2])
                 with col_btn:
-                    btn_key = f"add_{sig.trade_id}_{sig.symbol}"
-                    if st.button("➕ Add to Active Trades",
-                                 key=btn_key, use_container_width=True):
-                        ss_w, conn_err = get_fresh_spreadsheet()
-                        if conn_err:
-                            st.error(f"❌ {conn_err}")
+                    btn_lbl = (f"{'💾 Re-add' if auto_captured else '➕ Add'} to Active Trades")
+                    if st.button(btn_lbl,
+                                 key=f"add_{sig.trade_id}",
+                                 use_container_width=True):
+                        ss_w, err = get_fresh_spreadsheet()
+                        if err:
+                            st.error(f"❌ {err}")
                         else:
                             trade = {
                                 "trade_id":          sig.trade_id,
@@ -902,30 +986,30 @@ def render_signals():
                                 "entry_price":       str(sig.entry_price),
                                 "sl_price":          str(sig.sl_price),
                                 "tp_price":          str(sig.tp_price),
-                                "tp2_price":         str(getattr(sig,"tp2_price","") or ""),
-                                "tp3_price":         str(getattr(sig,"tp3_price","") or ""),
+                                "tp2_price":         str(tp2 or ""),
+                                "tp3_price":         str(tp3 or ""),
                                 "lot_size":          str(sig.lot_size),
                                 "open_time":         sig.generated_at,
                                 "strategy":          sig.strategy,
-                                "timeframe":         getattr(sig,"timeframe",""),
+                                "timeframe":         sig.timeframe,
                                 "probability_score": str(sig.probability_score),
                                 "ew_pattern":        sig.ew_pattern,
-                                "smc_bias":          str(sig.smc_bias)[:120],
+                                "smc_bias":          sig.smc_bias[:120],
                                 "status":            "open",
                                 "current_price":     str(sig.entry_price),
                                 "pnl":               "0",
                                 "gemini_verdict":    gemini_verdict,
                             }
                             ok, msg = add_active_trade(ss_w, trade)
-                            if ok:
-                                st.success(f"✅ {msg}")
-                            else:
-                                st.error(f"❌ {msg}")
-                with col_info:
-                    if gemini and gemini_verdict == "CAUTION":
-                        st.warning(f"⚠️ {gemini.get('reason','')}")
-                    elif gemini and gemini_verdict == "CONFIRM":
-                        st.info(f"🤖 {gemini.get('best_entry','').replace('_',' ')}")
+                            if ok: st.success(f"✅ {msg}")
+                            else:  st.error(f"❌ {msg}")
+                with col_warn:
+                    if gemini_verdict == "CAUTION":
+                        sl_q = gemini.get("sl_quality","") if gemini else ""
+                        st.warning(
+                            f"⚠️ CAUTION — {gemini.get('reason','Trade at own risk')[:80]}"
+                            + (f" · SL {sl_q}" if sl_q else "")
+                        )
 
 
 # ══════════════════════════════════════════════════════════════
