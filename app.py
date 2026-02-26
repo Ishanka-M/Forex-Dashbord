@@ -24,7 +24,9 @@ try:
     from modules.database import (
         get_database, get_fresh_spreadsheet, authenticate_user, create_user, delete_user,
         get_users, get_active_trades, add_active_trade, close_trade,
-        get_trade_history, update_trade_pnl
+        get_trade_history, update_trade_pnl, auto_capture_signal,
+        get_user_settings, save_user_settings,
+        get_notifications, mark_all_read, check_sl_tp_hits,
     )
     from modules.market_data import (
         get_all_live_prices, get_ohlcv, get_session_status, get_colombo_time,
@@ -297,13 +299,15 @@ def inject_css():
 # ══════════════════════════════════════════════════════════════
 def init_session():
     defaults = {
-        "authenticated": False,
-        "user":          None,
-        "db":            None,
-        "db_error":      None,
-        "page":          "dashboard",
-        "last_refresh":  None,
-        "sidebar_open":  True,
+        "authenticated":     False,
+        "user":              None,
+        "db":                None,
+        "db_error":          None,
+        "page":              "dashboard",
+        "last_refresh":      None,
+        "sidebar_open":      True,
+        "sl_tp_checked_at":  0,       # timestamp of last SL/TP check
+        "notif_count":       0,       # unread notification count
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -363,25 +367,67 @@ def render_login():
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════
 def render_sidebar():
-    user = st.session_state.user
+    user     = st.session_state.user
     is_admin = user.get("role") == "admin"
+    username = user.get("username","")
+    db       = st.session_state.db
+
+    # ── SL/TP background monitor (every 60s) ──────────────────────────────
+    import time as _time
+    now_ts = _time.time()
+    if db and (now_ts - st.session_state.get("sl_tp_checked_at", 0)) > 60:
+        try:
+            from modules.market_data import get_live_price
+            trades_df = get_active_trades(db, None if is_admin else username)
+            if not trades_df.empty:
+                symbols = trades_df["symbol"].unique().tolist()
+                live_prices = {s: (get_live_price(s).get("price") or 0) for s in symbols}
+                closed = check_sl_tp_hits(db, live_prices)
+                if closed:
+                    for c in closed:
+                        icon = "🎉" if c["result"]=="TP" else "🛑"
+                        st.toast(f"{icon} {c['symbol']} {c['direction']} → {c['result']} Hit! {c['msg']}", icon=icon[0])
+                    # Refresh cached db
+                    get_database.clear()
+                    st.session_state.db, _ = get_database()
+        except Exception as e:
+            pass
+        st.session_state.sl_tp_checked_at = now_ts
+
+    # ── Unread notification count ─────────────────────────────────────────
+    notif_count = 0
+    if db:
+        try:
+            notifs = get_notifications(db, username, unread_only=True)
+            notif_count = len(notifs) if not notifs.empty else 0
+            st.session_state.notif_count = notif_count
+        except Exception:
+            pass
 
     with st.sidebar:
         st.markdown(f"""
         <div style="padding:1rem 0.5rem; border-bottom:1px solid #1E2A42; margin-bottom:1rem;">
             <div style="font-size:1.2rem; font-weight:700; color:#00D4AA;">FX-WavePulse Pro</div>
-            <div style="font-size:0.75rem; color:#6B7A99; font-family:'JetBrains Mono';">v2.0 · Elliott + SMC</div>
+            <div style="font-size:0.75rem; color:#6B7A99; font-family:'JetBrains Mono';">v3.0 · Elliott + SMC + AI</div>
         </div>
         <div style="background:#111827; border-radius:8px; padding:0.7rem 1rem; margin-bottom:1rem; border:1px solid #1E2A42;">
             <div style="font-size:0.72rem; color:#6B7A99;">Logged in as</div>
-            <div style="font-weight:600; color:#E8EDF5;">{user.get('username', 'User')}</div>
-            <div style="font-size:0.7rem; background:{'rgba(139,92,246,0.2)' if is_admin else 'rgba(59,130,246,0.2)'}; 
-                 color:{'#8B5CF6' if is_admin else '#3B82F6'}; 
+            <div style="font-weight:600; color:#E8EDF5;">{username}</div>
+            <div style="font-size:0.7rem; background:{'rgba(139,92,246,0.2)' if is_admin else 'rgba(59,130,246,0.2)'};
+                 color:{'#8B5CF6' if is_admin else '#3B82F6'};
                  border-radius:10px; padding:1px 8px; display:inline-block; margin-top:2px;">
                 {'👑 Admin' if is_admin else '📊 Trader'}
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Notification bell
+        if notif_count > 0:
+            if st.button(f"🔔 Notifications ({notif_count})", use_container_width=True):
+                st.session_state.page = "notifications"
+                st.rerun()
+        else:
+            st.markdown('<div style="color:#6B7A99; font-size:0.78rem; padding:0.3rem 0.5rem;">🔕 No new notifications</div>', unsafe_allow_html=True)
 
         pages = {
             "dashboard": "📊  Dashboard",
@@ -389,20 +435,19 @@ def render_sidebar():
             "analysis":  "🔬  Chart Analysis",
             "trades":    "💼  Active Trades",
             "history":   "📜  Trade History",
+            "settings":  "⚙️  My Settings",
         }
         if is_admin:
             pages["admin"] = "👑  Admin Panel"
 
         st.markdown("**Navigation**")
         for page_key, label in pages.items():
-            btn_style = "primary" if st.session_state.page == page_key else "secondary"
-            if st.button(label, key=f"nav_{page_key}", use_container_width=True, type=btn_style):
+            btn_type = "primary" if st.session_state.page == page_key else "secondary"
+            if st.button(label, key=f"nav_{page_key}", use_container_width=True, type=btn_type):
                 st.session_state.page = page_key
                 st.rerun()
 
         st.markdown("---")
-
-        # Colombo time
         now = datetime.now(COLOMBO_TZ)
         st.markdown(f"""
         <div style="background:#0D1220; border-radius:8px; padding:0.7rem 1rem; border:1px solid #1E2A42;">
@@ -728,10 +773,56 @@ def render_signals():
     # Gemini available check
     gemini_keys_available = len(_get_api_keys()) > 0
 
+    # ── Auto-capture summary ──────────────────────────────────────────────
+    db       = st.session_state.db
+    username = st.session_state.user.get("username","")
+    cfg      = get_user_settings(db, username) if db else {}
+    auto_on  = str(cfg.get("auto_capture","true")).lower() == "true"
+    min_sc   = int(cfg.get("min_score", 40) or 40)
+
+    auto_col, manual_col = st.columns([2,1])
+    with auto_col:
+        if auto_on:
+            st.success(f"🤖 Auto-capture ON — signals ≥{min_sc}% score saved automatically")
+        else:
+            st.warning("⚙️ Auto-capture OFF — enable in ⚙️ My Settings")
+    with manual_col:
+        if st.button("⚙️ Capture Settings", use_container_width=True):
+            st.session_state.page = "settings"; st.rerun()
+
     st.markdown(
         f"**{len(signals)} signal(s) found** "
-        f"{'🤖 Gemini AI enabled' if gemini_keys_available else '⚠️ Add Gemini keys for AI confirmation'}"
+        f"{'🤖 Gemini AI enabled' if gemini_keys_available else '⚠️ Add Gemini keys'}"
     )
+
+    # ── Auto-capture all qualifying signals ───────────────────────────────
+    if auto_on and db:
+        auto_results = []
+        for sig in signals:
+            gemini_v = ""
+            if gemini_keys_available:
+                try:
+                    tp2 = getattr(sig,"tp2_price",None)
+                    tp3 = getattr(sig,"tp3_price",None)
+                    gm  = get_gemini_confirmation(
+                        symbol=sig.symbol, direction=sig.direction,
+                        entry_price=sig.entry_price, sl_price=sig.sl_price,
+                        tp_price=sig.tp_price, tp2=tp2 or 0.0, tp3=tp3 or 0.0,
+                        risk_reward=sig.risk_reward, probability_score=sig.probability_score,
+                        strategy=sig.strategy, timeframe=sig.timeframe,
+                        ew_pattern=sig.ew_pattern, smc_bias=sig.smc_bias,
+                        confluences_str="|".join(sig.confluences),
+                    )
+                    gemini_v = gm.get("verdict","") if gm else ""
+                except Exception:
+                    pass
+            ok, msg = auto_capture_signal(db, sig, username, gemini_v)
+            if ok:
+                auto_results.append(f"✅ {sig.symbol} {sig.direction} ({sig.probability_score}%)")
+        if auto_results:
+            with st.expander(f"🤖 Auto-captured {len(auto_results)} trade(s) to Active Trades", expanded=True):
+                for r in auto_results:
+                    st.markdown(r)
 
     for sig in signals:
         tp2 = getattr(sig, "tp2_price", None)
@@ -798,37 +889,38 @@ def render_signals():
                 with col_btn:
                     btn_key = f"add_{sig.trade_id}_{sig.symbol}"
                     if st.button("➕ Add to Active Trades",
-                                 key=btn_key,
-                                 use_container_width=True):
-                        trade = {
-                            "trade_id":          sig.trade_id,
-                            "username":          st.session_state.user.get("username", "admin"),
-                            "symbol":            sig.symbol,
-                            "direction":         sig.direction,
-                            "entry_price":       str(sig.entry_price),
-                            "sl_price":          str(sig.sl_price),
-                            "tp_price":          str(sig.tp_price),
-                            "lot_size":          str(sig.lot_size),
-                            "open_time":         sig.generated_at,
-                            "strategy":          sig.strategy,
-                            "probability_score": str(sig.probability_score),
-                            "status":            "open",
-                            "current_price":     str(sig.entry_price),
-                            "pnl":               "0",
-                        }
-                        # Step 1: fresh spreadsheet
+                                 key=btn_key, use_container_width=True):
                         ss_w, conn_err = get_fresh_spreadsheet()
                         if conn_err:
-                            st.error(f"❌ Connection failed: {conn_err}")
-                        elif ss_w is None:
-                            st.error("❌ Spreadsheet is None — check Secrets config")
+                            st.error(f"❌ {conn_err}")
                         else:
-                            # Step 2: write
+                            trade = {
+                                "trade_id":          sig.trade_id,
+                                "username":          username,
+                                "symbol":            sig.symbol,
+                                "direction":         sig.direction,
+                                "entry_price":       str(sig.entry_price),
+                                "sl_price":          str(sig.sl_price),
+                                "tp_price":          str(sig.tp_price),
+                                "tp2_price":         str(getattr(sig,"tp2_price","") or ""),
+                                "tp3_price":         str(getattr(sig,"tp3_price","") or ""),
+                                "lot_size":          str(sig.lot_size),
+                                "open_time":         sig.generated_at,
+                                "strategy":          sig.strategy,
+                                "timeframe":         getattr(sig,"timeframe",""),
+                                "probability_score": str(sig.probability_score),
+                                "ew_pattern":        sig.ew_pattern,
+                                "smc_bias":          str(sig.smc_bias)[:120],
+                                "status":            "open",
+                                "current_price":     str(sig.entry_price),
+                                "pnl":               "0",
+                                "gemini_verdict":    gemini_verdict,
+                            }
                             ok, msg = add_active_trade(ss_w, trade)
                             if ok:
                                 st.success(f"✅ {msg}")
                             else:
-                                st.error(f"❌ Write failed: {msg}")
+                                st.error(f"❌ {msg}")
                 with col_info:
                     if gemini and gemini_verdict == "CAUTION":
                         st.warning(f"⚠️ {gemini.get('reason','')}")
@@ -1051,6 +1143,126 @@ def render_history():
 
 
 # ══════════════════════════════════════════════════════════════
+# SETTINGS PAGE
+# ══════════════════════════════════════════════════════════════
+def render_settings():
+    st.markdown("## ⚙️ My Settings")
+    db       = st.session_state.db
+    username = st.session_state.user.get("username","")
+
+    if not db:
+        st.warning("Database not connected."); return
+
+    cfg = get_user_settings(db, username)
+
+    st.markdown("### 🤖 Auto-Capture")
+    st.markdown("Signals page ස්කෑන් කළ විට qualifying signals **automatically** Active Trades වලට save වෙනවා.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        auto_on   = st.toggle("Auto-Capture Enabled",
+                              value=str(cfg.get("auto_capture","true")).lower()=="true",
+                              key="s_auto")
+        min_score = st.slider("Min Score Threshold (%)", 20, 90,
+                              int(cfg.get("min_score",40) or 40), 5,
+                              key="s_minscore",
+                              help="Only signals above this score are auto-captured")
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card" style="margin-top:1.5rem;">
+            <div style="font-size:0.8rem; color:#6B7A99;">Auto-capture status</div>
+            <div style="font-size:1.2rem; font-weight:700; color:{'#00D4AA' if auto_on else '#FF4B6E'};">
+                {'🟢 Active' if auto_on else '🔴 Disabled'}
+            </div>
+            <div style="font-size:0.75rem; color:#6B7A99; margin-top:4px;">
+                Min score: {min_score}%
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("### 🔔 Notifications")
+    col3, col4, col5 = st.columns(3)
+    with col3:
+        notify_tp  = st.toggle("TP Hit Alerts",  value=str(cfg.get("notify_tp","true")).lower()=="true",  key="s_ntp")
+    with col4:
+        notify_sl  = st.toggle("SL Hit Alerts",  value=str(cfg.get("notify_sl","true")).lower()=="true",  key="s_nsl")
+    with col5:
+        notify_sig = st.toggle("Signal Alerts",  value=str(cfg.get("notify_signal","true")).lower()=="true", key="s_nsig")
+
+    st.markdown("---")
+    if st.button("💾 Save Settings", use_container_width=False):
+        ok, msg = save_user_settings(db, username, {
+            "auto_capture":  "true" if auto_on  else "false",
+            "min_score":     str(min_score),
+            "notify_tp":     "true" if notify_tp  else "false",
+            "notify_sl":     "true" if notify_sl  else "false",
+            "notify_signal": "true" if notify_sig else "false",
+        })
+        if ok: st.success(f"✅ {msg}")
+        else:  st.error(f"❌ {msg}")
+
+    # Show current settings summary
+    st.markdown("### 📋 Current Config")
+    st.json({
+        "username":       username,
+        "auto_capture":   cfg.get("auto_capture","true"),
+        "min_score":      cfg.get("min_score","40"),
+        "notify_tp":      cfg.get("notify_tp","true"),
+        "notify_sl":      cfg.get("notify_sl","true"),
+        "notify_signal":  cfg.get("notify_signal","true"),
+        "updated_at":     cfg.get("updated_at","—"),
+    })
+
+
+# ══════════════════════════════════════════════════════════════
+# NOTIFICATIONS PAGE
+# ══════════════════════════════════════════════════════════════
+def render_notifications():
+    st.markdown("## 🔔 Notifications")
+    db       = st.session_state.db
+    username = st.session_state.user.get("username","")
+
+    if not db:
+        st.warning("Database not connected."); return
+
+    col1, col2 = st.columns([3,1])
+    with col2:
+        if st.button("✅ Mark All Read", use_container_width=True):
+            mark_all_read(db, username)
+            st.session_state.notif_count = 0
+            st.rerun()
+
+    notifs = get_notifications(db, username, unread_only=False)
+    if notifs.empty:
+        st.info("No notifications yet."); return
+
+    for _, n in notifs.iterrows():
+        ntype    = str(n.get("type",""))
+        is_read  = str(n.get("is_read","false")).lower() == "true"
+        msg      = str(n.get("message",""))
+        created  = str(n.get("created_at",""))
+        symbol   = str(n.get("symbol",""))
+        direction= str(n.get("direction",""))
+
+        icon  = {"TP":"🎉","SL":"🛑","SIGNAL":"📊","CLOSE":"🔒"}.get(ntype,"🔔")
+        color = {"TP":"#00D4AA","SL":"#FF4B6E","SIGNAL":"#3B82F6","CLOSE":"#8B5CF6"}.get(ntype,"#6B7A99")
+        bg    = "#111827" if is_read else "#0D1A2D"
+        border= "#1E2A42" if is_read else color+"44"
+        opacity = "0.6" if is_read else "1.0"
+
+        st.markdown(f"""
+        <div style="background:{bg}; border:1px solid {border}; border-left:3px solid {color};
+             border-radius:8px; padding:0.8rem 1rem; margin-bottom:0.5rem; opacity:{opacity};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:600; color:{color};">{icon} {ntype}</span>
+                <span style="font-size:0.72rem; color:#6B7A99; font-family:'JetBrains Mono';">{created}</span>
+            </div>
+            <div style="font-size:0.85rem; color:#E8EDF5; margin-top:4px;">{msg}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════
 # ADMIN PAGE
 # ══════════════════════════════════════════════════════════════
 def render_admin():
@@ -1233,6 +1445,10 @@ def main():
         render_active_trades()
     elif page == "history":
         render_history()
+    elif page == "settings":
+        render_settings()
+    elif page == "notifications":
+        render_notifications()
     elif page == "admin":
         render_admin()
 
