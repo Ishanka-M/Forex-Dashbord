@@ -1,403 +1,371 @@
 """
-modules/database.py
-Google Sheets Database Layer for FX-WavePulse Pro
-- Fresh connection per write operation (fixes cached stale object bug)
-- Auto-create missing sheets on every write
-- Robust error reporting
+modules/database.py  — FX-WavePulse Pro v7
+Auto-creates ALL sheets, duplicate prevention,
+SL/TP auto-monitor, user-level settings, notifications
 """
-
 try:
     import gspread
+    from gspread.exceptions import APIError
     from google.oauth2.service_account import Credentials
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
-    gspread = None
-    Credentials = None
+    gspread = APIError = Credentials = None
 
 import pandas as pd
 import streamlit as st
-import os
-import hashlib
+import hashlib, uuid, os
 from datetime import datetime
 import pytz
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-SPREADSHEET_NAME = "Forex_User_DB"
 COLOMBO_TZ       = pytz.timezone("Asia/Colombo")
+SPREADSHEET_NAME = "Forex_User_DB"
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive"]
 
 SHEET_SCHEMAS = {
-    "Users": [
-        "username", "password_hash", "role", "email", "created_at", "is_active"
-    ],
-    "ActiveTrades": [
-        "trade_id", "username", "symbol", "direction", "entry_price",
-        "sl_price", "tp_price", "lot_size", "open_time", "strategy",
-        "probability_score", "status", "current_price", "pnl"
-    ],
-    "TradeHistory": [
-        "trade_id", "username", "symbol", "direction", "entry_price",
-        "sl_price", "tp_price", "lot_size", "open_time", "close_time",
-        "close_price", "pnl", "result", "strategy", "probability_score"
-    ],
-    "MarketData": [
-        "symbol", "timeframe", "timestamp", "open", "high", "low",
-        "close", "volume", "ew_wave", "smc_zone", "signal"
-    ],
+    "Users":        ["username","password_hash","role","email","created_at","is_active"],
+    "ActiveTrades": ["trade_id","username","symbol","direction",
+                     "entry_price","sl_price","tp_price","tp2_price","tp3_price",
+                     "lot_size","open_time","strategy","timeframe",
+                     "probability_score","ew_pattern","smc_bias",
+                     "status","current_price","pnl","gemini_verdict"],
+    "TradeHistory": ["trade_id","username","symbol","direction",
+                     "entry_price","sl_price","tp_price",
+                     "lot_size","open_time","close_time",
+                     "close_price","pnl","result","strategy",
+                     "probability_score","gemini_verdict"],
+    "SignalLog":    ["signal_id","username","symbol","direction","timeframe",
+                     "entry_price","sl_price","tp_price","tp2_price","tp3_price",
+                     "probability_score","ew_pattern","gemini_verdict",
+                     "news_sinhala","auto_captured","captured_at"],
+    "Notifications":["notif_id","username","type","symbol","direction",
+                     "message","created_at","is_read"],
+    "Settings":     ["username","auto_capture","min_score","notify_sl",
+                     "notify_tp","notify_signal","updated_at"],
 }
 
-ADMIN_USER = {
-    "username": "admin",
-    "password": "admin@#123",
-    "role":     "admin",
-    "email":    "admin@fxwavepulse.com",
-}
+ADMIN_USER = {"username":"admin","password":"admin@#123",
+              "role":"admin","email":"admin@fxwavepulse.com"}
+DEFAULT_SETTINGS = {"auto_capture":"true","min_score":"40",
+                    "notify_sl":"true","notify_tp":"true","notify_signal":"true"}
 
+def _now(): return datetime.now(COLOMBO_TZ).strftime("%Y-%m-%d %H:%M:%S")
+def _sf(v,d=0.0):
+    try: return float(v)
+    except: return d
+def _df_empty(k): return pd.DataFrame(columns=SHEET_SCHEMAS[k])
+def _to_df(rec,k): return pd.DataFrame(rec) if rec else _df_empty(k)
 
-# ══════════════════════════════════════════════════════
-# CONNECTION HELPERS
-# ══════════════════════════════════════════════════════
-
-def _build_credentials():
-    """Build Google credentials from Streamlit secrets or local file."""
-    if not GSPREAD_AVAILABLE:
-        raise RuntimeError("gspread not installed — check requirements.txt")
-
+# ── Credentials ──────────────────────────────────────────────
+def _build_creds():
+    if not GSPREAD_AVAILABLE: raise RuntimeError("gspread not installed")
     if "gcp_service_account" in st.secrets:
         info = dict(st.secrets["gcp_service_account"])
-        # Streamlit toml sometimes escapes \n — fix private key newlines
         if "private_key" in info:
-            info["private_key"] = info["private_key"].replace("\\n", "\n")
+            info["private_key"] = info["private_key"].replace("\\n","\n")
         return Credentials.from_service_account_info(info, scopes=SCOPES)
-
     if os.path.exists("service_account.json"):
-        return Credentials.from_service_account_file(
-            "service_account.json", scopes=SCOPES
-        )
+        return Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+    raise RuntimeError("No credentials. Configure [gcp_service_account] in Secrets.")
 
-    raise RuntimeError(
-        "No Google credentials found.\n"
-        "Add [gcp_service_account] to Streamlit Secrets or place service_account.json in root."
-    )
-
-
-def _get_client():
-    """Return a fresh authorised gspread client (no caching)."""
-    creds = _build_credentials()
-    return gspread.authorize(creds)
-
-
-def _get_spreadsheet():
-    """
-    Return the Forex_User_DB spreadsheet with all sheets verified.
-    Always opens a fresh connection — safe for write operations.
-    """
-    client = _get_client()
-    try:
-        ss = client.open(SPREADSHEET_NAME)
-    except Exception:
+def _open_ss():
+    client = gspread.authorize(_build_creds())
+    try: ss = client.open(SPREADSHEET_NAME)
+    except:
         ss = client.create(SPREADSHEET_NAME)
         ss.share(None, perm_type="anyone", role="writer")
-
-    existing = [ws.title for ws in ss.worksheets()]
-
-    # Create any missing sheets
-    for sheet_name, headers in SHEET_SCHEMAS.items():
-        if sheet_name not in existing:
-            ws = ss.add_worksheet(
-                title=sheet_name,
-                rows=2000,
-                cols=len(headers)
-            )
+    existing = {ws.title for ws in ss.worksheets()}
+    for name, headers in SHEET_SCHEMAS.items():
+        if name not in existing:
+            ws = ss.add_worksheet(title=name, rows=5000, cols=len(headers))
             ws.append_row(headers, value_input_option="RAW")
-
-    # Remove default Sheet1
     if "Sheet1" in existing:
-        try:
-            ss.del_worksheet(ss.worksheet("Sheet1"))
-        except Exception:
-            pass
-
+        try: ss.del_worksheet(ss.worksheet("Sheet1"))
+        except: pass
     return ss
-
-
-# ══════════════════════════════════════════════════════
-# CACHED READ CONNECTION  (for dashboard reads only)
-# ══════════════════════════════════════════════════════
 
 @st.cache_resource(ttl=600, show_spinner=False)
 def get_database():
-    """
-    Cached spreadsheet for READ operations (dashboard, signals page).
-    Returns (spreadsheet, error_string).
-    """
-    if not GSPREAD_AVAILABLE:
-        return None, "gspread not installed — check requirements.txt"
+    if not GSPREAD_AVAILABLE: return None,"gspread not installed"
     try:
-        ss = _get_spreadsheet()
-        _ensure_admin_exists(ss)
-        return ss, None
-    except Exception as e:
-        return None, str(e)
-
+        ss = _open_ss(); _ensure_admin(ss); return ss,None
+    except Exception as e: return None,str(e)
 
 def get_fresh_spreadsheet():
-    """
-    Fresh (uncached) spreadsheet for WRITE operations.
-    Returns (spreadsheet, error_string).
-    Completely rebuilds credentials + connection every call.
-    """
-    if not GSPREAD_AVAILABLE:
-        return None, "gspread library not installed. Add to requirements.txt: gspread==6.1.2"
+    if not GSPREAD_AVAILABLE: return None,"gspread not installed"
+    try: return _open_ss(),None
+    except Exception as e: return None,f"Connection: {e}"
+
+# ── Admin ────────────────────────────────────────────────────
+def _ensure_admin(ss):
     try:
-        creds = _build_credentials()
-        client = gspread.authorize(creds)
+        ws = ss.worksheet("Users")
+        if ADMIN_USER["username"] not in [r.get("username") for r in ws.get_all_records()]:
+            ph = hashlib.sha256(ADMIN_USER["password"].encode()).hexdigest()
+            ws.append_row([ADMIN_USER["username"],ph,ADMIN_USER["role"],
+                           ADMIN_USER["email"],_now(),"true"],value_input_option="RAW")
+    except Exception as e: print(f"[admin] {e}")
 
-        # Open spreadsheet
-        try:
-            ss = client.open(SPREADSHEET_NAME)
-        except Exception as open_err:
-            # Try creating
-            try:
-                ss = client.create(SPREADSHEET_NAME)
-                ss.share(None, perm_type="anyone", role="writer")
-            except Exception as create_err:
-                return None, f"Cannot open '{SPREADSHEET_NAME}': {open_err} | Cannot create: {create_err}"
+# ── Users ────────────────────────────────────────────────────
+def get_users(ss):
+    try: return _to_df(ss.worksheet("Users").get_all_records(),"Users")
+    except: return _df_empty("Users")
 
-        # Ensure all sheets exist
-        existing = [ws.title for ws in ss.worksheets()]
-        for sheet_name, headers in SHEET_SCHEMAS.items():
-            if sheet_name not in existing:
-                ws = ss.add_worksheet(title=sheet_name, rows=2000, cols=len(headers))
-                ws.append_row(headers, value_input_option="RAW")
-
-        return ss, None
-    except Exception as e:
-        return None, f"Credential/connection error: {str(e)}"
-
-
-# ══════════════════════════════════════════════════════
-# ADMIN INIT
-# ══════════════════════════════════════════════════════
-
-def _ensure_admin_exists(ss):
+def authenticate_user(ss, username, password):
+    if username==ADMIN_USER["username"] and password==ADMIN_USER["password"]:
+        return {"username":username,"role":"admin","email":ADMIN_USER["email"]}
+    if ss is None: return None
     try:
-        ws       = ss.worksheet("Users")
-        records  = ws.get_all_records()
-        existing = [r.get("username") for r in records]
-        if ADMIN_USER["username"] not in existing:
-            pwd_hash = hashlib.sha256(ADMIN_USER["password"].encode()).hexdigest()
-            now      = datetime.now(COLOMBO_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            ws.append_row(
-                [ADMIN_USER["username"], pwd_hash, ADMIN_USER["role"],
-                 ADMIN_USER["email"], now, "true"],
-                value_input_option="RAW"
-            )
-    except Exception as e:
-        print(f"[Admin init] {e}")
-
-
-# ══════════════════════════════════════════════════════
-# USERS
-# ══════════════════════════════════════════════════════
-
-def get_users(ss) -> pd.DataFrame:
-    try:
-        records = ss.worksheet("Users").get_all_records()
-        return pd.DataFrame(records) if records else pd.DataFrame(columns=SHEET_SCHEMAS["Users"])
-    except Exception:
-        return pd.DataFrame(columns=SHEET_SCHEMAS["Users"])
-
-
-def authenticate_user(ss, username: str, password: str):
-    """Returns user dict or None."""
-    # Hardcoded admin always works (even if DB down)
-    if username == ADMIN_USER["username"] and password == ADMIN_USER["password"]:
-        return {"username": username, "role": "admin", "email": ADMIN_USER["email"]}
-
-    if ss is None:
-        return None
-    try:
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-        df       = get_users(ss)
-        if df.empty:
-            return None
-        row = df[
-            (df["username"] == username) &
-            (df["password_hash"] == pwd_hash) &
-            (df["is_active"].astype(str).str.lower() == "true")
-        ]
+        ph  = hashlib.sha256(password.encode()).hexdigest()
+        df  = get_users(ss)
+        row = df[(df["username"]==username)&(df["password_hash"]==ph)&
+                 (df["is_active"].astype(str).str.lower()=="true")]
         return row.iloc[0].to_dict() if not row.empty else None
-    except Exception:
-        return None
-
+    except: return None
 
 def create_user(ss, username, password, email, role="trader"):
     try:
-        df = get_users(ss)
-        if username in df["username"].values:
-            return False, f"Username '{username}' already exists."
-        pwd_hash = hashlib.sha256(password.encode()).hexdigest()
-        now      = datetime.now(COLOMBO_TZ).strftime("%Y-%m-%d %H:%M:%S")
-        # Use fresh connection for write
-        ss_w, err = get_fresh_spreadsheet()
-        if err:
-            return False, err
-        ss_w.worksheet("Users").append_row(
-            [username, pwd_hash, role, email, now, "true"],
-            value_input_option="RAW"
-        )
-        return True, "User created successfully."
-    except Exception as e:
-        return False, str(e)
-
+        if username in get_users(ss)["username"].values:
+            return False,f"'{username}' already exists."
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return False,err
+        ph = hashlib.sha256(password.encode()).hexdigest()
+        ss_w.worksheet("Users").append_row([username,ph,role,email,_now(),"true"],
+                                            value_input_option="RAW")
+        _init_settings(ss_w,username)
+        return True,"User created."
+    except Exception as e: return False,str(e)
 
 def delete_user(ss, username):
     try:
-        if username == "admin":
-            return False, "Cannot delete admin user."
-        ss_w, err = get_fresh_spreadsheet()
-        if err:
-            return False, err
-        ws      = ss_w.worksheet("Users")
-        records = ws.get_all_records()
-        for i, r in enumerate(records):
-            if r.get("username") == username:
-                ws.delete_rows(i + 2)
-                return True, f"User '{username}' deleted."
-        return False, "User not found."
-    except Exception as e:
-        return False, str(e)
+        if username=="admin": return False,"Cannot delete admin."
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return False,err
+        ws = ss_w.worksheet("Users")
+        for i,r in enumerate(ws.get_all_records()):
+            if r.get("username")==username:
+                ws.delete_rows(i+2); return True,f"'{username}' deleted."
+        return False,"Not found."
+    except Exception as e: return False,str(e)
 
-
-# ══════════════════════════════════════════════════════
-# ACTIVE TRADES
-# ══════════════════════════════════════════════════════
-
-def get_active_trades(ss, username=None) -> pd.DataFrame:
+# ── Settings ─────────────────────────────────────────────────
+def _init_settings(ss, username):
     try:
-        records = ss.worksheet("ActiveTrades").get_all_records()
-        df = pd.DataFrame(records) if records else pd.DataFrame(columns=SHEET_SCHEMAS["ActiveTrades"])
-        if username and not df.empty:
-            df = df[df["username"] == username]
-        return df
-    except Exception:
-        return pd.DataFrame(columns=SHEET_SCHEMAS["ActiveTrades"])
+        ws = ss.worksheet("Settings")
+        if not any(r.get("username")==username for r in ws.get_all_records()):
+            ws.append_row([username,
+                DEFAULT_SETTINGS["auto_capture"],DEFAULT_SETTINGS["min_score"],
+                DEFAULT_SETTINGS["notify_sl"],DEFAULT_SETTINGS["notify_tp"],
+                DEFAULT_SETTINGS["notify_signal"],_now()],value_input_option="RAW")
+    except Exception as e: print(f"[settings] {e}")
 
+def get_user_settings(ss, username) -> dict:
+    try:
+        _init_settings(ss, username)
+        for r in ss.worksheet("Settings").get_all_records():
+            if r.get("username")==username: return r
+    except: pass
+    return {**DEFAULT_SETTINGS,"username":username}
+
+def save_user_settings(ss, username, updates: dict):
+    try:
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return False,err
+        ws      = ss_w.worksheet("Settings")
+        headers = SHEET_SCHEMAS["Settings"]
+        for i,r in enumerate(ws.get_all_records()):
+            if r.get("username")==username:
+                for col,val in updates.items():
+                    if col in headers:
+                        ws.update_cell(i+2,headers.index(col)+1,str(val))
+                ws.update_cell(i+2,headers.index("updated_at")+1,_now())
+                return True,"Saved."
+        _init_settings(ss_w,username); return True,"Initialised."
+    except Exception as e: return False,str(e)
+
+# ── Notifications ────────────────────────────────────────────
+def _add_notif(ss, username, ntype, symbol, direction, message):
+    try:
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return
+        ss_w.worksheet("Notifications").append_row([
+            str(uuid.uuid4())[:8].upper(),username,ntype,symbol,direction,
+            message,_now(),"false"],value_input_option="RAW")
+    except Exception as e: print(f"[notif] {e}")
+
+def get_notifications(ss, username, unread_only=True):
+    try:
+        df = _to_df(ss.worksheet("Notifications").get_all_records(),"Notifications")
+        if df.empty: return df
+        df = df[df["username"]==username]
+        if unread_only:
+            df = df[df["is_read"].astype(str).str.lower()=="false"]
+        return df.sort_values("created_at",ascending=False) if not df.empty else df
+    except: return _df_empty("Notifications")
+
+def mark_all_read(ss, username):
+    try:
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return
+        ws      = ss_w.worksheet("Notifications")
+        headers = SHEET_SCHEMAS["Notifications"]
+        col_idx = headers.index("is_read")+1
+        for i,r in enumerate(ws.get_all_records()):
+            if r.get("username")==username and str(r.get("is_read","")).lower()=="false":
+                ws.update_cell(i+2,col_idx,"true")
+    except Exception as e: print(f"[mark read] {e}")
+
+# ── Active Trades ────────────────────────────────────────────
+def get_active_trades(ss, username=None):
+    try:
+        df = _to_df(ss.worksheet("ActiveTrades").get_all_records(),"ActiveTrades")
+        if username and not df.empty: df = df[df["username"]==username]
+        return df
+    except: return _df_empty("ActiveTrades")
+
+def _get_active_ids(ss) -> set:
+    try: return set(v for v in ss.worksheet("ActiveTrades").col_values(1)[1:] if v)
+    except: return set()
 
 def add_active_trade(ss, trade: dict):
-    """
-    Write trade to ActiveTrades sheet.
-    ss must be a valid spreadsheet object from get_fresh_spreadsheet().
-    Returns (True, success_msg) or (False, error_msg).
-    """
-    if ss is None:
-        return False, "Spreadsheet object is None — call get_fresh_spreadsheet() first"
+    if ss is None: return False,"Spreadsheet is None"
     try:
         ws = ss.worksheet("ActiveTrades")
-
-        # Build row exactly matching schema order
-        row = []
-        for col in SHEET_SCHEMAS["ActiveTrades"]:
-            val = trade.get(col, "")
-            row.append(str(val) if val is not None else "")
-
-        # Verify row length
-        if len(row) != len(SHEET_SCHEMAS["ActiveTrades"]):
-            return False, f"Row length mismatch: expected {len(SHEET_SCHEMAS['ActiveTrades'])}, got {len(row)}"
-
+        if str(trade.get("trade_id","")) in set(ws.col_values(1)[1:]):
+            return False,f"Duplicate: {trade.get('trade_id')} already exists"
+        row = [str(trade.get(col,"")) for col in SHEET_SCHEMAS["ActiveTrades"]]
         ws.append_row(row, value_input_option="USER_ENTERED")
+        return True,f"Saved {trade.get('trade_id')}"
+    except Exception as e: return False,f"{type(e).__name__}: {e}"
 
-        # Verify it was written
-        all_records = ws.get_all_records()
-        written = any(str(r.get("trade_id", "")) == str(trade.get("trade_id", "")) for r in all_records)
-        if written:
-            return True, f"Trade {trade.get('trade_id')} saved to ActiveTrades ✅"
-        else:
-            return True, "Trade appended (unverified — check sheet)"
+def auto_capture_signal(ss, sig, username: str, gemini_verdict: str="") -> tuple:
+    cfg       = get_user_settings(ss, username)
+    if str(cfg.get("auto_capture","true")).lower()!="true":
+        return False,"Auto-capture off"
+    min_score = int(cfg.get("min_score",40) or 40)
+    if sig.probability_score < min_score:
+        return False,f"Score {sig.probability_score}% < threshold {min_score}%"
+    ss_w,err = get_fresh_spreadsheet()
+    if err: return False,err
+    if sig.trade_id in _get_active_ids(ss_w):
+        return False,"Already captured"
+    trade = {
+        "trade_id":          sig.trade_id,
+        "username":          username,
+        "symbol":            sig.symbol,
+        "direction":         sig.direction,
+        "entry_price":       str(sig.entry_price),
+        "sl_price":          str(sig.sl_price),
+        "tp_price":          str(sig.tp_price),
+        "tp2_price":         str(getattr(sig,"tp2_price","") or ""),
+        "tp3_price":         str(getattr(sig,"tp3_price","") or ""),
+        "lot_size":          str(sig.lot_size),
+        "open_time":         sig.generated_at,
+        "strategy":          sig.strategy,
+        "timeframe":         getattr(sig,"timeframe",""),
+        "probability_score": str(sig.probability_score),
+        "ew_pattern":        sig.ew_pattern,
+        "smc_bias":          str(sig.smc_bias)[:120],
+        "status":            "open",
+        "current_price":     str(sig.entry_price),
+        "pnl":               "0",
+        "gemini_verdict":    gemini_verdict,
+    }
+    ok,msg = add_active_trade(ss_w, trade)
+    if ok and str(cfg.get("notify_signal","true")).lower()=="true":
+        _add_notif(ss_w,username,"SIGNAL",sig.symbol,sig.direction,
+            f"📊 Auto-captured {sig.symbol} {sig.direction} @ {sig.entry_price} "
+            f"(Score:{sig.probability_score}% Gemini:{gemini_verdict or 'N/A'})")
+    return ok,msg
 
-    except gspread.exceptions.APIError as api_err:
-        return False, f"Google Sheets API error: {str(api_err)}"
-    except Exception as e:
-        return False, f"Write error: {type(e).__name__}: {str(e)}"
-
-
-def update_trade_pnl(ss, trade_id: str, current_price: float, pnl: float):
-    """Update live P&L on an active trade row."""
+def update_trade_pnl(ss, trade_id, current_price, pnl):
     try:
-        ss_w, err = get_fresh_spreadsheet()
-        if err:
-            return False, err
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return False,err
         ws      = ss_w.worksheet("ActiveTrades")
-        records = ws.get_all_records()
         headers = SHEET_SCHEMAS["ActiveTrades"]
-        for i, r in enumerate(records):
-            if str(r.get("trade_id")) == str(trade_id):
-                row_num = i + 2
-                cp_col  = headers.index("current_price") + 1
-                pnl_col = headers.index("pnl") + 1
-                ws.update_cell(row_num, cp_col, str(round(current_price, 5)))
-                ws.update_cell(row_num, pnl_col, str(round(pnl, 2)))
-                return True, "Updated"
-        return False, "Trade not found"
-    except Exception as e:
-        return False, str(e)
+        for i,r in enumerate(ws.get_all_records()):
+            if str(r.get("trade_id"))==str(trade_id):
+                ws.update_cell(i+2,headers.index("current_price")+1,str(round(current_price,5)))
+                ws.update_cell(i+2,headers.index("pnl")+1,str(round(pnl,2)))
+                return True,"Updated"
+        return False,"Not found"
+    except Exception as e: return False,str(e)
 
-
-# ══════════════════════════════════════════════════════
-# CLOSE TRADE  (ActiveTrades → TradeHistory)
-# ══════════════════════════════════════════════════════
-
+# ── Close Trade ──────────────────────────────────────────────
 def close_trade(ss, trade_id, close_price, result):
-    """Move trade from ActiveTrades to TradeHistory."""
     try:
-        ss_w, err = get_fresh_spreadsheet()
-        if err:
-            return False, f"Connection error: {err}"
-
+        ss_w,err = get_fresh_spreadsheet()
+        if err: return False,f"Connection: {err}"
         active_ws  = ss_w.worksheet("ActiveTrades")
         history_ws = ss_w.worksheet("TradeHistory")
-        records    = active_ws.get_all_records()
+        for i,r in enumerate(active_ws.get_all_records()):
+            if str(r.get("trade_id"))!=str(trade_id): continue
+            entry     = _sf(r.get("entry_price"))
+            direction = r.get("direction","BUY")
+            lot       = _sf(r.get("lot_size",0.01),0.01)
+            pnl       = (close_price-entry)*(1 if direction=="BUY" else -1)*lot*100000
+            username  = r.get("username","")
+            symbol    = r.get("symbol","")
+            hist = []
+            for col in SHEET_SCHEMAS["TradeHistory"]:
+                if   col=="close_time":  hist.append(_now())
+                elif col=="close_price": hist.append(str(close_price))
+                elif col=="pnl":         hist.append(str(round(pnl,2)))
+                elif col=="result":      hist.append(result)
+                else:                    hist.append(str(r.get(col,"")))
+            history_ws.append_row(hist, value_input_option="USER_ENTERED")
+            active_ws.delete_rows(i+2)
+            pnl_str = f"${pnl:+.2f}"
+            cfg = get_user_settings(ss_w, username)
+            if result=="TP" and str(cfg.get("notify_tp","true")).lower()=="true":
+                _add_notif(ss_w,username,"TP",symbol,direction,
+                    f"🎉 {symbol} {direction} — TP Hit! Profit: {pnl_str}")
+            elif result=="SL" and str(cfg.get("notify_sl","true")).lower()=="true":
+                _add_notif(ss_w,username,"SL",symbol,direction,
+                    f"🛑 {symbol} {direction} — SL Hit. Loss: {pnl_str}")
+            else:
+                _add_notif(ss_w,username,"CLOSE",symbol,direction,
+                    f"🔒 {symbol} closed manually. P&L: {pnl_str}")
+            return True,f"Closed → {result} | P&L: {pnl_str}"
+        return False,f"Trade '{trade_id}' not found."
+    except Exception as e: return False,f"{type(e).__name__}: {e}"
 
-        for i, r in enumerate(records):
-            if str(r.get("trade_id")) == str(trade_id):
-                now       = datetime.now(COLOMBO_TZ).strftime("%Y-%m-%d %H:%M:%S")
-                entry     = float(r.get("entry_price", 0) or 0)
-                direction = r.get("direction", "BUY")
-                lot       = float(r.get("lot_size", 0.01) or 0.01)
-                pnl       = (close_price - entry) * (1 if direction == "BUY" else -1) * lot * 100000
+# ── SL/TP Auto-Monitor ───────────────────────────────────────
+def check_sl_tp_hits(ss, live_prices: dict) -> list:
+    closed = []
+    try: records = ss.worksheet("ActiveTrades").get_all_records()
+    except: return closed
+    for r in records:
+        trade_id  = str(r.get("trade_id",""))
+        symbol    = r.get("symbol","")
+        direction = r.get("direction","BUY")
+        sl        = _sf(r.get("sl_price"))
+        tp        = _sf(r.get("tp_price"))
+        if not trade_id or not symbol: continue
+        current = live_prices.get(symbol)
+        if current is None: continue
+        hit = None
+        if direction=="BUY":
+            if tp>0 and current>=tp: hit="TP"
+            elif sl>0 and current<=sl: hit="SL"
+        else:
+            if tp>0 and current<=tp: hit="TP"
+            elif sl>0 and current>=sl: hit="SL"
+        if hit:
+            ok,msg = close_trade(ss,trade_id,current,hit)
+            if ok:
+                closed.append({"trade_id":trade_id,"symbol":symbol,
+                               "direction":direction,"result":hit,
+                               "price":current,"msg":msg})
+    return closed
 
-                history_row = [
-                    r.get("trade_id"),   r.get("username"),  r.get("symbol"),
-                    r.get("direction"),  r.get("entry_price"),
-                    r.get("sl_price"),   r.get("tp_price"),  r.get("lot_size"),
-                    r.get("open_time"),  now,                str(close_price),
-                    str(round(pnl, 2)), result,
-                    r.get("strategy"),  r.get("probability_score"),
-                ]
-                history_ws.append_row(history_row, value_input_option="USER_ENTERED")
-                active_ws.delete_rows(i + 2)
-                return True, f"Trade closed → {result}. P&L: ${round(pnl, 2)}"
-
-        return False, "Trade ID not found in ActiveTrades."
-    except Exception as e:
-        return False, f"Close error: {str(e)}"
-
-
-# ══════════════════════════════════════════════════════
-# TRADE HISTORY
-# ══════════════════════════════════════════════════════
-
-def get_trade_history(ss, username=None) -> pd.DataFrame:
+# ── Trade History ────────────────────────────────────────────
+def get_trade_history(ss, username=None):
     try:
-        records = ss.worksheet("TradeHistory").get_all_records()
-        df = pd.DataFrame(records) if records else pd.DataFrame(columns=SHEET_SCHEMAS["TradeHistory"])
+        df = _to_df(ss.worksheet("TradeHistory").get_all_records(),"TradeHistory")
         if username and not df.empty and "username" in df.columns:
-            df = df[df["username"] == username]
+            df = df[df["username"]==username]
         return df
-    except Exception:
-        return pd.DataFrame(columns=SHEET_SCHEMAS["TradeHistory"])
+    except: return _df_empty("TradeHistory")
