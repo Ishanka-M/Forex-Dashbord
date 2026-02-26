@@ -240,16 +240,32 @@ def add_active_trade(ss, trade: dict):
     except Exception as e: return False,f"{type(e).__name__}: {e}"
 
 def auto_capture_signal(ss, sig, username: str, gemini_verdict: str="") -> tuple:
-    cfg       = get_user_settings(ss, username)
-    if str(cfg.get("auto_capture","true")).lower()!="true":
-        return False,"Auto-capture off"
-    min_score = int(cfg.get("min_score",40) or 40)
+    """
+    Auto-save signal to ActiveTrades.
+    Only captures if:
+      1. User's auto_capture = true
+      2. Signal score >= min_score threshold
+      3. Gemini verdict = CONFIRM (CAUTION/REJECT blocked)
+      4. Not already in ActiveTrades (duplicate check)
+    """
+    cfg = get_user_settings(ss, username)
+    if str(cfg.get("auto_capture","true")).lower() != "true":
+        return False, "Auto-capture off"
+
+    min_score = int(cfg.get("min_score", 40) or 40)
     if sig.probability_score < min_score:
-        return False,f"Score {sig.probability_score}% < threshold {min_score}%"
-    ss_w,err = get_fresh_spreadsheet()
-    if err: return False,err
+        return False, f"Score {sig.probability_score}% < threshold {min_score}%"
+
+    # CONFIRM-only gate — CAUTION and REJECT are not auto-captured
+    if gemini_verdict and gemini_verdict != "CONFIRM":
+        return False, f"Gemini {gemini_verdict} — not auto-captured (CONFIRM required)"
+
+    ss_w, err = get_fresh_spreadsheet()
+    if err: return False, err
+
     if sig.trade_id in _get_active_ids(ss_w):
-        return False,"Already captured"
+        return False, "Already captured"
+
     trade = {
         "trade_id":          sig.trade_id,
         "username":          username,
@@ -258,12 +274,12 @@ def auto_capture_signal(ss, sig, username: str, gemini_verdict: str="") -> tuple
         "entry_price":       str(sig.entry_price),
         "sl_price":          str(sig.sl_price),
         "tp_price":          str(sig.tp_price),
-        "tp2_price":         str(getattr(sig,"tp2_price","") or ""),
-        "tp3_price":         str(getattr(sig,"tp3_price","") or ""),
+        "tp2_price":         str(getattr(sig, "tp2_price", "") or ""),
+        "tp3_price":         str(getattr(sig, "tp3_price", "") or ""),
         "lot_size":          str(sig.lot_size),
         "open_time":         sig.generated_at,
         "strategy":          sig.strategy,
-        "timeframe":         getattr(sig,"timeframe",""),
+        "timeframe":         getattr(sig, "timeframe", ""),
         "probability_score": str(sig.probability_score),
         "ew_pattern":        sig.ew_pattern,
         "smc_bias":          str(sig.smc_bias)[:120],
@@ -272,12 +288,12 @@ def auto_capture_signal(ss, sig, username: str, gemini_verdict: str="") -> tuple
         "pnl":               "0",
         "gemini_verdict":    gemini_verdict,
     }
-    ok,msg = add_active_trade(ss_w, trade)
-    if ok and str(cfg.get("notify_signal","true")).lower()=="true":
-        _add_notif(ss_w,username,"SIGNAL",sig.symbol,sig.direction,
-            f"📊 Auto-captured {sig.symbol} {sig.direction} @ {sig.entry_price} "
-            f"(Score:{sig.probability_score}% Gemini:{gemini_verdict or 'N/A'})")
-    return ok,msg
+    ok, msg = add_active_trade(ss_w, trade)
+    if ok and str(cfg.get("notify_signal","true")).lower() == "true":
+        _add_notif(ss_w, username, "SIGNAL", sig.symbol, sig.direction,
+            f"🤖 Auto-captured {sig.symbol} {sig.direction} @ {sig.entry_price} "
+            f"(Score:{sig.probability_score}% · Gemini:✅CONFIRM)")
+    return ok, msg
 
 def update_trade_pnl(ss, trade_id, current_price, pnl):
     try:

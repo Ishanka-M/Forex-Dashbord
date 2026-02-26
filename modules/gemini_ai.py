@@ -1,424 +1,360 @@
 """
-modules/gemini_ai.py
-Gemini AI Signal Confirmation Engine
-- 7 API key rotation (free tier friendly)
-- Analyses EW + SMC signals and gives BUY/SELL/SKIP verdict
-- Rate limit aware — auto-rotates to next key on 429
+modules/gemini_ai.py  v4 — FX-WavePulse Pro
+════════════════════════════════════════════
+• Gemini as PRIMARY signal quality judge
+• Deep institutional analysis prompt (EW rules + SMC + zone + news)
+• Pre-filter: RR < 1.5 and score < 35 rejected before API call
+• Returns: verdict, tp1_probability, sl_quality, position_size,
+           partial_close_plan, sl_adjust suggestion, news_sinhala
+• 7-key rotation, graceful fallback
 """
 
 import streamlit as st
 import requests
 import json
 import time
+import re
 from datetime import datetime
 import pytz
 
-COLOMBO_TZ = pytz.timezone("Asia/Colombo")
-
-# ── Gemini Model ─────────────────────────────────────────────────────────────
-GEMINI_MODEL = "gemini-1.5-flash"          # Free tier, fast
+COLOMBO_TZ   = pytz.timezone("Asia/Colombo")
+GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_URL   = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key="
 )
-
-# ── Key Rotation State ────────────────────────────────────────────────────────
-_KEY_STATE_KEY = "_gemini_key_state"   # st.session_state key
+_KS = "_gm_key_state"
 
 
-def _get_api_keys() -> list[str]:
-    """Load API keys from Streamlit secrets."""
+# ══ Key rotation ═══════════════════════════════════════════════
+def _get_api_keys() -> list:
     keys = []
     try:
-        # Support both list format and individual keys
         if "gemini_api_keys" in st.secrets:
-            raw = st.secrets["gemini_api_keys"]
-            if isinstance(raw, str):
-                keys = [k.strip() for k in raw.split(",") if k.strip()]
-            else:
-                keys = list(raw)
+            raw  = st.secrets["gemini_api_keys"]
+            keys = [k.strip() for k in (raw if isinstance(raw, list)
+                    else raw.split(",")) if k.strip()]
         else:
-            # Fallback: individual keys gemini_key_1 … gemini_key_7
             for i in range(1, 8):
                 k = st.secrets.get(f"gemini_key_{i}", "")
-                if k:
-                    keys.append(k)
+                if k: keys.append(k)
     except Exception:
         pass
     return keys
 
 
-def _init_key_state(keys: list[str]):
-    """Initialise rotation state in session."""
-    if _KEY_STATE_KEY not in st.session_state:
-        st.session_state[_KEY_STATE_KEY] = {
-            "index":        0,
-            "usage":        {k: 0 for k in keys},
-            "errors":       {k: 0 for k in keys},
-            "last_used":    {k: 0.0 for k in keys},
-            "skip_until":   {k: 0.0 for k in keys},
+def _init_ks(keys):
+    if _KS not in st.session_state:
+        st.session_state[_KS] = {
+            "idx": 0,
+            "usage":      {k: 0   for k in keys},
+            "errors":     {k: 0   for k in keys},
+            "skip_until": {k: 0.0 for k in keys},
         }
 
 
-def _next_key(keys: list[str]) -> str | None:
-    """
-    Pick the next available API key using round-robin rotation.
-    Skips keys that are rate-limited (skip_until > now).
-    Returns None if all keys are exhausted.
-    """
-    if not keys:
-        return None
-
-    _init_key_state(keys)
-    state = st.session_state[_KEY_STATE_KEY]
-    now   = time.time()
-
-    # Try each key starting from current index
+def _next_key(keys):
+    if not keys: return None
+    _init_ks(keys)
+    s, now = st.session_state[_KS], time.time()
     for _ in range(len(keys)):
-        idx = state["index"] % len(keys)
-        key = keys[idx]
-        state["index"] = (idx + 1) % len(keys)
-
-        if state["skip_until"].get(key, 0) < now:
-            state["usage"][key] = state["usage"].get(key, 0) + 1
-            state["last_used"][key] = now
+        idx       = s["idx"] % len(keys)
+        key       = keys[idx]
+        s["idx"]  = (idx + 1) % len(keys)
+        if s["skip_until"].get(key, 0) < now:
+            s["usage"][key] = s["usage"].get(key, 0) + 1
             return key
-
-    return None   # All keys rate-limited
-
-
-def _mark_rate_limited(key: str, retry_after: int = 60):
-    """Mark a key as rate-limited for retry_after seconds."""
-    if _KEY_STATE_KEY not in st.session_state:
-        return
-    state = st.session_state[_KEY_STATE_KEY]
-    state["skip_until"][key]  = time.time() + retry_after
-    state["errors"][key]      = state["errors"].get(key, 0) + 1
-
-
-# ══════════════════════════════════════════════════════
-# CORE API CALL
-# ══════════════════════════════════════════════════════
-
-def _call_gemini(prompt: str, max_tokens: int = 512) -> str | None:
-    """
-    Call Gemini API with automatic key rotation.
-    Returns text response or None on failure.
-    """
-    keys = _get_api_keys()
-    if not keys:
-        return None
-
-    # Try up to len(keys) times with different keys
-    for attempt in range(len(keys)):
-        key = _next_key(keys)
-        if not key:
-            break   # All keys exhausted
-
-        try:
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "maxOutputTokens": max_tokens,
-                    "temperature":     0.2,
-                    "topP":            0.8,
-                },
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_HARASSMENT",       "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH",      "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT","threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT","threshold": "BLOCK_NONE"},
-                ],
-            }
-
-            resp = requests.post(
-                GEMINI_URL + key,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=15,
-            )
-
-            if resp.status_code == 200:
-                data = resp.json()
-                text = (
-                    data.get("candidates", [{}])[0]
-                        .get("content", {})
-                        .get("parts", [{}])[0]
-                        .get("text", "")
-                )
-                return text.strip()
-
-            elif resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", 60))
-                _mark_rate_limited(key, retry_after)
-                continue   # Try next key
-
-            else:
-                _mark_rate_limited(key, 30)
-                continue
-
-        except requests.Timeout:
-            _mark_rate_limited(key, 20)
-            continue
-        except Exception:
-            continue
-
     return None
 
 
-# ══════════════════════════════════════════════════════
-# SIGNAL CONFIRMATION
-# ══════════════════════════════════════════════════════
+def _rate_limit(key, secs=60):
+    if _KS not in st.session_state: return
+    s = st.session_state[_KS]
+    s["skip_until"][key] = time.time() + secs
+    s["errors"][key]     = s["errors"].get(key, 0) + 1
 
-def build_signal_prompt(signal_data: dict) -> str:
-    """Structured prompt — signal analysis + news impact + Sinhala alert."""
-    return f"""You are a professional Forex trading analyst specialising in Elliott Wave Theory and Smart Money Concepts (SMC).
 
-Analyse this trade signal. Also check if there are any major news events or economic releases in the next 24-48 hours that could impact this trade (Fed decisions, NFP, CPI, central bank meetings, geopolitical events, etc.).
+def _clean_json(text: str) -> str:
+    text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
+    m    = re.search(r"\{.*\}", text, re.DOTALL)
+    return m.group(0) if m else text
 
-## Signal Details
-- Symbol:      {signal_data.get('symbol')}
-- Direction:   {signal_data.get('direction')}
-- Strategy:    {signal_data.get('strategy','').upper()} ({signal_data.get('timeframe')})
-- Entry:       {signal_data.get('entry_price')}
-- Stop Loss:   {signal_data.get('sl_price')}
-- TP1:         {signal_data.get('tp_price')}
-- TP2:         {signal_data.get('tp2', 'N/A')}
-- TP3:         {signal_data.get('tp3', 'N/A')}
-- Risk/Reward: {signal_data.get('risk_reward')}
-- Score:       {signal_data.get('probability_score')}%
 
-## Confluences Detected
-{chr(10).join('• ' + c for c in signal_data.get('confluences', []))}
+def _call_gemini(prompt: str, max_tokens: int = 700) -> str | None:
+    keys = _get_api_keys()
+    if not keys: return None
+    for _ in range(len(keys)):
+        key = _next_key(keys)
+        if not key: break
+        try:
+            r = requests.post(
+                GEMINI_URL + key,
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": 0.15,
+                        "topP": 0.85,
+                    },
+                    "safetySettings": [
+                        {"category": f"HARM_CATEGORY_{c}", "threshold": "BLOCK_NONE"}
+                        for c in ["HARASSMENT","HATE_SPEECH",
+                                  "SEXUALLY_EXPLICIT","DANGEROUS_CONTENT"]
+                    ],
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=20,
+            )
+            if r.status_code == 200:
+                return (r.json()
+                          .get("candidates",[{}])[0]
+                          .get("content",{})
+                          .get("parts",[{}])[0]
+                          .get("text","")).strip()
+            elif r.status_code == 429:
+                _rate_limit(key, int(r.headers.get("Retry-After", 60)))
+            else:
+                _rate_limit(key, 30)
+        except requests.Timeout:
+            _rate_limit(key, 20)
+        except Exception:
+            pass
+    return None
 
-## Elliott Wave
-- Pattern: {signal_data.get('ew_pattern')}
 
-## SMC Bias
-{signal_data.get('smc_bias')}
+# ══ Pre-filter (no API needed) ══════════════════════════════════
+def _pre_filter(rr: float, score: int, confluences: list) -> tuple[bool, str]:
+    """Hard rules that reject before any Gemini call."""
+    if rr < 1.5:
+        return False, f"RR {rr:.2f} < 1.5 minimum"
+    if score < 35:
+        return False, f"Score {score}% too low (< 35%)"
+    if len(confluences) < 2:
+        return False, f"Only {len(confluences)} confluence(s) — need ≥ 2"
+    return True, "ok"
 
-## Task
-Respond ONLY in this exact JSON format (no markdown fences, no extra text):
+
+# ══ Deep Analysis Prompt ════════════════════════════════════════
+def _build_prompt(sd: dict) -> str:
+    confs = "\n".join(f"  • {c}" for c in sd.get("confluences", []))
+    now   = datetime.now(COLOMBO_TZ).strftime("%A %d %B %Y, %H:%M LKT")
+    return f"""You are an institutional Forex trader — expert in Elliott Wave Theory (EW) and Smart Money Concepts (SMC). Analyse this trade setup critically and decide if it is worth taking.
+
+Date/Time: {now}
+
+━━━ TRADE SETUP ━━━
+Pair:      {sd["symbol"]}
+Direction: {sd["direction"]}  ({sd["strategy"].upper()} on {sd["timeframe"]})
+Entry:     {sd["entry"]}
+SL:        {sd["sl"]}   (risk: ~{sd["sl_pips"]} pips)
+TP1:       {sd["tp1"]}  ({sd["rr1"]}R)
+TP2:       {sd["tp2"]}  ({sd["rr2"]}R)
+TP3:       {sd["tp3"]}  ({sd["rr3"]}R)
+Score:     {sd["score"]}%
+
+━━━ CONFLUENCES ━━━
+{confs}
+
+━━━ ELLIOTT WAVE ━━━
+Pattern:     {sd["ew_pattern"]}
+Trend:       {sd["ew_trend"]}
+Wave:        {sd["wave"]}
+EW Conf:     {sd["ew_conf"]}%
+Wave3 Ext:   {sd["w3x"]}
+
+━━━ SMART MONEY ━━━
+BOS:         {sd["bos"]}
+CHoCH:       {sd["choch"]}
+Order Block: {sd["ob"]}
+FVG:         {sd["fvg"]}
+Zone:        {sd["zone"]}
+Liq Sweep:   {sd["sweep"]}
+SMC Bias:    {sd["smc_bias"][:150]}
+
+━━━ YOUR ANALYSIS ━━━
+Answer these questions in your verdict:
+1. Does EW wave count support entry NOW (not too early/late)?
+2. Are BOS/CHoCH + OB/FVG genuinely aligned with direction?
+3. Is price in right zone (BUY from discount, SELL from premium)?
+4. Is SL placed BEYOND real structure or just ATR-based?
+5. Is TP1 at a logical EW/Fibonacci target?
+6. What is the realistic probability TP1 gets hit before SL?
+7. Any major news events next 48h for {sd["symbol"]}?
+
+Respond ONLY in this exact JSON (no markdown, no extra text):
 {{
-  "verdict": "CONFIRM" | "REJECT" | "CAUTION",
+  "verdict": "CONFIRM" | "CAUTION" | "REJECT",
   "confidence": 0-100,
-  "reason": "1-2 sentence explanation in English",
-  "risk_note": "one specific risk to watch in English",
-  "best_entry": "IMMEDIATE" | "WAIT_FOR_PULLBACK" | "WAIT_FOR_RETEST",
+  "reason": "2-3 specific sentences about EW + SMC quality",
+  "sl_quality": "GOOD" | "TOO_TIGHT" | "TOO_WIDE" | "MISPLACED",
+  "tp1_probability": 0-100,
+  "best_entry": "IMMEDIATE" | "WAIT_PULLBACK" | "WAIT_OB_RETEST" | "WAIT_FVG_FILL",
+  "position_size": "FULL" | "HALF" | "QUARTER" | "SKIP",
+  "partial_close": "e.g. Close 50% at TP1, trail rest to TP2",
+  "risk_note": "one specific risk for THIS trade",
   "news_impact": true | false,
-  "news_sinhala": "සිංහල වාක්‍ය 1-2ක් — news impact තිබේ නම් විස්තරය, නැතිනම් empty string"
+  "news_sinhala": "1-2 Sinhala sentences about news risk OR empty string",
+  "sl_adjust": null | {{"price": 0.00000, "reason": "why"}}
 }}
 
-IMPORTANT for news_sinhala:
-- news_impact = true නම්: trade එකට බලපාන news events සිංහලෙන් briefly explain කරන්න (e.g. "මෙම සතියේ ෆෙඩ් පොලී අනුපාත තීරණය ඇති. EURUSD trade එකට risk ඉහළයි.")
-- news_impact = false නම්: "" (empty string) return කරන්න"""
+STRICT RULES:
+- REJECT if EW trend ≠ SMC bias direction
+- REJECT if SL is misplaced (not beyond structure)
+- REJECT if score < 40 AND pattern is unknown
+- CAUTION if news event detected in next 48h
+- CONFIRM only if EW + SMC + zone ALL align
+- news_sinhala: impact=true නම් සිංහලෙන් ලියන්න, false නම් "" දෙන්න"""
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_news_impact_alert(symbol: str) -> str | None:
-    """
-    Standalone news check for a symbol.
-    Returns Sinhala alert string or None.
-    """
-    prompt = f"""Check if there are major news events or economic releases in the next 48 hours 
-that could significantly impact {symbol} Forex pair.
-
-Respond ONLY in JSON: {{"has_news": true/false, "sinhala_alert": "සිංහල text or empty"}}
-
-If has_news=true: write 1-2 sentences in Sinhala about the news and its likely impact on {symbol}.
-If has_news=false: sinhala_alert = ""
-
-No markdown, no extra text."""
-
-    resp = _call_gemini(prompt, max_tokens=200)
-    if not resp:
-        return None
-    try:
-        clean  = resp.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        data   = json.loads(clean)
-        if data.get("has_news") and data.get("sinhala_alert"):
-            return data["sinhala_alert"]
-    except Exception:
-        pass
-    return None
-
-
+# ══ Main confirmation ════════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
 def get_gemini_confirmation(
-    symbol:            str,
-    direction:         str,
-    entry_price:       float,
-    sl_price:          float,
-    tp_price:          float,
-    tp2:               float,
-    tp3:               float,
-    risk_reward:       float,
-    probability_score: int,
-    strategy:          str,
-    timeframe:         str,
-    ew_pattern:        str,
-    smc_bias:          str,
-    confluences_str:   str,
+    symbol: str, direction: str,
+    entry_price: float, sl_price: float, tp_price: float,
+    tp2: float, tp3: float, risk_reward: float,
+    probability_score: int, strategy: str, timeframe: str,
+    ew_pattern: str, smc_bias: str, confluences_str: str,
+    ew_trend: str = "", current_wave: str = "",
+    ew_confidence: float = 0.0, wave3_extended: bool = False,
+    last_bos: str = "None", last_choch: str = "None",
+    current_ob: str = "None", nearest_fvg: str = "None",
+    price_zone: str = "?", liq_sweeps: str = "None",
 ) -> dict:
-    """
-    Get Gemini AI confirmation for a trade signal.
-    Cached 5 minutes per unique signal.
-    Returns dict: verdict, confidence, reason, risk_note, best_entry,
-                  news_impact, news_sinhala, ai_powered.
-    """
-    signal_data = {
-        "symbol":            symbol,
-        "direction":         direction,
-        "entry_price":       entry_price,
-        "sl_price":          sl_price,
-        "tp_price":          tp_price,
-        "tp2":               tp2,
-        "tp3":               tp3,
-        "risk_reward":       risk_reward,
-        "probability_score": probability_score,
-        "strategy":          strategy,
-        "timeframe":         timeframe,
-        "ew_pattern":        ew_pattern,
-        "smc_bias":          smc_bias,
-        "confluences":       confluences_str.split("|"),
+
+    confs = [c for c in confluences_str.split("|") if c.strip()] if confluences_str else []
+
+    # Pre-filter
+    ok, reason = _pre_filter(risk_reward, probability_score, confs)
+    if not ok:
+        return _reject(reason)
+
+    # Calculate pip values
+    def _pips(a, b):
+        diff = abs(a - b)
+        return f"{diff * 10000:.1f}" if abs(a) < 100 else f"{diff:.3f}"
+
+    def _rr(tp):
+        risk = abs(entry_price - sl_price)
+        if risk == 0: return "?"
+        return f"{abs(tp - entry_price) / risk:.1f}"
+
+    sd = {
+        "symbol":    symbol,   "direction": direction,
+        "strategy":  strategy, "timeframe": timeframe,
+        "entry":     entry_price, "sl": sl_price,
+        "tp1":       tp_price, "tp2": tp2 or "N/A", "tp3": tp3 or "N/A",
+        "sl_pips":   _pips(entry_price, sl_price),
+        "rr1":       _rr(tp_price),
+        "rr2":       _rr(tp2) if tp2 else "?",
+        "rr3":       _rr(tp3) if tp3 else "?",
+        "score":     probability_score,
+        "confluences": confs,
+        "ew_pattern":  ew_pattern,  "ew_trend": ew_trend,
+        "wave":        current_wave, "ew_conf": f"{ew_confidence*100:.0f}",
+        "w3x":         wave3_extended,
+        "bos":         last_bos,    "choch":   last_choch,
+        "ob":          current_ob,  "fvg":     nearest_fvg,
+        "zone":        price_zone,  "sweep":   liq_sweeps,
+        "smc_bias":    smc_bias,
     }
 
-    prompt   = build_signal_prompt(signal_data)
-    response = _call_gemini(prompt, max_tokens=400)
-
-    if not response:
-        return _fallback_verdict(probability_score)
+    resp = _call_gemini(_build_prompt(sd), max_tokens=700)
+    if not resp:
+        return _fallback(probability_score)
 
     try:
-        clean  = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        result = json.loads(clean)
-        result.setdefault("verdict",       "CAUTION")
-        result.setdefault("confidence",    probability_score)
-        result.setdefault("reason",        "Analysis complete.")
-        result.setdefault("risk_note",     "Always use proper risk management.")
-        result.setdefault("best_entry",    "IMMEDIATE")
-        result.setdefault("news_impact",   False)
-        result.setdefault("news_sinhala",  "")
+        result = json.loads(_clean_json(resp))
+        result.setdefault("verdict",          "CAUTION")
+        result.setdefault("confidence",       probability_score)
+        result.setdefault("reason",           "Analysis complete.")
+        result.setdefault("sl_quality",       "GOOD")
+        result.setdefault("tp1_probability",  50)
+        result.setdefault("best_entry",       "IMMEDIATE")
+        result.setdefault("position_size",    "FULL")
+        result.setdefault("partial_close",    "Close 50% at TP1, hold for TP2")
+        result.setdefault("risk_note",        "Use proper risk management.")
+        result.setdefault("news_impact",      False)
+        result.setdefault("news_sinhala",     "")
+        result.setdefault("sl_adjust",        None)
         result["ai_powered"] = True
         return result
     except Exception:
-        return _fallback_verdict(probability_score)
-    """
-    Get Gemini AI confirmation for a trade signal.
-    Cached 5 minutes per unique signal.
-    Returns dict with verdict, confidence, reason, risk_note, best_entry.
-    """
-    signal_data = {
-        "symbol":            symbol,
-        "direction":         direction,
-        "entry_price":       entry_price,
-        "sl_price":          sl_price,
-        "tp_price":          tp_price,
-        "risk_reward":       risk_reward,
-        "probability_score": probability_score,
-        "strategy":          strategy,
-        "timeframe":         timeframe,
-        "ew_pattern":        ew_pattern,
-        "smc_bias":          smc_bias,
-        "confluences":       confluences_str.split("|"),
-    }
-
-    prompt   = build_signal_prompt(signal_data)
-    response = _call_gemini(prompt, max_tokens=300)
-
-    if not response:
-        return _fallback_verdict(probability_score)
-
-    # Parse JSON response
-    try:
-        # Strip markdown fences if present
-        clean = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-        result = json.loads(clean)
-        # Validate required fields
-        result.setdefault("verdict",    "CAUTION")
-        result.setdefault("confidence", probability_score)
-        result.setdefault("reason",     "Analysis complete.")
-        result.setdefault("risk_note",  "Always use proper risk management.")
-        result.setdefault("best_entry", "IMMEDIATE")
-        result["ai_powered"] = True
-        return result
-    except Exception:
-        return _fallback_verdict(probability_score)
+        return _fallback(probability_score)
 
 
-def _fallback_verdict(score: int) -> dict:
-    """Rule-based fallback when Gemini API is unavailable."""
-    if score >= 70:
-        verdict, reason = "CONFIRM", "High confluence — EW + SMC alignment strong."
-    elif score >= 50:
-        verdict, reason = "CAUTION", "Moderate confluence — wait for additional confirmation."
-    else:
-        verdict, reason = "REJECT",  "Low confluence score — insufficient signal strength."
+# ══ Helpers ═════════════════════════════════════════════════════
+def _reject(reason: str) -> dict:
     return {
-        "verdict":      verdict,
-        "confidence":   score,
-        "reason":       reason,
-        "risk_note":    "Always use proper position sizing and risk management.",
-        "best_entry":   "WAIT_FOR_PULLBACK" if score < 70 else "IMMEDIATE",
-        "news_impact":  False,
-        "news_sinhala": "",
-        "ai_powered":   False,
+        "verdict": "REJECT", "confidence": 0, "reason": reason,
+        "sl_quality": "?", "tp1_probability": 0,
+        "best_entry": "DO_NOT_TRADE", "position_size": "SKIP",
+        "partial_close": "", "risk_note": reason,
+        "news_impact": False, "news_sinhala": "", "sl_adjust": None,
+        "ai_powered": False, "pre_filtered": True,
     }
 
 
-# ══════════════════════════════════════════════════════
-# MARKET SENTIMENT  (bonus feature)
-# ══════════════════════════════════════════════════════
+def _fallback(score: int) -> dict:
+    if score >= 70:
+        v, r, p, ps = "CONFIRM", "High confluence score.", 65, "FULL"
+    elif score >= 50:
+        v, r, p, ps = "CAUTION", "Moderate confluence — partial position.", 45, "HALF"
+    else:
+        v, r, p, ps = "REJECT", "Low score — skip this trade.", 20, "SKIP"
+    return {
+        "verdict": v, "confidence": score, "reason": r,
+        "sl_quality": "GOOD", "tp1_probability": p,
+        "best_entry": "WAIT_PULLBACK" if score < 70 else "IMMEDIATE",
+        "position_size": ps, "partial_close": "Close 50% at TP1",
+        "risk_note": "Gemini offline — rule-based verdict.",
+        "news_impact": False, "news_sinhala": "", "sl_adjust": None,
+        "ai_powered": False,
+    }
 
+
+# ══ News check ══════════════════════════════════════════════════
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_news_impact_alert(symbol: str) -> str | None:
+    resp = _call_gemini(
+        f'Check major Forex news next 48h for {symbol}.\n'
+        f'JSON only: {{"has_news":true/false,"sinhala_alert":"text or empty"}}',
+        max_tokens=150,
+    )
+    if not resp: return None
+    try:
+        d = json.loads(_clean_json(resp))
+        return d.get("sinhala_alert") or None if d.get("has_news") else None
+    except Exception:
+        return None
+
+
+# ══ Market sentiment ════════════════════════════════════════════
 @st.cache_data(ttl=600, show_spinner=False)
 def get_market_sentiment(symbol: str, trend: str, pattern: str, smc_bias: str) -> str:
-    """Get a brief Gemini market sentiment summary for a symbol."""
-    prompt = f"""You are a Forex market analyst. Give a 2-3 sentence market outlook for {symbol}.
-
-Current data:
-- Trend: {trend}
-- EW Pattern: {pattern}  
-- SMC Bias: {smc_bias}
-
-Be concise and specific. No disclaimers. Plain text only."""
-
-    result = _call_gemini(prompt, max_tokens=150)
-    return result or f"{symbol} — {trend} trend with {pattern} pattern detected."
+    resp = _call_gemini(
+        f"2-3 sentence Forex outlook for {symbol}.\n"
+        f"Trend:{trend} EW:{pattern} SMC:{smc_bias[:80]}\nPlain text only.",
+        max_tokens=150,
+    )
+    return resp or f"{symbol} — {trend} bias, {pattern} pattern."
 
 
-# ══════════════════════════════════════════════════════
-# KEY STATUS (for Admin panel display)
-# ══════════════════════════════════════════════════════
-
+# ══ Admin key status ════════════════════════════════════════════
 def get_key_rotation_status() -> dict:
-    """Return current API key rotation stats for admin display."""
-    keys  = _get_api_keys()
-    now   = time.time()
-
-    if not keys:
-        return {"total_keys": 0, "available": 0, "keys": []}
-
-    _init_key_state(keys)
-    state = st.session_state[_KEY_STATE_KEY]
-
-    key_info = []
-    available = 0
+    keys = _get_api_keys()
+    now  = time.time()
+    if not keys: return {"total_keys": 0, "available": 0, "keys": []}
+    _init_ks(keys)
+    s = st.session_state[_KS]
+    avail, info = 0, []
     for i, k in enumerate(keys):
-        skip_until = state["skip_until"].get(k, 0)
-        is_avail   = skip_until < now
-        if is_avail:
-            available += 1
-        key_info.append({
-            "index":     i + 1,
-            "key_hint":  f"...{k[-6:]}",
-            "available": is_avail,
-            "usage":     state["usage"].get(k, 0),
-            "errors":    state["errors"].get(k, 0),
-            "cooldown":  max(0, int(skip_until - now)),
+        su = s["skip_until"].get(k, 0)
+        ok = su < now
+        if ok: avail += 1
+        info.append({
+            "index": i+1, "key_hint": f"...{k[-6:]}",
+            "available": ok, "usage": s["usage"].get(k, 0),
+            "errors": s["errors"].get(k, 0),
+            "cooldown": max(0, int(su - now)),
         })
-
-    return {
-        "total_keys": len(keys),
-        "available":  available,
-        "keys":       key_info,
-    }
+    return {"total_keys": len(keys), "available": avail, "keys": info}

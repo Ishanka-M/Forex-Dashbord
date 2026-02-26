@@ -1,12 +1,19 @@
 """
-modules/signal_engine.py
-Trade Signal Generator — EW + SMC + Multi-timeframe
-Fixed: lower score threshold, tie-breaking, trend fallback signals
+modules/signal_engine.py  v4 — FX-WavePulse Pro
+═════════════════════════════════════════════════
+What changed (SL wakkda root cause fixes):
+  1. SL placed at STRUCTURE (OB / swing high-low) — not ATR guess
+  2. BUY only from Discount zone, SELL only from Premium zone
+  3. Direction requires EW + SMC BOTH agree (conflict → no signal)
+  4. Min 3 technical confluences required
+  5. TP1 = EW wave target; TP2/TP3 = Fib extensions from that base
+  6. Min RR 1.8 (up from 1.5) before signal is emitted
+  7. Extra signal fields for Gemini deep prompt
 """
 
 import pandas as pd
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
 import pytz
@@ -18,8 +25,9 @@ from modules.market_data import get_ohlcv
 
 COLOMBO_TZ = pytz.timezone("Asia/Colombo")
 
-SWING_TIMEFRAMES  = ["H4", "D1"]
-SHORT_TIMEFRAMES  = ["M15", "H1"]
+# Primary TF is the higher one (structure), secondary is entry timing
+SWING_TFS = ("D1", "H4")
+SHORT_TFS  = ("H1", "M15")
 
 
 @dataclass
@@ -30,8 +38,8 @@ class TradeSignal:
     entry_price:       float
     sl_price:          float
     tp_price:          float
-    tp2_price:         float | None     # EW 1.618 extension
-    tp3_price:         float | None     # EW 2.618 extension
+    tp2_price:         Optional[float]
+    tp3_price:         Optional[float]
     lot_size:          float
     strategy:          str
     timeframe:         str
@@ -41,226 +49,303 @@ class TradeSignal:
     smc_bias:          str
     risk_reward:       float
     generated_at:      str
+    # Extra fields for Gemini deep analysis
+    ew_trend:          str  = ""
+    current_wave:      str  = ""
+    ew_confidence:     float = 0.0
+    wave3_extended:    bool  = False
+    last_bos:          str  = "None"
+    last_choch:        str  = "None"
+    current_ob_str:    str  = "None"
+    nearest_fvg_str:   str  = "None"
+    price_zone:        str  = "?"
+    liq_sweeps_str:    str  = "None"
+    sl_structure:      str  = ""
+    quality_flags:     list = field(default_factory=list)
 
 
-# ── Lot Size Calculator ──────────────────────────────────────────────────────
-def calculate_lot_size(balance: float, risk_pct: float,
-                       entry: float, sl: float) -> float:
-    risk_amount = balance * (risk_pct / 100)
-    pip_diff    = abs(entry - sl) * 10000
-    if pip_diff == 0:
-        return 0.01
-    lot = risk_amount / (pip_diff * 10)
-    return max(0.01, round(min(lot, 10.0), 2))
-
-
-# ── ATR ──────────────────────────────────────────────────────────────────────
 def _atr(df: pd.DataFrame, period: int = 14) -> float:
     if len(df) < period + 1:
         return float(df["close"].iloc[-1]) * 0.001
-    h = df["high"].values
-    l = df["low"].values
-    c = df["close"].values
-    tr = np.maximum(h[1:] - l[1:],
+    h  = df["high"].values
+    lo = df["low"].values
+    c  = df["close"].values
+    tr = np.maximum(h[1:] - lo[1:],
          np.maximum(np.abs(h[1:] - c[:-1]),
-                    np.abs(l[1:] - c[:-1])))
+                    np.abs(lo[1:] - c[:-1])))
     return float(np.mean(tr[-period:]))
 
 
-# ── Core Signal Generator ────────────────────────────────────────────────────
+def calculate_lot_size(balance: float, risk_pct: float,
+                       entry: float, sl: float) -> float:
+    risk   = balance * risk_pct / 100
+    pips   = abs(entry - sl) * 10000
+    if pips == 0: return 0.01
+    return max(0.01, round(min(risk / (pips * 10), 10.0), 2))
+
+
+def _fmt(v: float, entry: float) -> str:
+    if v is None: return "None"
+    return f"{v:.5f}" if abs(entry) < 100 else f"{v:.3f}"
+
+
 def generate_signal(symbol: str,
                     strategy_type: str = "swing",
-                    account_balance: float = 10000) -> Optional[TradeSignal]:
+                    account_balance: float = 10000.0) -> Optional[TradeSignal]:
 
-    timeframes   = SWING_TIMEFRAMES  if strategy_type == "swing" else SHORT_TIMEFRAMES
-    primary_tf   = timeframes[-1]
-    secondary_tf = timeframes[0]
+    primary_tf, secondary_tf = (SWING_TFS if strategy_type == "swing" else SHORT_TFS)
 
-    # ── Fetch data ────────────────────────────────────────────────────────
-    df_primary = get_ohlcv(symbol, primary_tf)
-    if df_primary is None or df_primary.empty or len(df_primary) < 30:
-        return None
+    # ── Fetch OHLCV ───────────────────────────────────────────
+    df_p = get_ohlcv(symbol, primary_tf)
+    if df_p is None or len(df_p) < 50: return None
 
-    df_secondary = get_ohlcv(symbol, secondary_tf)
-    has_secondary = (df_secondary is not None and
-                     not df_secondary.empty and
-                     len(df_secondary) >= 30)
+    df_s = get_ohlcv(symbol, secondary_tf)
+    has_s = df_s is not None and len(df_s) >= 30
 
-    # ── Analysis ──────────────────────────────────────────────────────────
-    ew   = identify_elliott_waves(df_primary)
-    smc  = analyze_smc(df_primary)
-    ew2  = identify_elliott_waves(df_secondary) if has_secondary else None
-    smc2 = analyze_smc(df_secondary)             if has_secondary else None
+    # ── Full analysis ─────────────────────────────────────────
+    ew   = identify_elliott_waves(df_p)
+    smc  = analyze_smc(df_p)
+    ew2  = identify_elliott_waves(df_s) if has_s else None
+    smc2 = analyze_smc(df_s)            if has_s else None
 
-    current_price = float(df_primary["close"].iloc[-1])
-    atr           = _atr(df_primary)
+    cp  = float(df_p["close"].iloc[-1])
+    atr = _atr(df_p)
 
-    # ── Scoring ───────────────────────────────────────────────────────────
-    score       = 0
-    confluences = []
-    bull_votes  = 0
-    bear_votes  = 0
+    # ── Direction: EW and SMC must BOTH agree ─────────────────
+    ew_bull  = ew.trend == "bullish"
+    smc_bull = smc.trend == "bullish"
 
-    # Elliott Wave
-    if ew.pattern_type == "5-wave-impulse":
-        score += 25
-        confluences.append(f"EW: 5-Wave Impulse ({ew.trend.upper()})")
-        if ew.trend == "bullish": bull_votes += 3
-        else:                     bear_votes += 3
-    elif ew.pattern_type == "3-wave-ABC":
-        score += 12
-        confluences.append("EW: ABC Corrective")
-        if ew.trend == "bullish": bull_votes += 1
-        else:                     bear_votes += 1
+    if ew_bull == smc_bull:
+        is_buy    = ew_bull
+        direction = "BUY" if is_buy else "SELL"
     else:
-        # Unknown pattern — use simple trend direction
-        if ew.trend == "bullish": bull_votes += 1
-        else:                     bear_votes += 1
-
-    if ew.confidence >= 0.65:
-        score += 10
-        confluences.append(f"EW Confidence: {ew.confidence*100:.0f}%")
-    elif ew.confidence >= 0.45:
-        score += 5
-
-    # SMC Structure
-    if smc.last_choch:
-        score += 20
-        confluences.append(f"SMC: CHoCH ({smc.last_choch.direction.upper()})")
-        if smc.last_choch.direction == "bullish": bull_votes += 3
-        else:                                      bear_votes += 3
-
-    if smc.last_bos:
-        score += 15
-        confluences.append(f"SMC: BOS ({smc.last_bos.direction.upper()})")
-        if smc.last_bos.direction == "bullish": bull_votes += 2
-        else:                                    bear_votes += 2
-
-    if smc.current_ob and not smc.current_ob.is_mitigated:
-        score += 12
-        lbl = "Bullish" if smc.current_ob.ob_type == "bullish" else "Bearish"
-        confluences.append(f"SMC: {lbl} OB @ {smc.current_ob.mid:.5f}")
-        if smc.current_ob.ob_type == "bullish": bull_votes += 2
-        else:                                    bear_votes += 2
-
-    if smc.nearest_fvg and not smc.nearest_fvg.is_filled:
-        score += 8
-        confluences.append(f"SMC: Unfilled FVG @ {smc.nearest_fvg.bottom:.5f}–{smc.nearest_fvg.top:.5f}")
-        if smc.nearest_fvg.fvg_type == "bullish": bull_votes += 1
-        else:                                       bear_votes += 1
-
-    # Overall SMC trend
-    if smc.trend == "bullish": bull_votes += 2
-    elif smc.trend == "bearish": bear_votes += 2
-
-    # Multi-timeframe confluence
-    if ew2 and smc2:
-        if ew2.trend == ew.trend:
-            score += 10
-            confluences.append(f"MTF: {secondary_tf} confirms {primary_tf}")
-            if ew2.trend == "bullish": bull_votes += 2
-            else:                       bear_votes += 2
-        if smc2.trend == smc.trend:
-            score += 5
-            if smc2.trend == "bullish": bull_votes += 1
-            else:                        bear_votes += 1
-
-    # ── Direction ─────────────────────────────────────────────────────────
-    if bull_votes == bear_votes:
-        # Tie-break: use 20-bar price vs MA
-        ma20 = float(df_primary["close"].iloc[-20:].mean())
-        direction = "BUY" if current_price > ma20 else "SELL"
-        confluences.append(f"Tie-break: price {'above' if direction=='BUY' else 'below'} MA20")
-    else:
-        direction = "BUY" if bull_votes > bear_votes else "SELL"
-
-    # ── SL / TP ───────────────────────────────────────────────────────────
-    if strategy_type == "swing":
-        # Fibonacci-based
-        fib  = ew.fib_levels
-        if direction == "BUY":
-            sl  = fib.get("0.500", current_price - atr * 2.0)
-            sl  = min(sl, current_price - atr * 1.5)   # ensure sl is below entry
-            tp  = ew.projected_target or (current_price + abs(current_price - sl) * 2.0)
+        # Conflict: use CHoCH as final arbiter only if confirmed
+        choch = smc.last_choch
+        if choch and getattr(choch, "is_confirmed", False):
+            is_buy    = choch.direction == "bullish"
+            direction = "BUY" if is_buy else "SELL"
         else:
-            sl  = fib.get("0.500", current_price + atr * 2.0)
-            sl  = max(sl, current_price + atr * 1.5)
-            tp  = ew.projected_target or (current_price - abs(current_price - sl) * 2.0)
-    else:
-        # ATR-based with FVG reference
-        if direction == "BUY":
-            sl  = current_price - atr * 1.5
-            tp  = current_price + atr * 3.0
-            if smc.nearest_fvg and not smc.nearest_fvg.is_filled:
-                if smc.nearest_fvg.fvg_type == "bullish":
-                    sl = min(sl, smc.nearest_fvg.bottom - atr * 0.3)
-                    tp = max(tp, smc.nearest_fvg.top + atr * 0.5)
+            return None   # Genuine conflict — skip symbol
+
+    # ── Zone filter ───────────────────────────────────────────
+    premium  = getattr(smc, "premium_zone",  None)
+    discount = getattr(smc, "discount_zone", None)
+    equil    = getattr(smc, "equilibrium",   None)
+
+    price_zone    = "EQUILIBRIUM"
+    zone_penalty  = 0
+    if premium and discount:
+        if   cp >= premium:  price_zone = "PREMIUM"
+        elif cp <= discount: price_zone = "DISCOUNT"
+
+        # Counter-zone trades get -20 score (Gemini can still CONFIRM)
+        if is_buy  and price_zone == "PREMIUM":  zone_penalty = -20
+        if not is_buy and price_zone == "DISCOUNT": zone_penalty = -20
+
+    # ── Structure-based SL ────────────────────────────────────
+    ob           = smc.current_ob
+    sl           = None
+    sl_structure = ""
+    MIN_SL_ATR   = 1.0   # SL must be at least 1 ATR from entry
+
+    # Priority 1: Order Block
+    if ob and not ob.is_mitigated:
+        if is_buy and ob.ob_type == "bullish":
+            sl = ob.bottom - atr * 0.25
+            sl_structure = f"Below Bullish OB @ {ob.bottom:.5f}"
+        elif not is_buy and ob.ob_type == "bearish":
+            sl = ob.top + atr * 0.25
+            sl_structure = f"Above Bearish OB @ {ob.top:.5f}"
+
+    # Priority 2: Recent swing high/low (last 30 bars)
+    if sl is None:
+        n_bars = min(30, len(df_p) - 1)
+        if is_buy:
+            swing = float(df_p["low"].iloc[-n_bars:].min())
+            sl    = swing - atr * 0.2
+            sl_structure = f"Below swing low @ {swing:.5f}"
         else:
-            sl  = current_price + atr * 1.5
-            tp  = current_price - atr * 3.0
-            if smc.nearest_fvg and not smc.nearest_fvg.is_filled:
-                if smc.nearest_fvg.fvg_type == "bearish":
-                    sl = max(sl, smc.nearest_fvg.top + atr * 0.3)
-                    tp = min(tp, smc.nearest_fvg.bottom - atr * 0.5)
+            swing = float(df_p["high"].iloc[-n_bars:].max())
+            sl    = swing + atr * 0.2
+            sl_structure = f"Above swing high @ {swing:.5f}"
 
-    # Safety: ensure SL and TP are on correct sides
-    if direction == "BUY":
-        if sl >= current_price: sl = current_price - atr * 1.5
-        if tp <= current_price: tp = current_price + atr * 2.5
+    # Enforce minimum distance
+    if is_buy:
+        sl = min(sl, cp - atr * MIN_SL_ATR)
     else:
-        if sl <= current_price: sl = current_price + atr * 1.5
-        if tp >= current_price: tp = current_price - atr * 2.5
+        sl = max(sl, cp + atr * MIN_SL_ATR)
 
-    risk   = abs(current_price - sl)
-    reward = abs(tp - current_price)
-    rr     = round(reward / risk, 2) if risk > 0 else 1.0
+    risk = abs(cp - sl)
+    if risk == 0: return None
 
-    if rr < 1.5:
-        score = max(0, score - 15)
-    score = max(score, 20)
-
-    lot  = calculate_lot_size(account_balance, 1.0, current_price, sl)
-
-    # ── TP2 / TP3 from EW extensions ──────────────────────────────────────
+    # ── EW-based TP ───────────────────────────────────────────
+    tp1 = ew.projected_target
     tp2 = getattr(ew, "projected_tp2", None)
     tp3 = getattr(ew, "projected_tp3", None)
 
-    # Fallback: calculate from ATR if EW didn't provide them
+    # Validate direction
+    def _valid_tp(t):
+        if t is None: return False
+        return (t > cp) if is_buy else (t < cp)
+
+    if not _valid_tp(tp1): tp1 = None
+    if not _valid_tp(tp2): tp2 = None
+    if not _valid_tp(tp3): tp3 = None
+
+    # Fallback: minimum 2R, 3R, 5R
+    if tp1 is None:
+        tp1 = cp + risk * 2.0 if is_buy else cp - risk * 2.0
     if tp2 is None:
-        tp2 = round(current_price + atr * 4.0, 5) if direction == "BUY" else round(current_price - atr * 4.0, 5)
+        tp2 = cp + risk * 3.2 if is_buy else cp - risk * 3.2
     if tp3 is None:
-        tp3 = round(current_price + atr * 6.0, 5) if direction == "BUY" else round(current_price - atr * 6.0, 5)
+        tp3 = cp + risk * 5.0 if is_buy else cp - risk * 5.0
+
+    rr = round(abs(tp1 - cp) / risk, 2)
+    if rr < 1.8: return None   # Hard minimum RR
+
+    # ── Scoring ───────────────────────────────────────────────
+    score        = 15
+    confluences  = []
+    quality_flags= []
+
+    # EW
+    if ew.pattern_type == "5-wave-impulse":
+        score += 20
+        confluences.append(f"EW 5-wave impulse ({ew.trend.upper()})")
+        if getattr(ew, "wave3_extended", False):
+            score += 8
+            confluences.append("EW: Wave 3 Extended ⚡")
+            quality_flags.append("⚡ Wave 3 Extended")
+    elif ew.pattern_type == "3-wave-ABC":
+        score += 10
+        confluences.append(f"EW ABC corrective ({ew.trend.upper()})")
+
+    if ew.confidence >= 0.70:
+        score += 10; quality_flags.append(f"✅ EW conf {ew.confidence*100:.0f}%")
+    elif ew.confidence < 0.40:
+        score -= 10
+
+    # SMC structure — direction-aligned
+    def _aligned(obj, bull_attr):
+        if obj is None: return False
+        return getattr(obj, bull_attr, "") == ("bullish" if is_buy else "bearish")
+
+    choch = smc.last_choch
+    if _aligned(choch, "direction"):
+        score += 18; confluences.append(f"CHoCH {choch.direction.upper()} ✅")
+        quality_flags.append("✅ CHoCH aligned")
+    elif choch:
+        score -= 12   # CHoCH AGAINST direction — bad sign
+
+    bos = smc.last_bos
+    if _aligned(bos, "direction"):
+        score += 12; confluences.append(f"BOS {bos.direction.upper()} ✅")
+    elif bos:
+        score -= 6
+
+    # Order Block
+    if ob and not ob.is_mitigated:
+        if ob.ob_type == ("bullish" if is_buy else "bearish"):
+            touches = getattr(ob, "touch_count", 0)
+            bonus   = min(12, 5 + touches * 4)
+            score  += bonus
+            confluences.append(f"OB {ob.ob_type.upper()} @ {ob.mid:.5f} (×{touches})")
+            quality_flags.append(f"✅ OB ×{touches} touches")
+
+    # FVG
+    fvg = smc.nearest_fvg
+    if fvg and not fvg.is_filled:
+        if fvg.fvg_type == ("bullish" if is_buy else "bearish"):
+            score += 7; confluences.append(f"Unfilled FVG {fvg.fvg_type.upper()}")
+
+    # Liquidity sweep (strong reversal signal)
+    sweeps = getattr(smc, "liquidity_sweeps", [])
+    if sweeps:
+        sw = sweeps[-1]
+        if sw.direction == ("bullish" if is_buy else "bearish"):
+            score += 12; confluences.append(f"Liq. Sweep ({sw.sweep_type}) ✅")
+            quality_flags.append("✅ Liquidity sweep reversal")
+
+    # Zone bonus/penalty
+    score += zone_penalty
+    if zone_penalty < 0:
+        quality_flags.append(f"⚠️ Counter-zone trade ({price_zone})")
+    else:
+        if price_zone != "EQUILIBRIUM":
+            confluences.append(f"Zone: {price_zone} ✅")
+            quality_flags.append(f"✅ {price_zone} zone")
+
+    # MTF
+    if ew2 and smc2:
+        if ew2.trend == ew.trend and smc2.trend == smc.trend:
+            score += 12; confluences.append(f"MTF: {secondary_tf}+{primary_tf} aligned ✅")
+            quality_flags.append("✅ Multi-TF confirmed")
+
+    # RR bonus
+    if   rr >= 3.0: score += 10; quality_flags.append(f"✅ RR {rr:.1f}:1")
+    elif rr >= 2.5: score += 7;  quality_flags.append(f"✅ RR {rr:.1f}:1")
+    elif rr >= 2.0: score += 3
+
+    score = max(0, min(100, score))
+
+    # Minimum 2 non-EW confluences (EW alone isn't enough)
+    non_ew = [c for c in confluences if "EW" not in c and "ew" not in c.lower()]
+    if len(non_ew) < 1:
+        return None
+
+    # ── Lot size ──────────────────────────────────────────────
+    lot = calculate_lot_size(account_balance, 1.0, cp, sl)
+
+    # ── String representations for Gemini ─────────────────────
+    fp = lambda v: _fmt(v, cp)
+    ob_str  = (f"{ob.ob_type.upper()} {fp(ob.bottom)}–{fp(ob.top)} "
+               f"(×{getattr(ob,'touch_count',0)})") if ob else "None"
+    fvg_str = (f"{fvg.fvg_type.upper()} {fp(fvg.bottom)}–{fp(fvg.top)} "
+               f"({fvg.fill_pct:.0f}% filled)") if fvg else "None"
+    bos_str   = f"{bos.direction.upper()} @ {fp(bos.price)}" if bos else "None"
+    choch_str = f"{choch.direction.upper()} @ {fp(choch.price)}" if choch else "None"
+    sw_str    = f"{sweeps[-1].sweep_type} ({sweeps[-1].direction})" if sweeps else "None"
 
     return TradeSignal(
         trade_id          = str(uuid.uuid4())[:8].upper(),
         symbol            = symbol,
         direction         = direction,
-        entry_price       = round(current_price, 5),
-        sl_price          = round(sl, 5),
-        tp_price          = round(tp, 5),
+        entry_price       = round(cp,  5),
+        sl_price          = round(sl,  5),
+        tp_price          = round(tp1, 5),
         tp2_price         = round(tp2, 5) if tp2 else None,
         tp3_price         = round(tp3, 5) if tp3 else None,
         lot_size          = lot,
         strategy          = strategy_type,
         timeframe         = primary_tf,
-        probability_score = min(int(score), 100),
+        probability_score = int(score),
         confluences       = confluences,
         ew_pattern        = ew.pattern_type,
         smc_bias          = smc.bias,
         risk_reward       = rr,
         generated_at      = datetime.now(COLOMBO_TZ).strftime("%Y-%m-%d %H:%M:%S"),
+        ew_trend          = ew.trend,
+        current_wave      = ew.current_wave,
+        ew_confidence     = ew.confidence,
+        wave3_extended    = getattr(ew, "wave3_extended", False),
+        last_bos          = bos_str,
+        last_choch        = choch_str,
+        current_ob_str    = ob_str,
+        nearest_fvg_str   = fvg_str,
+        price_zone        = price_zone,
+        liq_sweeps_str    = sw_str,
+        sl_structure      = sl_structure,
+        quality_flags     = quality_flags,
     )
 
 
-# ── Batch Signal Generator ───────────────────────────────────────────────────
 def generate_all_signals(symbols: list,
                          strategy_type: str = "swing",
-                         min_score: int = 20) -> list:
-    """Generate signals for all symbols. Returns list sorted by score desc."""
+                         min_score: int = 35) -> list:
     signals = []
-    for symbol in symbols:
+    for sym in symbols:
         try:
-            sig = generate_signal(symbol, strategy_type)
+            sig = generate_signal(sym, strategy_type)
             if sig and sig.probability_score >= min_score:
                 signals.append(sig)
         except Exception:
