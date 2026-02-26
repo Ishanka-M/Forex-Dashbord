@@ -24,15 +24,17 @@ class WavePoint:
 
 @dataclass
 class ElliottWaveResult:
-    pattern_type: str         # "5-wave-impulse" | "3-wave-ABC" | "unknown"
-    wave_points: list[WavePoint]
-    current_wave: str         # "1","2","3","4","5","A","B","C"
-    projected_target: Optional[float]
-    projected_sl: Optional[float]
-    confidence: float         # 0.0 - 1.0
-    trend: str                # "bullish" | "bearish" | "neutral"
-    fib_levels: dict
-    description: str
+    pattern_type:     str               # "5-wave-impulse" | "3-wave-ABC" | "unknown"
+    wave_points:      list
+    current_wave:     str               # "1","2","3","4","5","A","B","C","?"
+    projected_target: float | None      # TP1 — Wave 5 at 1.0x Wave1
+    projected_tp2:    float | None      # TP2 — 1.618 extension
+    projected_tp3:    float | None      # TP3 — 2.618 extension
+    projected_sl:     float | None
+    confidence:       float             # 0.0–1.0
+    trend:            str               # "bullish" | "bearish" | "neutral"
+    fib_levels:       dict
+    description:      str
 
 
 FIBONACCI_RATIOS = {
@@ -206,28 +208,41 @@ def identify_elliott_waves(df: pd.DataFrame, order: int = 5) -> ElliottWaveResul
         wave_prices = [w["price"] for w in waves_data]
         
         fib_levels = calculate_fibonacci_levels(wave_prices[0], wave_prices[2], trend)
-        
-        # Project Wave 5 or next corrective
+
+        # ── Project Wave 5 targets (TP1, TP2, TP3) ────────────────────
         w1_size = abs(wave_prices[1] - wave_prices[0])
+        w3_size = abs(wave_prices[3] - wave_prices[2])
+
         if trend == "bullish":
-            projected_target = wave_prices[4] + w1_size * 1.0  # ~1:1 with wave 1
-            projected_sl = wave_prices[3]  # Wave 4 low
-            current_wave = "5" if current_price > wave_prices[3] else "4"
+            base           = wave_prices[4]          # Wave 4 low = launch point
+            projected_target = base + w1_size * 1.0   # TP1: 1.0× Wave 1
+            projected_tp2    = base + w1_size * 1.618  # TP2: 1.618× Wave 1
+            projected_tp3    = base + w1_size * 2.618  # TP3: 2.618× Wave 1
+            projected_sl     = wave_prices[3]           # Wave 4 low
+            current_wave     = "5" if current_price > wave_prices[3] else "4"
         else:
-            projected_target = wave_prices[4] - w1_size * 1.0
-            projected_sl = wave_prices[3]
-            current_wave = "5" if current_price < wave_prices[3] else "4"
+            base           = wave_prices[4]
+            projected_target = base - w1_size * 1.0
+            projected_tp2    = base - w1_size * 1.618
+            projected_tp3    = base - w1_size * 2.618
+            projected_sl     = wave_prices[3]
+            current_wave     = "5" if current_price < wave_prices[3] else "4"
 
         return ElliottWaveResult(
-            pattern_type="5-wave-impulse",
-            wave_points=wave_points,
-            current_wave=current_wave,
-            projected_target=round(projected_target, 5),
-            projected_sl=round(projected_sl, 5),
-            confidence=round(best_confidence, 3),
-            trend=trend,
-            fib_levels=fib_levels,
-            description=f"{trend.capitalize()} 5-wave impulse. Currently in Wave {current_wave}."
+            pattern_type     = "5-wave-impulse",
+            wave_points      = wave_points,
+            current_wave     = current_wave,
+            projected_target = round(projected_target, 5),
+            projected_tp2    = round(projected_tp2, 5),
+            projected_tp3    = round(projected_tp3, 5),
+            projected_sl     = round(projected_sl, 5),
+            confidence       = round(best_confidence, 3),
+            trend            = trend,
+            fib_levels       = fib_levels,
+            description      = (
+                f"{trend.capitalize()} 5-wave impulse — Wave {current_wave}. "
+                f"TP1={round(projected_target,5)} | TP2={round(projected_tp2,5)} | TP3={round(projected_tp3,5)}"
+            )
         )
 
     # Try 3-wave ABC corrective
@@ -245,24 +260,38 @@ def identify_elliott_waves(df: pd.DataFrame, order: int = 5) -> ElliottWaveResul
         )
 
         if is_valid_abc:
-            trend = "bearish" if types[0] == "high" else "bullish"
-            c_target = prices[1] + (a_size * 1.0 if trend == "bearish" else -a_size * 1.0)
-            fib_levels = calculate_fibonacci_levels(prices[0], prices[1], "down" if trend == "bearish" else "up")
-
+            trend    = "bearish" if types[0] == "high" else "bullish"
+            a_size   = abs(prices[1] - prices[0])
+            if trend == "bearish":
+                c_tp1 = prices[1] + a_size * 1.0
+                c_tp2 = prices[1] + a_size * 1.272
+                c_tp3 = prices[1] + a_size * 1.618
+            else:
+                c_tp1 = prices[1] - a_size * 1.0
+                c_tp2 = prices[1] - a_size * 1.272
+                c_tp3 = prices[1] - a_size * 1.618
+            fib_levels = calculate_fibonacci_levels(
+                prices[0], prices[1], "down" if trend == "bearish" else "up"
+            )
             return ElliottWaveResult(
-                pattern_type="3-wave-ABC",
-                wave_points=[
+                pattern_type     = "3-wave-ABC",
+                wave_points      = [
                     WavePoint(candidate[0]["index"], prices[0], "A", "corrective", trend),
                     WavePoint(candidate[1]["index"], prices[1], "B", "corrective", trend),
                     WavePoint(candidate[2]["index"], prices[2], "C", "corrective", trend),
                 ],
-                current_wave="C",
-                projected_target=round(c_target, 5),
-                projected_sl=round(prices[0], 5),
-                confidence=0.55,
-                trend=trend,
-                fib_levels=fib_levels,
-                description=f"ABC corrective pattern. Wave C targeting {round(c_target, 5)}."
+                current_wave     = "C",
+                projected_target = round(c_tp1, 5),
+                projected_tp2    = round(c_tp2, 5),
+                projected_tp3    = round(c_tp3, 5),
+                projected_sl     = round(prices[0], 5),
+                confidence       = 0.55,
+                trend            = trend,
+                fib_levels       = fib_levels,
+                description      = (
+                    f"ABC corrective — TP1={round(c_tp1,5)} | "
+                    f"TP2={round(c_tp2,5)} | TP3={round(c_tp3,5)}"
+                )
             )
 
     # Fallback: Trend analysis
@@ -273,13 +302,15 @@ def identify_elliott_waves(df: pd.DataFrame, order: int = 5) -> ElliottWaveResul
     fib_levels = calculate_fibonacci_levels(recent_low, recent_high, "up" if trend == "bullish" else "down")
 
     return ElliottWaveResult(
-        pattern_type="unknown",
-        wave_points=[],
-        current_wave="?",
-        projected_target=None,
-        projected_sl=None,
-        confidence=0.3,
-        trend=trend,
-        fib_levels=fib_levels,
-        description=f"Pattern unclear. General {trend} trend detected."
+        pattern_type     = "unknown",
+        wave_points      = [],
+        current_wave     = "?",
+        projected_target = None,
+        projected_tp2    = None,
+        projected_tp3    = None,
+        projected_sl     = None,
+        confidence       = 0.3,
+        trend            = trend,
+        fib_levels       = fib_levels,
+        description      = f"Pattern unclear — general {trend} trend."
     )

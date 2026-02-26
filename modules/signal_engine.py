@@ -26,14 +26,16 @@ SHORT_TIMEFRAMES  = ["M15", "H1"]
 class TradeSignal:
     trade_id:          str
     symbol:            str
-    direction:         str        # "BUY" | "SELL"
+    direction:         str
     entry_price:       float
     sl_price:          float
     tp_price:          float
+    tp2_price:         float | None     # EW 1.618 extension
+    tp3_price:         float | None     # EW 2.618 extension
     lot_size:          float
-    strategy:          str        # "swing" | "short"
+    strategy:          str
     timeframe:         str
-    probability_score: int        # 0–100
+    probability_score: int
     confluences:       list
     ew_pattern:        str
     smc_bias:          str
@@ -213,14 +215,21 @@ def generate_signal(symbol: str,
     reward = abs(tp - current_price)
     rr     = round(reward / risk, 2) if risk > 0 else 1.0
 
-    # Penalty for poor RR
     if rr < 1.5:
         score = max(0, score - 15)
-
-    # Minimum viable score
     score = max(score, 20)
 
-    lot = calculate_lot_size(account_balance, 1.0, current_price, sl)
+    lot  = calculate_lot_size(account_balance, 1.0, current_price, sl)
+
+    # ── TP2 / TP3 from EW extensions ──────────────────────────────────────
+    tp2 = getattr(ew, "projected_tp2", None)
+    tp3 = getattr(ew, "projected_tp3", None)
+
+    # Fallback: calculate from ATR if EW didn't provide them
+    if tp2 is None:
+        tp2 = round(current_price + atr * 4.0, 5) if direction == "BUY" else round(current_price - atr * 4.0, 5)
+    if tp3 is None:
+        tp3 = round(current_price + atr * 6.0, 5) if direction == "BUY" else round(current_price - atr * 6.0, 5)
 
     return TradeSignal(
         trade_id          = str(uuid.uuid4())[:8].upper(),
@@ -229,6 +238,8 @@ def generate_signal(symbol: str,
         entry_price       = round(current_price, 5),
         sl_price          = round(sl, 5),
         tp_price          = round(tp, 5),
+        tp2_price         = round(tp2, 5) if tp2 else None,
+        tp3_price         = round(tp3, 5) if tp3 else None,
         lot_size          = lot,
         strategy          = strategy_type,
         timeframe         = primary_tf,

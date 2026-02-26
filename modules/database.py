@@ -148,16 +148,36 @@ def get_database():
 def get_fresh_spreadsheet():
     """
     Fresh (uncached) spreadsheet for WRITE operations.
-    Call this instead of session_state.db when writing data.
     Returns (spreadsheet, error_string).
+    Completely rebuilds credentials + connection every call.
     """
     if not GSPREAD_AVAILABLE:
-        return None, "gspread not installed"
+        return None, "gspread library not installed. Add to requirements.txt: gspread==6.1.2"
     try:
-        ss = _get_spreadsheet()
+        creds = _build_credentials()
+        client = gspread.authorize(creds)
+
+        # Open spreadsheet
+        try:
+            ss = client.open(SPREADSHEET_NAME)
+        except Exception as open_err:
+            # Try creating
+            try:
+                ss = client.create(SPREADSHEET_NAME)
+                ss.share(None, perm_type="anyone", role="writer")
+            except Exception as create_err:
+                return None, f"Cannot open '{SPREADSHEET_NAME}': {open_err} | Cannot create: {create_err}"
+
+        # Ensure all sheets exist
+        existing = [ws.title for ws in ss.worksheets()]
+        for sheet_name, headers in SHEET_SCHEMAS.items():
+            if sheet_name not in existing:
+                ws = ss.add_worksheet(title=sheet_name, rows=2000, cols=len(headers))
+                ws.append_row(headers, value_input_option="RAW")
+
         return ss, None
     except Exception as e:
-        return None, str(e)
+        return None, f"Credential/connection error: {str(e)}"
 
 
 # ══════════════════════════════════════════════════════
@@ -272,19 +292,38 @@ def get_active_trades(ss, username=None) -> pd.DataFrame:
 def add_active_trade(ss, trade: dict):
     """
     Write trade to ActiveTrades sheet.
-    Always uses a FRESH connection to avoid stale cached object.
+    ss must be a valid spreadsheet object from get_fresh_spreadsheet().
+    Returns (True, success_msg) or (False, error_msg).
     """
+    if ss is None:
+        return False, "Spreadsheet object is None — call get_fresh_spreadsheet() first"
     try:
-        ss_w, err = get_fresh_spreadsheet()
-        if err:
-            return False, f"Connection error: {err}"
+        ws = ss.worksheet("ActiveTrades")
 
-        ws  = ss_w.worksheet("ActiveTrades")
-        row = [str(trade.get(col, "")) for col in SHEET_SCHEMAS["ActiveTrades"]]
+        # Build row exactly matching schema order
+        row = []
+        for col in SHEET_SCHEMAS["ActiveTrades"]:
+            val = trade.get(col, "")
+            row.append(str(val) if val is not None else "")
+
+        # Verify row length
+        if len(row) != len(SHEET_SCHEMAS["ActiveTrades"]):
+            return False, f"Row length mismatch: expected {len(SHEET_SCHEMAS['ActiveTrades'])}, got {len(row)}"
+
         ws.append_row(row, value_input_option="USER_ENTERED")
-        return True, "Trade saved to ActiveTrades ✅"
+
+        # Verify it was written
+        all_records = ws.get_all_records()
+        written = any(str(r.get("trade_id", "")) == str(trade.get("trade_id", "")) for r in all_records)
+        if written:
+            return True, f"Trade {trade.get('trade_id')} saved to ActiveTrades ✅"
+        else:
+            return True, "Trade appended (unverified — check sheet)"
+
+    except gspread.exceptions.APIError as api_err:
+        return False, f"Google Sheets API error: {str(api_err)}"
     except Exception as e:
-        return False, f"Write error: {str(e)}"
+        return False, f"Write error: {type(e).__name__}: {str(e)}"
 
 
 def update_trade_pnl(ss, trade_id: str, current_price: float, pnl: float):

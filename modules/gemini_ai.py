@@ -16,7 +16,7 @@ import pytz
 COLOMBO_TZ = pytz.timezone("Asia/Colombo")
 
 # ── Gemini Model ─────────────────────────────────────────────────────────────
-GEMINI_MODEL = "gemini-3-flash-preview"          # Free tier, fast
+GEMINI_MODEL = "gemini-1.5-flash"          # Free tier, fast
 GEMINI_URL   = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key="
@@ -171,56 +171,138 @@ def _call_gemini(prompt: str, max_tokens: int = 512) -> str | None:
 # ══════════════════════════════════════════════════════
 
 def build_signal_prompt(signal_data: dict) -> str:
-    """Build a structured prompt for Gemini to analyse a trade signal."""
+    """Structured prompt — signal analysis + news impact + Sinhala alert."""
     return f"""You are a professional Forex trading analyst specialising in Elliott Wave Theory and Smart Money Concepts (SMC).
 
-Analyse this trade signal and give a confirmation verdict.
+Analyse this trade signal. Also check if there are any major news events or economic releases in the next 24-48 hours that could impact this trade (Fed decisions, NFP, CPI, central bank meetings, geopolitical events, etc.).
 
 ## Signal Details
-- Symbol:     {signal_data.get('symbol')}
-- Direction:  {signal_data.get('direction')}
-- Strategy:   {signal_data.get('strategy', '').upper()} ({signal_data.get('timeframe')})
-- Entry:      {signal_data.get('entry_price')}
-- Stop Loss:  {signal_data.get('sl_price')}
-- Take Profit:{signal_data.get('tp_price')}
-- Risk/Reward:{signal_data.get('risk_reward')}
-- Score:      {signal_data.get('probability_score')}%
+- Symbol:      {signal_data.get('symbol')}
+- Direction:   {signal_data.get('direction')}
+- Strategy:    {signal_data.get('strategy','').upper()} ({signal_data.get('timeframe')})
+- Entry:       {signal_data.get('entry_price')}
+- Stop Loss:   {signal_data.get('sl_price')}
+- TP1:         {signal_data.get('tp_price')}
+- TP2:         {signal_data.get('tp2', 'N/A')}
+- TP3:         {signal_data.get('tp3', 'N/A')}
+- Risk/Reward: {signal_data.get('risk_reward')}
+- Score:       {signal_data.get('probability_score')}%
 
 ## Confluences Detected
 {chr(10).join('• ' + c for c in signal_data.get('confluences', []))}
 
-## EW Analysis
+## Elliott Wave
 - Pattern: {signal_data.get('ew_pattern')}
 
 ## SMC Bias
 {signal_data.get('smc_bias')}
 
 ## Task
-Respond ONLY in this exact JSON format (no markdown, no extra text):
+Respond ONLY in this exact JSON format (no markdown fences, no extra text):
 {{
   "verdict": "CONFIRM" | "REJECT" | "CAUTION",
   "confidence": 0-100,
-  "reason": "1-2 sentence explanation",
-  "risk_note": "one specific risk to watch",
-  "best_entry": "IMMEDIATE" | "WAIT_FOR_PULLBACK" | "WAIT_FOR_RETEST"
-}}"""
+  "reason": "1-2 sentence explanation in English",
+  "risk_note": "one specific risk to watch in English",
+  "best_entry": "IMMEDIATE" | "WAIT_FOR_PULLBACK" | "WAIT_FOR_RETEST",
+  "news_impact": true | false,
+  "news_sinhala": "සිංහල වාක්‍ය 1-2ක් — news impact තිබේ නම් විස්තරය, නැතිනම් empty string"
+}}
+
+IMPORTANT for news_sinhala:
+- news_impact = true නම්: trade එකට බලපාන news events සිංහලෙන් briefly explain කරන්න (e.g. "මෙම සතියේ ෆෙඩ් පොලී අනුපාත තීරණය ඇති. EURUSD trade එකට risk ඉහළයි.")
+- news_impact = false නම්: "" (empty string) return කරන්න"""
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_news_impact_alert(symbol: str) -> str | None:
+    """
+    Standalone news check for a symbol.
+    Returns Sinhala alert string or None.
+    """
+    prompt = f"""Check if there are major news events or economic releases in the next 48 hours 
+that could significantly impact {symbol} Forex pair.
+
+Respond ONLY in JSON: {{"has_news": true/false, "sinhala_alert": "සිංහල text or empty"}}
+
+If has_news=true: write 1-2 sentences in Sinhala about the news and its likely impact on {symbol}.
+If has_news=false: sinhala_alert = ""
+
+No markdown, no extra text."""
+
+    resp = _call_gemini(prompt, max_tokens=200)
+    if not resp:
+        return None
+    try:
+        clean  = resp.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        data   = json.loads(clean)
+        if data.get("has_news") and data.get("sinhala_alert"):
+            return data["sinhala_alert"]
+    except Exception:
+        pass
+    return None
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_gemini_confirmation(
-    symbol: str,
-    direction: str,
-    entry_price: float,
-    sl_price: float,
-    tp_price: float,
-    risk_reward: float,
+    symbol:            str,
+    direction:         str,
+    entry_price:       float,
+    sl_price:          float,
+    tp_price:          float,
+    tp2:               float,
+    tp3:               float,
+    risk_reward:       float,
     probability_score: int,
-    strategy: str,
-    timeframe: str,
-    ew_pattern: str,
-    smc_bias: str,
-    confluences_str: str,   # join confluences list to str for cache key
+    strategy:          str,
+    timeframe:         str,
+    ew_pattern:        str,
+    smc_bias:          str,
+    confluences_str:   str,
 ) -> dict:
+    """
+    Get Gemini AI confirmation for a trade signal.
+    Cached 5 minutes per unique signal.
+    Returns dict: verdict, confidence, reason, risk_note, best_entry,
+                  news_impact, news_sinhala, ai_powered.
+    """
+    signal_data = {
+        "symbol":            symbol,
+        "direction":         direction,
+        "entry_price":       entry_price,
+        "sl_price":          sl_price,
+        "tp_price":          tp_price,
+        "tp2":               tp2,
+        "tp3":               tp3,
+        "risk_reward":       risk_reward,
+        "probability_score": probability_score,
+        "strategy":          strategy,
+        "timeframe":         timeframe,
+        "ew_pattern":        ew_pattern,
+        "smc_bias":          smc_bias,
+        "confluences":       confluences_str.split("|"),
+    }
+
+    prompt   = build_signal_prompt(signal_data)
+    response = _call_gemini(prompt, max_tokens=400)
+
+    if not response:
+        return _fallback_verdict(probability_score)
+
+    try:
+        clean  = response.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        result = json.loads(clean)
+        result.setdefault("verdict",       "CAUTION")
+        result.setdefault("confidence",    probability_score)
+        result.setdefault("reason",        "Analysis complete.")
+        result.setdefault("risk_note",     "Always use proper risk management.")
+        result.setdefault("best_entry",    "IMMEDIATE")
+        result.setdefault("news_impact",   False)
+        result.setdefault("news_sinhala",  "")
+        result["ai_powered"] = True
+        return result
+    except Exception:
+        return _fallback_verdict(probability_score)
     """
     Get Gemini AI confirmation for a trade signal.
     Cached 5 minutes per unique signal.
@@ -267,25 +349,20 @@ def get_gemini_confirmation(
 def _fallback_verdict(score: int) -> dict:
     """Rule-based fallback when Gemini API is unavailable."""
     if score >= 70:
-        verdict    = "CONFIRM"
-        confidence = score
-        reason     = "High confluence score — EW + SMC alignment strong."
+        verdict, reason = "CONFIRM", "High confluence — EW + SMC alignment strong."
     elif score >= 50:
-        verdict    = "CAUTION"
-        confidence = score
-        reason     = "Moderate confluence — wait for additional confirmation."
+        verdict, reason = "CAUTION", "Moderate confluence — wait for additional confirmation."
     else:
-        verdict    = "REJECT"
-        confidence = score
-        reason     = "Low confluence score — insufficient signal strength."
-
+        verdict, reason = "REJECT",  "Low confluence score — insufficient signal strength."
     return {
-        "verdict":    verdict,
-        "confidence": confidence,
-        "reason":     reason,
-        "risk_note":  "Always use proper position sizing and risk management.",
-        "best_entry": "WAIT_FOR_PULLBACK" if score < 70 else "IMMEDIATE",
-        "ai_powered": False,
+        "verdict":      verdict,
+        "confidence":   score,
+        "reason":       reason,
+        "risk_note":    "Always use proper position sizing and risk management.",
+        "best_entry":   "WAIT_FOR_PULLBACK" if score < 70 else "IMMEDIATE",
+        "news_impact":  False,
+        "news_sinhala": "",
+        "ai_powered":   False,
     }
 
 
