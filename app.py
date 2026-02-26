@@ -985,15 +985,23 @@ def render_analysis():
     if ew_result and show_ew:
         with col_ew:
             st.markdown("### 🌊 Elliott Wave Summary")
+            w3x_badge = '<span style="background:#F5C51822;color:#F5C518;border:1px solid #F5C51844;border-radius:6px;padding:1px 7px;font-size:0.72rem;">⚡ Wave 3 Extended</span>' if getattr(ew_result,"wave3_extended",False) else ""
+            tp1 = ew_result.projected_target
+            tp2 = getattr(ew_result,"projected_tp2",None)
+            tp3 = getattr(ew_result,"projected_tp3",None)
+            def fmtp(v): return f"{v:.5f}" if v and 0 < abs(v) < 100 else (f"{v:.3f}" if v else "—")
             st.markdown(f"""
             <div class="metric-card">
-                <div style="font-size:0.85rem;">
-                    <div style="margin-bottom:6px"><b>Pattern:</b> <code>{ew_result.pattern_type}</code></div>
-                    <div style="margin-bottom:6px"><b>Trend:</b> <span class="{'up' if ew_result.trend=='bullish' else 'down'}">{ew_result.trend.upper()}</span></div>
-                    <div style="margin-bottom:6px"><b>Current Wave:</b> <code>{ew_result.current_wave}</code></div>
-                    <div style="margin-bottom:6px"><b>Confidence:</b> {ew_result.confidence*100:.0f}%</div>
-                    <div style="margin-bottom:6px"><b>Target:</b> <code>{ew_result.projected_target or 'N/A'}</code></div>
-                    <div style="color:#6B7A99; font-size:0.8rem;">{ew_result.description}</div>
+                <div style="font-size:0.85rem;line-height:1.9;">
+                    <div><b>Pattern:</b> <code>{ew_result.pattern_type}</code> {w3x_badge}</div>
+                    <div><b>Trend:</b> <span class="{'up' if ew_result.trend=='bullish' else 'down'}">{ew_result.trend.upper()}</span></div>
+                    <div><b>Current Wave:</b> <code>{ew_result.current_wave}</code></div>
+                    <div><b>Confidence:</b> {ew_result.confidence*100:.0f}%</div>
+                    <div><b>TP1:</b> <code style="color:#00D4AA">{fmtp(tp1)}</code></div>
+                    <div><b>TP2 (1.618):</b> <code style="color:#3B82F6">{fmtp(tp2)}</code></div>
+                    <div><b>TP3 (2.618):</b> <code style="color:#8B5CF6">{fmtp(tp3)}</code></div>
+                    <div><b>SL:</b> <code style="color:#FF4B6E">{fmtp(ew_result.projected_sl)}</code></div>
+                    <div style="color:#6B7A99;font-size:0.78rem;margin-top:4px;">{ew_result.description}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1001,16 +1009,27 @@ def render_analysis():
     if smc_result and show_smc:
         with col_smc:
             st.markdown("### 💡 SMC Summary")
+            ob_txt  = f"✅ {smc_result.current_ob.ob_type.upper()} @ {smc_result.current_ob.mid:.5f} (×{smc_result.current_ob.touch_count})" if smc_result.current_ob else "None"
+            fvg_txt = f"✅ {smc_result.nearest_fvg.fvg_type.upper()} — {smc_result.nearest_fvg.fill_pct:.0f}% filled" if smc_result.nearest_fvg else "None"
+            bos_txt = f"✅ {smc_result.last_bos.direction.upper()} (conf:{smc_result.last_bos.is_confirmed})" if smc_result.last_bos else "None"
+            choch_txt= f"✅ {smc_result.last_choch.direction.upper()}" if smc_result.last_choch else "None"
+            sweep_txt= f"⚡ {smc_result.liquidity_sweeps[-1].sweep_type.replace('_',' ').title()}" if smc_result.liquidity_sweeps else "None"
+            zone_color = "#FF4B6E" if smc_result.premium_zone and float(df["close"].iloc[-1]) >= smc_result.premium_zone else ("#00D4AA" if smc_result.discount_zone and float(df["close"].iloc[-1]) <= smc_result.discount_zone else "#F5C518")
             st.markdown(f"""
             <div class="metric-card">
-                <div style="font-size:0.85rem;">
-                    <div style="margin-bottom:6px"><b>Trend:</b> <span class="{'up' if smc_result.trend=='bullish' else 'down'}">{smc_result.trend.upper()}</span></div>
-                    <div style="margin-bottom:6px"><b>Last CHoCH:</b> <code>{'✅ '+smc_result.last_choch.direction.upper() if smc_result.last_choch else 'None'}</code></div>
-                    <div style="margin-bottom:6px"><b>Last BOS:</b> <code>{'✅ '+smc_result.last_bos.direction.upper() if smc_result.last_bos else 'None'}</code></div>
-                    <div style="margin-bottom:6px"><b>Nearest OB:</b> <code>{'✅ '+smc_result.current_ob.ob_type.upper() if smc_result.current_ob else 'None'}</code></div>
-                    <div style="margin-bottom:6px"><b>Nearest FVG:</b> <code>{'✅ Unfilled' if smc_result.nearest_fvg else 'None'}</code></div>
-                    <div style="margin-bottom:6px"><b>Confidence:</b> {smc_result.confidence*100:.0f}%</div>
-                    <div style="color:#6B7A99; font-size:0.8rem;">{smc_result.bias}</div>
+                <div style="font-size:0.84rem;line-height:1.9;">
+                    <div><b>Trend:</b> <span class="{'up' if smc_result.trend=='bullish' else 'down'}">{smc_result.trend.upper()}</span>
+                        &nbsp;<span style="font-size:0.72rem;color:{zone_color};background:{zone_color}22;border-radius:6px;padding:1px 7px;">
+                            {'PREMIUM' if smc_result.premium_zone and float(df["close"].iloc[-1])>=smc_result.premium_zone else ('DISCOUNT' if smc_result.discount_zone and float(df["close"].iloc[-1])<=smc_result.discount_zone else 'EQUILIBRIUM')}
+                        </span>
+                    </div>
+                    <div><b>CHoCH:</b> <code>{choch_txt}</code></div>
+                    <div><b>BOS:</b> <code>{bos_txt}</code></div>
+                    <div><b>Order Block:</b> <code>{ob_txt}</code></div>
+                    <div><b>FVG:</b> <code>{fvg_txt}</code></div>
+                    <div><b>Liq. Sweep:</b> <code>{sweep_txt}</code></div>
+                    <div><b>Confidence:</b> {smc_result.confidence*100:.0f}%</div>
+                    <div style="color:#6B7A99;font-size:0.77rem;margin-top:4px;">{smc_result.bias[:120]}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -1021,74 +1040,244 @@ def render_analysis():
 # ══════════════════════════════════════════════════════════════
 def render_active_trades():
     st.markdown("## 💼 Active Trades")
-    
-    db = st.session_state.db
-    username = st.session_state.user.get("username")
+
+    db       = st.session_state.db
+    username = st.session_state.user.get("username", "")
     is_admin = st.session_state.user.get("role") == "admin"
 
     if not db:
-        st.warning("Database not connected. Trades cannot be persisted.")
+        st.warning("⚠️ Database not connected.")
         return
 
+    from modules.market_data import get_live_price
+
+    # ── Header controls ───────────────────────────────────────
+    hcol1, hcol2 = st.columns([3, 1])
+    with hcol2:
+        if st.button("🔄 Refresh", use_container_width=True, key="at_refresh_btn"):
+            st.rerun()
+
+    # ── Load trades ───────────────────────────────────────────
     trades_df = get_active_trades(db, None if is_admin else username)
-    
+
     if trades_df.empty:
-        st.info("No active trades. Go to Signals to find and add trades.")
+        st.info("No active trades. Go to 🎯 Trade Signals to generate and capture trades.")
+        return
+
+    # ── Fetch all live prices at once (avoid duplicate imports) ──
+    symbols    = trades_df["symbol"].dropna().unique().tolist()
+    live_cache = {}
+    for sym in symbols:
+        try:
+            lp = get_live_price(sym)
+            live_cache[sym] = float(lp.get("price") or 0)
+        except Exception:
+            live_cache[sym] = 0.0
+
+    # ── Auto SL/TP monitor: close any hits immediately ────────
+    auto_hit_count = 0
+    for sym, price in live_cache.items():
+        if price <= 0:
+            continue
+        subset = trades_df[trades_df["symbol"] == sym]
+        for _, row in subset.iterrows():
+            tid  = str(row.get("trade_id", ""))
+            dirn = str(row.get("direction", "BUY"))
+            try:
+                sl_v = float(row.get("sl_price") or 0)
+                tp_v = float(row.get("tp_price") or 0)
+            except Exception:
+                continue
+
+            hit = None
+            if dirn == "BUY":
+                if tp_v > 0 and price >= tp_v: hit = "TP"
+                elif sl_v > 0 and price <= sl_v: hit = "SL"
+            else:
+                if tp_v > 0 and price <= tp_v: hit = "TP"
+                elif sl_v > 0 and price >= sl_v: hit = "SL"
+
+            if hit and tid:
+                ss_w, err = get_fresh_spreadsheet()
+                if not err:
+                    ok, msg = close_trade(ss_w, tid, price, hit)
+                    if ok:
+                        auto_hit_count += 1
+                        icon = "🎉" if hit == "TP" else "🛑"
+                        st.toast(f"{icon} {sym} {dirn} — {hit} Hit! {msg}", icon=icon)
+
+    # Reload after any auto-closes
+    if auto_hit_count > 0:
+        get_database.clear()
+        st.session_state.db, _ = get_database()
+        db = st.session_state.db
+        trades_df = get_active_trades(db, None if is_admin else username)
+        st.success(f"✅ {auto_hit_count} trade(s) auto-closed (SL/TP hit). Moved to History.")
+
+    if trades_df.empty:
+        st.success("✅ All trades closed! See Trade History.")
         return
 
     st.markdown(f"**{len(trades_df)} active trade(s)**")
 
-    for _, trade in trades_df.iterrows():
-        trade_id = str(trade.get("trade_id", ""))
-        symbol = trade.get("symbol", "")
-        direction = trade.get("direction", "")
-        entry = float(trade.get("entry_price", 0) or 0)
-        sl = float(trade.get("sl_price", 0) or 0)
-        tp = float(trade.get("tp_price", 0) or 0)
-        score = trade.get("probability_score", 0)
+    # ── Per-trade cards ───────────────────────────────────────
+    for row_i, (_, trade) in enumerate(trades_df.iterrows()):
+        # Use row index as key suffix — prevents duplicate key even if trade_id is empty
+        trade_id  = str(trade.get("trade_id", f"tid_{row_i}") or f"tid_{row_i}")
+        uid       = f"{row_i}_{trade_id}"          # guaranteed unique
 
-        # Get live price
-        from modules.market_data import get_live_price
-        live = get_live_price(symbol) if symbol else {}
-        live_price = live.get("price") or entry
-        pnl = (live_price - entry) * (1 if direction == "BUY" else -1) * float(trade.get("lot_size", 0.01) or 0.01) * 100000
-        pnl_color = "#00D4AA" if pnl >= 0 else "#FF4B6E"
+        symbol    = str(trade.get("symbol", ""))
+        direction = str(trade.get("direction", "BUY"))
+        owner     = str(trade.get("username", ""))
+        strategy  = str(trade.get("strategy", ""))
+        tf        = str(trade.get("timeframe", ""))
+        g_verdict = str(trade.get("gemini_verdict", ""))
+        opened    = str(trade.get("open_time", ""))
+        score     = str(trade.get("probability_score", ""))
+        ew_pat    = str(trade.get("ew_pattern", ""))
 
-        with st.expander(f"{'🟢' if direction=='BUY' else '🔴'} {symbol} {direction} | P&L: ${pnl:+.2f}", expanded=True):
-            col1, col2, col3 = st.columns(3)
-            col1.markdown(f"""
-            <div style="font-size:0.85rem;">
-                <div><b>Entry:</b> <code>{entry:.5f}</code></div>
-                <div><b>Live:</b> <code style="color:#E8EDF5">{live_price:.5f}</code></div>
-                <div><b>SL:</b> <code style="color:#FF4B6E">{sl:.5f}</code></div>
-                <div><b>TP:</b> <code style="color:#00D4AA">{tp:.5f}</code></div>
-            </div>
-            """, unsafe_allow_html=True)
-            col2.markdown(f"""
-            <div style="font-size:0.85rem;">
-                <div><b>P&L:</b> <span style="color:{pnl_color}; font-family:'JetBrains Mono';">${pnl:+.2f}</span></div>
-                <div><b>Score:</b> {score}%</div>
-                <div><b>Opened:</b> {trade.get('open_time', 'N/A')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
+        def _fv(key, d=0.0):
+            try: return float(trade.get(key) or d)
+            except: return d
+
+        entry = _fv("entry_price")
+        sl    = _fv("sl_price")
+        tp    = _fv("tp_price")
+        tp2   = _fv("tp2_price")
+        tp3   = _fv("tp3_price")
+        lot   = _fv("lot_size", 0.01) or 0.01
+
+        live_price = live_cache.get(symbol, entry) or entry
+        if live_price <= 0:
+            live_price = entry
+
+        pnl        = (live_price - entry) * (1 if direction == "BUY" else -1) * lot * 100000
+        pnl_color  = "#00D4AA" if pnl >= 0 else "#FF4B6E"
+
+        # ── SL/TP proximity bars ──────────────────────────────
+        def _prox(target, current, is_buy):
+            """Return % progress toward target (0=entry, 100=hit)."""
+            if target <= 0 or entry <= 0: return 0.0
+            full = abs(target - entry)
+            done = abs(current - entry)
+            if full == 0: return 0.0
+            pct = min(100.0, done / full * 100)
+            # Correct direction
+            if is_buy:
+                if target > entry and current > entry: return pct
+                if target < entry and current < entry: return pct
+            else:
+                if target < entry and current < entry: return pct
+                if target > entry and current > entry: return pct
+            return 0.0
+
+        is_buy  = direction == "BUY"
+        tp_pct  = _prox(tp, live_price, is_buy)
+        sl_pct  = _prox(sl, live_price, not is_buy)   # SL is opposite direction
+
+        def _bar(pct, color, label):
+            w    = int(min(100, max(0, pct)))
+            warn = " 🚨" if pct >= 85 else (" ⚠️" if pct >= 65 else "")
+            return (
+                f'<div style="margin:3px 0;">'
+                f'<span style="font-size:0.72rem;color:{color};">{label}{warn} {pct:.0f}%</span>'
+                f'<div style="background:#1E2A42;border-radius:4px;height:5px;margin-top:2px;">'
+                f'<div style="background:{color};width:{w}%;height:5px;border-radius:4px;'
+                f'transition:width 0.3s;"></div></div></div>'
+            )
+
+        tp_bar = _bar(tp_pct, "#00D4AA", "TP")
+        sl_bar = _bar(sl_pct, "#FF4B6E", "SL")
+
+        def fmt(v): return (f"{v:.5f}" if 0 < abs(v) < 100 else f"{v:.3f}") if v else "—"
+
+        # Alert level for expander
+        alert = ""
+        if tp_pct >= 85: alert = " 🚨TP Near!"
+        elif sl_pct >= 85: alert = " 🛑SL Near!"
+        elif tp_pct >= 65: alert = " ⚠️"
+
+        verdict_colors = {"CONFIRM":"#00D4AA","CAUTION":"#F5C518","REJECT":"#FF4B6E"}
+        vc = verdict_colors.get(g_verdict, "#6B7A99")
+
+        header = (
+            f"{'🟢' if is_buy else '🔴'} {symbol} {direction}"
+            f"  |  Live: {fmt(live_price)}"
+            f"  |  P&L: ${pnl:+.2f}{alert}"
+            + (f"  |  👤{owner}" if is_admin else "")
+        )
+
+        with st.expander(header, expanded=(tp_pct >= 65 or sl_pct >= 65)):
+            col1, col2, col3 = st.columns([1.3, 1.1, 1.2])
+
+            with col1:
+                tp2_row = f'<div><b>TP2:</b> <code style="color:#3B82F6">{fmt(tp2)}</code></div>' if tp2 else ""
+                tp3_row = f'<div><b>TP3:</b> <code style="color:#8B5CF6">{fmt(tp3)}</code></div>' if tp3 else ""
+                st.markdown(
+                    f'<div style="font-size:0.84rem;line-height:1.9;">'
+                    f'<div><b>Entry:</b> <code>{fmt(entry)}</code></div>'
+                    f'<div><b>Live:</b> <code style="color:#E8EDF5;font-weight:700">{fmt(live_price)}</code></div>'
+                    f'<div><b>SL:</b> <code style="color:#FF4B6E">{fmt(sl)}</code></div>'
+                    f'<div><b>TP1:</b> <code style="color:#00D4AA">{fmt(tp)}</code></div>'
+                    f'{tp2_row}{tp3_row}</div>'
+                    f'{tp_bar}{sl_bar}',
+                    unsafe_allow_html=True
+                )
+
+            with col2:
+                st.markdown(
+                    f'<div style="font-size:0.84rem;line-height:1.9;">'
+                    f'<div><b>P&L:</b> <span style="color:{pnl_color};font-family:monospace;font-weight:700">${pnl:+.2f}</span></div>'
+                    f'<div><b>Score:</b> {score}%</div>'
+                    f'<div><b>EW:</b> <span style="font-size:0.75rem;color:#6B7A99">{ew_pat}</span></div>'
+                    f'<div><b>Strategy:</b> {strategy.upper()} {tf}</div>'
+                    f'<div style="margin-top:4px;">'
+                    f'<span style="font-size:0.72rem;background:{vc}22;color:{vc};'
+                    f'border:1px solid {vc}44;border-radius:8px;padding:1px 8px;">'
+                    f'🤖 {g_verdict or "N/A"}</span></div>'
+                    f'<div style="font-size:0.72rem;color:#6B7A99;margin-top:4px;">{opened}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
             with col3:
-                close_price = st.number_input(f"Close Price", value=float(live_price), key=f"cp_{trade_id}", format="%.5f")
+                # KEY FIX: use uid (row_index + trade_id) — guaranteed unique across all renders
+                close_val = st.number_input(
+                    "Close at",
+                    value=float(round(live_price, 5)),
+                    key=f"cp_{uid}",
+                    format="%.5f",
+                    step=0.00001,
+                    label_visibility="visible",
+                )
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("✅ TP Hit", key=f"tp_{trade_id}"):
-                        ok, msg = close_trade(db, trade_id, close_price, "TP")
-                        if ok: st.success(msg); st.rerun()
-                        else: st.error(msg)
+                    if st.button("🎯 TP Hit", key=f"tp_{uid}", use_container_width=True):
+                        ss_w, err = get_fresh_spreadsheet()
+                        if err:
+                            st.error(f"❌ {err}")
+                        else:
+                            ok, msg = close_trade(ss_w, trade_id, close_val, "TP")
+                            if ok: st.toast(f"🎉 {symbol} TP Hit! {msg}"); st.rerun()
+                            else: st.error(msg)
                 with c2:
-                    if st.button("❌ SL Hit", key=f"sl_{trade_id}"):
-                        ok, msg = close_trade(db, trade_id, close_price, "SL")
-                        if ok: st.success(msg); st.rerun()
+                    if st.button("🛑 SL Hit", key=f"sl_{uid}", use_container_width=True):
+                        ss_w, err = get_fresh_spreadsheet()
+                        if err:
+                            st.error(f"❌ {err}")
+                        else:
+                            ok, msg = close_trade(ss_w, trade_id, close_val, "SL")
+                            if ok: st.toast(f"🛑 {symbol} SL Hit! {msg}"); st.rerun()
+                            else: st.error(msg)
+
+                if st.button("🔒 Manual Close", key=f"mc_{uid}", use_container_width=True):
+                    ss_w, err = get_fresh_spreadsheet()
+                    if err:
+                        st.error(f"❌ {err}")
+                    else:
+                        ok, msg = close_trade(ss_w, trade_id, close_val, "MANUAL")
+                        if ok: st.toast(f"🔒 {symbol} closed. {msg}"); st.rerun()
                         else: st.error(msg)
-                if st.button("🔒 Manual Close", key=f"mc_{trade_id}"):
-                    ok, msg = close_trade(db, trade_id, close_price, "MANUAL")
-                    if ok: st.success(msg); st.rerun()
-                    else: st.error(msg)
 
 
 # ══════════════════════════════════════════════════════════════
