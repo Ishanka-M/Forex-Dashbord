@@ -1,7 +1,13 @@
 """
-modules/smc_analysis.py
-Smart Money Concepts (SMC) Analysis Engine
-Identifies: Order Blocks, BOS, CHoCH, Fair Value Gaps
+modules/smc_analysis.py  v3 — FX-WavePulse Pro
+Improvements over v2:
+  • Multi-touch Order Block validation (price returns to OB = stronger)
+  • Displacement candle detection (large engulfing = real break)
+  • Refined CHoCH vs BOS distinction
+  • FVG fill tracking with partial fill detection
+  • Premium/Discount zone classification
+  • Liquidity sweep detection (stop hunt pattern)
+  • Confidence scoring from multiple factors
 """
 
 import numpy as np
@@ -14,316 +20,388 @@ warnings.filterwarnings("ignore")
 
 @dataclass
 class OrderBlock:
-    index: int
-    ob_type: str       # "bullish" | "bearish"
-    top: float
-    bottom: float
-    mid: float
-    strength: float    # 0-1 based on move after OB
+    index:        int
+    ob_type:      str        # "bullish" | "bearish"
+    top:          float
+    bottom:       float
+    mid:          float
+    strength:     float      # 0-1
     is_mitigated: bool
-    timestamp: Optional[str] = None
+    touch_count:  int   = 0  # how many times price returned to OB
+    displacement: float = 0  # size of move that created OB (ATR multiple)
 
 
 @dataclass
 class FairValueGap:
-    index: int
-    fvg_type: str   # "bullish" | "bearish"
-    top: float
-    bottom: float
-    mid: float
-    is_filled: bool
-    timestamp: Optional[str] = None
+    index:      int
+    fvg_type:   str    # "bullish" | "bearish"
+    top:        float
+    bottom:     float
+    mid:        float
+    is_filled:  bool
+    fill_pct:   float = 0.0   # 0-100% how much filled
 
 
 @dataclass
 class StructurePoint:
-    index: int
-    price: float
-    structure_type: str  # "BOS" | "CHoCH"
-    direction: str       # "bullish" | "bearish"
-    timestamp: Optional[str] = None
+    index:          int
+    price:          float
+    structure_type: str   # "BOS" | "CHoCH"
+    direction:      str   # "bullish" | "bearish"
+    is_confirmed:   bool  = True
+    displacement:   float = 0.0  # candle body size / ATR
+
+
+@dataclass
+class LiquiditySweep:
+    index:     int
+    sweep_type: str   # "buy_side" | "sell_side"
+    level:     float  # the liquidity level swept
+    direction: str    # "bullish" | "bearish" (direction after sweep)
 
 
 @dataclass
 class SMCResult:
-    order_blocks: list[OrderBlock]
-    fair_value_gaps: list[FairValueGap]
-    structure_points: list[StructurePoint]
-    trend: str           # "bullish" | "bearish" | "neutral"
-    current_ob: Optional[OrderBlock]
-    nearest_fvg: Optional[FairValueGap]
-    last_bos: Optional[StructurePoint]
-    last_choch: Optional[StructurePoint]
-    bias: str
-    confidence: float
+    order_blocks:     list
+    fair_value_gaps:  list
+    structure_points: list
+    liquidity_sweeps: list
+    trend:            str
+    current_ob:       Optional[OrderBlock]
+    nearest_fvg:      Optional[FairValueGap]
+    last_bos:         Optional[StructurePoint]
+    last_choch:       Optional[StructurePoint]
+    bias:             str
+    confidence:       float
+    premium_zone:     Optional[float]   # 61.8% level of range
+    discount_zone:    Optional[float]   # 38.2% level of range
+    equilibrium:      Optional[float]   # 50% level of range
 
 
-def find_order_blocks(df: pd.DataFrame, lookback: int = 50) -> list[OrderBlock]:
-    """
-    Identify Order Blocks:
-    - Bearish OB: Last up-close candle before strong bearish move
-    - Bullish OB: Last down-close candle before strong bullish move
-    """
-    obs = []
-    df_slice = df.iloc[-lookback:] if len(df) > lookback else df
-    closes = df_slice["close"].values
-    opens = df_slice["open"].values
-    highs = df_slice["high"].values
-    lows = df_slice["low"].values
+def _atr(df, period=14) -> float:
+    try:
+        hi, lo, cl = df["high"].values, df["low"].values, df["close"].values
+        tr = np.maximum(hi[1:]-lo[1:],
+             np.maximum(abs(hi[1:]-cl[:-1]), abs(lo[1:]-cl[:-1])))
+        return float(np.mean(tr[-period:])) if len(tr) >= period else float(np.mean(tr))
+    except: return 0.001
 
-    atr = _calculate_atr(df_slice, 14)
 
-    for i in range(3, len(df_slice) - 3):
-        # Bullish OB: Bearish candle (close < open) followed by strong bullish move
-        if closes[i] < opens[i]:  # Bearish candle
-            # Check if next candles make a strong bullish move
-            next_range = closes[i+1:i+4]
-            if len(next_range) >= 2 and closes[i+2] > highs[i]:
-                move_size = closes[i+2] - lows[i]
-                strength = min(move_size / (atr * 2), 1.0) if atr > 0 else 0.5
-                current_price = closes[-1]
-                is_mitigated = current_price >= lows[i] and current_price <= highs[i]
-                
+def _body(o, c): return abs(c - o)
+def _range(h, l): return h - l
+
+
+def find_order_blocks(df: pd.DataFrame, lookback: int = 60) -> list:
+    obs  = []
+    sl   = df.iloc[-lookback:] if len(df) > lookback else df
+    atr  = _atr(sl)
+    if atr == 0: return obs
+
+    opens  = sl["open"].values
+    closes = sl["close"].values
+    highs  = sl["high"].values
+    lows   = sl["low"].values
+    n      = len(sl)
+
+    for i in range(2, n - 3):
+        body_i = _body(opens[i], closes[i])
+
+        # ── Bullish OB: last bearish candle before strong bull move ──
+        if closes[i] < opens[i]:   # bearish candle
+            # Measure subsequent bull displacement
+            bull_disp = closes[i+1:min(i+4,n)].max() - closes[i]
+            if bull_disp >= atr * 1.5:
+                top    = max(opens[i], closes[i])
+                bottom = min(opens[i], closes[i])
+                # Mitigation: did price later return below OB bottom?
+                future_lo  = lows[i+1:]
+                mitigated  = bool(future_lo.min() < bottom) if len(future_lo) else False
+                # Touch count: how many times price entered OB zone
+                touches    = sum(1 for j in range(i+1, n)
+                                 if bottom <= closes[j] <= top + atr*0.3)
+                # Strength = displacement / ATR
+                strength   = min(1.0, bull_disp / (atr * 3))
                 obs.append(OrderBlock(
-                    index=df_slice.index[i] if hasattr(df_slice.index[i], '__index__') else i,
-                    ob_type="bullish",
-                    top=highs[i],
-                    bottom=lows[i],
-                    mid=(highs[i] + lows[i]) / 2,
-                    strength=round(strength, 3),
-                    is_mitigated=is_mitigated,
-                    timestamp=str(df_slice.index[i]) if len(df_slice) > 0 else None
+                    index=int(sl.index[i]) if hasattr(sl.index[i],"__int__") else i,
+                    ob_type="bullish", top=float(top), bottom=float(bottom),
+                    mid=float((top+bottom)/2), strength=strength,
+                    is_mitigated=mitigated, touch_count=touches,
+                    displacement=bull_disp/atr,
                 ))
 
-        # Bearish OB: Bullish candle (close > open) followed by strong bearish move
-        if closes[i] > opens[i]:  # Bullish candle
-            if len(closes) > i + 2 and closes[i+2] < lows[i]:
-                move_size = highs[i] - closes[i+2]
-                strength = min(move_size / (atr * 2), 1.0) if atr > 0 else 0.5
-                current_price = closes[-1]
-                is_mitigated = current_price >= lows[i] and current_price <= highs[i]
-                
+        # ── Bearish OB: last bullish candle before strong bear move ──
+        if closes[i] > opens[i]:   # bullish candle
+            bear_disp = closes[i] - closes[i+1:min(i+4,n)].min()
+            if bear_disp >= atr * 1.5:
+                top    = max(opens[i], closes[i])
+                bottom = min(opens[i], closes[i])
+                future_hi  = highs[i+1:]
+                mitigated  = bool(future_hi.max() > top) if len(future_hi) else False
+                touches    = sum(1 for j in range(i+1, n)
+                                 if bottom - atr*0.3 <= closes[j] <= top)
+                strength   = min(1.0, bear_disp / (atr * 3))
                 obs.append(OrderBlock(
-                    index=i,
-                    ob_type="bearish",
-                    top=highs[i],
-                    bottom=lows[i],
-                    mid=(highs[i] + lows[i]) / 2,
-                    strength=round(strength, 3),
-                    is_mitigated=is_mitigated,
-                    timestamp=str(df_slice.index[i])
+                    index=int(sl.index[i]) if hasattr(sl.index[i],"__int__") else i,
+                    ob_type="bearish", top=float(top), bottom=float(bottom),
+                    mid=float((top+bottom)/2), strength=strength,
+                    is_mitigated=mitigated, touch_count=touches,
+                    displacement=bear_disp/atr,
                 ))
 
-    return obs
+    # Sort by strength desc, prefer unmitigated multi-touch OBs
+    obs.sort(key=lambda x: (not x.is_mitigated, x.touch_count, x.strength), reverse=True)
+    return obs[:8]   # top 8
 
 
-def find_fair_value_gaps(df: pd.DataFrame, lookback: int = 50) -> list[FairValueGap]:
-    """
-    Identify Fair Value Gaps (Imbalances):
-    - Bullish FVG: Gap between candle[i-1].high and candle[i+1].low
-    - Bearish FVG: Gap between candle[i-1].low and candle[i+1].high
-    """
+def find_fair_value_gaps(df: pd.DataFrame, lookback: int = 60) -> list:
     fvgs = []
-    df_slice = df.iloc[-lookback:] if len(df) > lookback else df
-    highs = df_slice["high"].values
-    lows = df_slice["low"].values
-    closes = df_slice["close"].values
+    sl   = df.iloc[-lookback:] if len(df) > lookback else df
+    atr  = _atr(sl)
+    if atr == 0: return fvgs
 
-    current_price = closes[-1]
+    highs  = sl["high"].values
+    lows   = sl["low"].values
+    closes = sl["close"].values
+    n      = len(sl)
 
-    for i in range(1, len(df_slice) - 1):
-        # Bullish FVG: Gap up
-        if lows[i+1] > highs[i-1]:
-            gap_top = lows[i+1]
-            gap_bottom = highs[i-1]
-            gap_mid = (gap_top + gap_bottom) / 2
-            is_filled = current_price <= gap_top and current_price >= gap_bottom
-            
+    for i in range(1, n - 1):
+        gap_up = lows[i+1] - highs[i-1]       # bullish FVG
+        gap_dn = lows[i-1] - highs[i+1]       # bearish FVG
+
+        # Bullish FVG: candle[i-1] high < candle[i+1] low
+        if gap_up > atr * 0.3:
+            top    = float(lows[i+1])
+            bottom = float(highs[i-1])
+            # Check fill: future low dips into gap
+            future_lo = lows[i+2:] if i+2 < n else np.array([])
+            filled    = bool(future_lo.min() <= bottom) if len(future_lo) else False
+            fill_pct  = 0.0
+            if not filled and len(future_lo):
+                deepest = min(future_lo.min(), top)
+                rng     = top - bottom
+                fill_pct = max(0.0, min(100.0, (top - deepest) / rng * 100)) if rng else 0.0
             fvgs.append(FairValueGap(
-                index=i,
-                fvg_type="bullish",
-                top=gap_top,
-                bottom=gap_bottom,
-                mid=gap_mid,
-                is_filled=is_filled,
-                timestamp=str(df_slice.index[i])
+                index=int(sl.index[i]) if hasattr(sl.index[i],"__int__") else i,
+                fvg_type="bullish", top=top, bottom=bottom,
+                mid=float((top+bottom)/2), is_filled=filled, fill_pct=fill_pct,
             ))
 
-        # Bearish FVG: Gap down
-        if highs[i+1] < lows[i-1]:
-            gap_top = lows[i-1]
-            gap_bottom = highs[i+1]
-            gap_mid = (gap_top + gap_bottom) / 2
-            is_filled = current_price >= gap_bottom and current_price <= gap_top
-            
+        # Bearish FVG
+        if gap_dn > atr * 0.3:
+            top    = float(lows[i-1])
+            bottom = float(highs[i+1])
+            future_hi = highs[i+2:] if i+2 < n else np.array([])
+            filled    = bool(future_hi.max() >= top) if len(future_hi) else False
+            fill_pct  = 0.0
+            if not filled and len(future_hi):
+                highest  = max(future_hi.max(), bottom)
+                rng      = top - bottom
+                fill_pct = max(0.0, min(100.0, (highest - bottom) / rng * 100)) if rng else 0.0
             fvgs.append(FairValueGap(
-                index=i,
-                fvg_type="bearish",
-                top=gap_top,
-                bottom=gap_bottom,
-                mid=gap_mid,
-                is_filled=is_filled,
-                timestamp=str(df_slice.index[i])
+                index=int(sl.index[i]) if hasattr(sl.index[i],"__int__") else i,
+                fvg_type="bearish", top=top, bottom=bottom,
+                mid=float((top+bottom)/2), is_filled=filled, fill_pct=fill_pct,
             ))
 
-    return fvgs
+    # Recent unfilled FVGs first
+    fvgs.sort(key=lambda x: (not x.is_filled, x.index), reverse=True)
+    return fvgs[:8]
 
 
-def identify_market_structure(df: pd.DataFrame, swing_order: int = 5) -> list[StructurePoint]:
+def find_structure_points(df: pd.DataFrame, lookback: int = 100) -> list:
     """
-    Identify Break of Structure (BOS) and Change of Character (CHoCH).
-    BOS: Price breaks a significant high/low in the direction of the trend.
-    CHoCH: Price breaks a significant high/low AGAINST the current trend.
+    Detect BOS and CHoCH.
+    BOS: Break of structure in trend direction (continuation)
+    CHoCH: Change of character (potential reversal)
     """
-    from scipy.signal import argrelextrema
-    structure_points = []
+    sps  = []
+    sl   = df.iloc[-lookback:] if len(df) > lookback else df
+    atr  = _atr(sl)
+    if atr == 0: return sps
 
-    highs = df["high"].values
-    lows = df["low"].values
-    closes = df["close"].values
+    highs  = sl["high"].values
+    lows   = sl["low"].values
+    closes = sl["close"].values
+    opens  = sl["open"].values
+    n      = len(sl)
 
-    if len(closes) < 20:
-        return structure_points
+    # Track last significant swing high/low
+    window = max(5, n // 10)
+    swing_highs, swing_lows = [], []
 
-    local_max_idx = argrelextrema(highs, np.greater_equal, order=swing_order)[0]
-    local_min_idx = argrelextrema(lows, np.less_equal, order=swing_order)[0]
+    for i in range(window, n - 1):
+        local_hi = highs[max(0,i-window):i].max()
+        local_lo = lows[max(0,i-window):i].min()
 
-    # Track last significant HH/HL/LH/LL
-    prev_high = None
-    prev_low = None
-    current_trend = "neutral"
+        # BOS Bullish: close breaks above recent swing high with displacement
+        if closes[i] > local_hi and _body(opens[i],closes[i]) > atr * 0.7:
+            disp = _body(opens[i], closes[i]) / atr
+            # CHoCH if previous structure was bearish (trend reversal)
+            stype = "CHoCH" if swing_lows and closes[i-1] < closes[max(0,i-window)] else "BOS"
+            sps.append(StructurePoint(
+                index=i, price=float(closes[i]),
+                structure_type=stype, direction="bullish",
+                displacement=disp, is_confirmed=disp > 0.8,
+            ))
+            swing_highs.append(closes[i])
 
-    all_pivots = sorted(
-        [(i, highs[i], "high") for i in local_max_idx] +
-        [(i, lows[i], "low") for i in local_min_idx],
-        key=lambda x: x[0]
-    )
+        # BOS Bearish: close breaks below recent swing low
+        elif closes[i] < local_lo and _body(opens[i],closes[i]) > atr * 0.7:
+            disp = _body(opens[i], closes[i]) / atr
+            stype = "CHoCH" if swing_highs and closes[i-1] > closes[max(0,i-window)] else "BOS"
+            sps.append(StructurePoint(
+                index=i, price=float(closes[i]),
+                structure_type=stype, direction="bearish",
+                displacement=disp, is_confirmed=disp > 0.8,
+            ))
+            swing_lows.append(closes[i])
 
-    for i, (idx, price, ptype) in enumerate(all_pivots):
-        if ptype == "high" and prev_high is not None:
-            if price > prev_high:
-                if current_trend == "bullish":
-                    # BOS bullish - higher high
-                    structure_points.append(StructurePoint(
-                        index=idx, price=price, structure_type="BOS",
-                        direction="bullish",
-                        timestamp=str(df.index[idx]) if idx < len(df) else None
-                    ))
-                elif current_trend == "bearish":
-                    # CHoCH - breaking bearish trend
-                    structure_points.append(StructurePoint(
-                        index=idx, price=price, structure_type="CHoCH",
-                        direction="bullish",
-                        timestamp=str(df.index[idx]) if idx < len(df) else None
-                    ))
-                    current_trend = "bullish"
-            current_trend = "bullish" if price > prev_high else current_trend
+    return sps[-12:]   # keep most recent 12
 
-        if ptype == "low" and prev_low is not None:
-            if price < prev_low:
-                if current_trend == "bearish":
-                    structure_points.append(StructurePoint(
-                        index=idx, price=price, structure_type="BOS",
-                        direction="bearish",
-                        timestamp=str(df.index[idx]) if idx < len(df) else None
-                    ))
-                elif current_trend == "bullish":
-                    structure_points.append(StructurePoint(
-                        index=idx, price=price, structure_type="CHoCH",
-                        direction="bearish",
-                        timestamp=str(df.index[idx]) if idx < len(df) else None
-                    ))
-                    current_trend = "bearish"
 
-        if ptype == "high":
-            prev_high = price
-        else:
-            prev_low = price
+def find_liquidity_sweeps(df: pd.DataFrame, lookback: int = 50) -> list:
+    """Detect stop hunts: spike beyond key level then reversal."""
+    sweeps = []
+    sl     = df.iloc[-lookback:] if len(df) > lookback else df
+    atr    = _atr(sl)
+    if atr == 0: return sweeps
 
-    return structure_points
+    highs  = sl["high"].values
+    lows   = sl["low"].values
+    closes = sl["close"].values
+    n      = len(sl)
+    win    = max(5, n // 8)
+
+    for i in range(win, n - 2):
+        prev_hi = highs[max(0,i-win):i].max()
+        prev_lo = lows[max(0,i-win):i].min()
+
+        # Buy-side liquidity sweep: spike above prev high then close below
+        if highs[i] > prev_hi + atr*0.2 and closes[i] < prev_hi:
+            sweeps.append(LiquiditySweep(
+                index=i, sweep_type="buy_side",
+                level=float(prev_hi), direction="bearish",
+            ))
+
+        # Sell-side liquidity sweep: spike below prev low then close above
+        if lows[i] < prev_lo - atr*0.2 and closes[i] > prev_lo:
+            sweeps.append(LiquiditySweep(
+                index=i, sweep_type="sell_side",
+                level=float(prev_lo), direction="bullish",
+            ))
+
+    return sweeps[-6:]
 
 
 def analyze_smc(df: pd.DataFrame) -> SMCResult:
-    """Full SMC analysis pipeline."""
     if len(df) < 20:
         return SMCResult(
             order_blocks=[], fair_value_gaps=[], structure_points=[],
-            trend="neutral", current_ob=None, nearest_fvg=None,
-            last_bos=None, last_choch=None, bias="Insufficient data",
-            confidence=0.0
+            liquidity_sweeps=[], trend="neutral", current_ob=None,
+            nearest_fvg=None, last_bos=None, last_choch=None,
+            bias="Insufficient data", confidence=0.0,
+            premium_zone=None, discount_zone=None, equilibrium=None,
         )
 
-    order_blocks = find_order_blocks(df)
-    fvgs = find_fair_value_gaps(df)
-    structure = identify_market_structure(df)
+    obs      = find_order_blocks(df)
+    fvgs     = find_fair_value_gaps(df)
+    sps      = find_structure_points(df)
+    sweeps   = find_liquidity_sweeps(df)
+    atr      = _atr(df)
 
-    current_price = df["close"].iloc[-1]
+    closes   = df["close"].values
+    cp       = float(closes[-1])
 
-    # Determine trend from structure
-    recent_bos = [s for s in structure if s.structure_type == "BOS"]
-    recent_choch = [s for s in structure if s.structure_type == "CHoCH"]
+    # ── Trend from structure ──────────────────────────────────
+    bull_bos  = sum(1 for s in sps if s.structure_type=="BOS"   and s.direction=="bullish" and s.is_confirmed)
+    bear_bos  = sum(1 for s in sps if s.structure_type=="BOS"   and s.direction=="bearish" and s.is_confirmed)
+    bull_choch= sum(1 for s in sps if s.structure_type=="CHoCH" and s.direction=="bullish")
+    bear_choch= sum(1 for s in sps if s.structure_type=="CHoCH" and s.direction=="bearish")
 
-    last_bos = recent_bos[-1] if recent_bos else None
-    last_choch = recent_choch[-1] if recent_choch else None
+    # Price vs 20-bar EMA
+    ema20 = float(pd.Series(closes).ewm(span=20, adjust=False).mean().iloc[-1])
 
-    trend = "neutral"
-    if last_choch:
-        trend = last_choch.direction
-    elif last_bos:
-        trend = last_bos.direction
+    bull_score = bull_bos*2 + bull_choch + (1 if cp > ema20 else 0)
+    bear_score = bear_bos*2 + bear_choch + (1 if cp < ema20 else 0)
 
-    # Find nearest unmitigated OB
-    unmitigated_obs = [ob for ob in order_blocks if not ob.is_mitigated]
+    if   bull_score > bear_score: trend = "bullish"
+    elif bear_score > bull_score: trend = "bearish"
+    else:
+        trend = "bullish" if closes[-1] > closes[max(0,len(closes)-20)] else "bearish"
+
+    # ── Current OB (nearest relevant unmitigated) ─────────────
     current_ob = None
-    if unmitigated_obs:
-        dists = [(abs(ob.mid - current_price), ob) for ob in unmitigated_obs]
-        dists.sort(key=lambda x: x[0])
-        current_ob = dists[0][1] if dists else None
+    for ob in obs:
+        if ob.is_mitigated: continue
+        if trend == "bullish" and ob.ob_type == "bullish" and ob.top < cp:
+            current_ob = ob; break
+        if trend == "bearish" and ob.ob_type == "bearish" and ob.bottom > cp:
+            current_ob = ob; break
 
-    # Find nearest unfilled FVG
-    unfilled_fvgs = [f for f in fvgs if not f.is_filled]
+    # ── Nearest unfilled FVG ──────────────────────────────────
     nearest_fvg = None
-    if unfilled_fvgs:
-        dists = [(abs(f.mid - current_price), f) for f in unfilled_fvgs]
-        dists.sort(key=lambda x: x[0])
-        nearest_fvg = dists[0][1] if dists else None
+    for fvg in fvgs:
+        if not fvg.is_filled:
+            nearest_fvg = fvg; break
 
-    # Calculate confidence
-    confidence = 0.5
-    if last_choch: confidence += 0.15
-    if last_bos: confidence += 0.1
-    if current_ob: confidence += 0.15
-    if nearest_fvg: confidence += 0.1
+    # ── Last BOS and CHoCH ────────────────────────────────────
+    last_bos   = next((s for s in reversed(sps) if s.structure_type=="BOS"),   None)
+    last_choch = next((s for s in reversed(sps) if s.structure_type=="CHoCH"), None)
 
-    # Bias description
-    bias = f"{trend.capitalize()} bias"
-    if current_ob:
-        bias += f" | OB @ {current_ob.bottom:.5f}-{current_ob.top:.5f}"
-    if nearest_fvg:
-        bias += f" | FVG @ {nearest_fvg.bottom:.5f}-{nearest_fvg.top:.5f}"
+    # ── Premium / Discount / Equilibrium ─────────────────────
+    recent_hi = float(df["high"].iloc[-50:].max())
+    recent_lo = float(df["low"].iloc[-50:].min())
+    rng       = recent_hi - recent_lo
+    premium   = recent_lo + rng * 0.618
+    discount  = recent_lo + rng * 0.382
+    equil     = recent_lo + rng * 0.500
+    zone_label = ""
+    if cp >= premium:
+        zone_label = "PREMIUM (sell bias)"
+    elif cp <= discount:
+        zone_label = "DISCOUNT (buy bias)"
+    else:
+        zone_label = "EQUILIBRIUM"
 
-    return SMCResult(
-        order_blocks=order_blocks[-10:],
-        fair_value_gaps=fvgs[-10:],
-        structure_points=structure[-20:],
-        trend=trend,
-        current_ob=current_ob,
-        nearest_fvg=nearest_fvg,
-        last_bos=last_bos,
-        last_choch=last_choch,
-        bias=bias,
-        confidence=round(min(confidence, 1.0), 3)
+    # ── Liquidity sweeps add bias ─────────────────────────────
+    recent_sweep = sweeps[-1] if sweeps else None
+    sweep_bias   = ""
+    if recent_sweep:
+        if recent_sweep.direction == "bullish":
+            sweep_bias = " · Sell-side swept → bull reversal possible"
+        else:
+            sweep_bias = " · Buy-side swept → bear reversal possible"
+
+    # ── Confidence ────────────────────────────────────────────
+    conf = 0.3
+    if current_ob:    conf += 0.2 * current_ob.strength
+    if last_choch:    conf += 0.15
+    if last_bos:      conf += 0.10
+    if nearest_fvg and not nearest_fvg.is_filled: conf += 0.10
+    if recent_sweep:  conf += 0.10
+    conf = min(conf, 1.0)
+
+    # ── Bias description ──────────────────────────────────────
+    ob_desc  = f"OB @ {current_ob.mid:.5f} (×{current_ob.touch_count}touches)" if current_ob else "No key OB"
+    fvg_desc = f"FVG {nearest_fvg.fvg_type} {nearest_fvg.fill_pct:.0f}% filled" if nearest_fvg else "No FVG"
+    bias = (
+        f"{'Bullish' if trend=='bullish' else 'Bearish'} · {zone_label}"
+        f" · {ob_desc} · {fvg_desc}{sweep_bias}"
     )
 
-
-def _calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
-    """Calculate Average True Range."""
-    if len(df) < period:
-        return 0.001
-    high = df["high"].values
-    low = df["low"].values
-    close = df["close"].values
-    tr = np.maximum(high[1:] - low[1:],
-                    np.maximum(abs(high[1:] - close[:-1]),
-                               abs(low[1:] - close[:-1])))
-    return np.mean(tr[-period:])
+    return SMCResult(
+        order_blocks     = obs,
+        fair_value_gaps  = fvgs,
+        structure_points = sps,
+        liquidity_sweeps = sweeps,
+        trend            = trend,
+        current_ob       = current_ob,
+        nearest_fvg      = nearest_fvg,
+        last_bos         = last_bos,
+        last_choch       = last_choch,
+        bias             = bias,
+        confidence       = round(conf, 3),
+        premium_zone     = round(premium, 5),
+        discount_zone    = round(discount, 5),
+        equilibrium      = round(equil, 5),
+    )
