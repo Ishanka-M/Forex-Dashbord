@@ -836,7 +836,16 @@ def render_signals():
     )
 
     if not gemini_keys_available:
-        st.info("💡 Add Gemini API keys in Streamlit Secrets to enable AI analysis and auto-capture.")
+        st.warning(
+            "⚠️ **Gemini API keys නෑ.** Admin Panel → Gemini section → keys add කරන්න.\n\n"
+            "**Secrets format:**\n```toml\ngemini_api_keys = \"AIzaSy...key1,AIzaSy...key2\"\n```\n"
+            "Keys නැතිව signals generate වේ, Gemini verdict නෑ, auto-capture off."
+        )
+    else:
+        # Quick connection check (cached 60s)
+        keys_list = _get_api_keys()
+        st.caption(f"🤖 {len(keys_list)} Gemini key(s) loaded · CONFIRM-only auto-capture · "
+                   f"Admin Panel → test connection if AI not working")
 
     # ── Per-signal loop ─────────────────────────────────────────────────────
     for sig in signals:
@@ -1005,11 +1014,14 @@ def render_signals():
                             else:  st.error(f"❌ {msg}")
                 with col_warn:
                     if gemini_verdict == "CAUTION":
-                        sl_q = gemini.get("sl_quality","") if gemini else ""
-                        reason_txt = str(gemini.get('reason') or 'Trade at own risk')[:80]
+                        if gemini is not None:
+                            sl_q       = str(gemini.get("sl_quality") or "")
+                            reason_txt = str(gemini.get("reason") or "Moderate confluence.")[:80]
+                        else:
+                            sl_q, reason_txt = "", "Moderate confluence — verify manually."
                         st.warning(
                             f"⚠️ CAUTION — {reason_txt}"
-                            + (f" · SL {sl_q}" if sl_q else "")
+                            + (f" · SL: {sl_q}" if sl_q else "")
                         )
 
 
@@ -1667,6 +1679,42 @@ gemini_key_3 = "AIzaSy..."
 # ... up to gemini_key_7""", language="toml")
             else:
                 st.markdown(f"**{avail}/{total} keys available**")
+
+                # ── Live connection test ──────────────────────────
+                if st.button("🔌 Test Gemini Connection", key="test_gemini_btn"):
+                    import requests, json as _json
+                    keys_list = _get_api_keys()
+                    tested = 0
+                    for k in keys_list[:3]:   # test first 3 keys
+                        try:
+                            r = requests.post(
+                                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={k}",
+                                json={"contents":[{"parts":[{"text":"Reply with JSON: {\"ok\":true}"}]}],
+                                      "generationConfig":{"maxOutputTokens":20,"temperature":0}},
+                                timeout=10,
+                            )
+                            if r.status_code == 200:
+                                st.success(f"✅ Key ...{k[-6:]} — Connected OK (HTTP 200)")
+                            elif r.status_code == 400:
+                                st.error(f"❌ Key ...{k[-6:]} — Bad Request (400). Key invalid or malformed.")
+                            elif r.status_code == 403:
+                                st.error(f"❌ Key ...{k[-6:]} — Forbidden (403). Key disabled or no permission.")
+                            elif r.status_code == 429:
+                                st.warning(f"⏳ Key ...{k[-6:]} — Rate limited (429). Try later.")
+                            else:
+                                try:
+                                    err_msg = r.json().get("error",{}).get("message","")
+                                except Exception:
+                                    err_msg = r.text[:100]
+                                st.error(f"❌ Key ...{k[-6:]} — HTTP {r.status_code}: {err_msg}")
+                            tested += 1
+                        except requests.Timeout:
+                            st.error(f"⏰ Key ...{k[-6:]} — Timeout (network issue)")
+                        except Exception as ex:
+                            st.error(f"❌ Key ...{k[-6:]} — {ex}")
+                    if tested == 0:
+                        st.error("No keys to test.")
+
                 cols = st.columns(min(total, 7))
                 for i, ki in enumerate(key_status["keys"]):
                     with cols[i % len(cols)]:
