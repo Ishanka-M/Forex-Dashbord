@@ -1,6 +1,6 @@
 """
 app.py
-FX-WavePulse Pro - Main Streamlit Application
+Infinite-WavePulse Pro - Main Streamlit Application
 """
 
 import streamlit as st
@@ -317,7 +317,7 @@ def render_login():
         <div style="font-size:3rem; margin-bottom:0.5rem;">📈</div>
         <div style="font-size:2rem; font-weight:700; background: linear-gradient(90deg,#00D4AA,#3B82F6,#8B5CF6);
              -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:-0.03em;">
-            FX-WavePulse Pro
+            Infinite-WavePulse Pro
         </div>
         <div style="color:#6B7A99; font-size:0.82rem; font-family:'JetBrains Mono'; margin-top:4px;">
             Elliott Wave · Smart Money Concepts · Multi-Timeframe
@@ -401,7 +401,7 @@ def render_sidebar():
     with st.sidebar:
         st.markdown(f"""
         <div style="padding:1rem 0.5rem; border-bottom:1px solid #1E2A42; margin-bottom:1rem;">
-            <div style="font-size:1.2rem; font-weight:700; color:#00D4AA;">FX-WavePulse Pro</div>
+            <div style="font-size:1.2rem; font-weight:700; color:#00D4AA;">Infinite-WavePulse Pro</div>
             <div style="font-size:0.75rem; color:#6B7A99; font-family:'JetBrains Mono';">v3.0 · Elliott + SMC + AI</div>
         </div>
         <div style="background:#111827; border-radius:8px; padding:0.7rem 1rem; margin-bottom:1rem; border:1px solid #1E2A42;">
@@ -478,7 +478,7 @@ def render_dashboard():
     st.markdown("""
     <div class="brand-header">
         <div>
-            <div class="brand-title">📈 FX-WavePulse Pro</div>
+            <div class="brand-title">📈 Infinite-WavePulse Pro</div>
             <div class="brand-subtitle">Elliott Wave · Smart Money Concepts · Multi-Timeframe Analysis</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
