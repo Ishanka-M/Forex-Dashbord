@@ -13,7 +13,7 @@ import uuid
 
 # ── Page Config (must be first Streamlit call) ──────────────────────────────
 st.set_page_config(
-    page_title="FX-WavePulse Pro",
+    page_title="Infinite-WavePulse Pro",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
