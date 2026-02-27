@@ -21,7 +21,7 @@ import uuid
 
 from modules.elliott_wave import identify_elliott_waves
 from modules.smc_analysis import analyze_smc
-from modules.market_data import get_ohlcv
+from modules.market_data import get_ohlcv, inject_live_price
 
 COLOMBO_TZ = pytz.timezone("Asia/Colombo")
 
@@ -98,9 +98,14 @@ def generate_signal(symbol: str,
     # ── Fetch OHLCV ───────────────────────────────────────────
     df_p = get_ohlcv(symbol, primary_tf)
     if df_p is None or len(df_p) < 50: return None
+    # Inject live price so analysis uses current market price
+    df_p, _, _ = inject_live_price(df_p, symbol)
+    if df_p is None or df_p.empty: return None
 
     df_s = get_ohlcv(symbol, secondary_tf)
     has_s = df_s is not None and len(df_s) >= 30
+    if has_s:
+        df_s, _, _ = inject_live_price(df_s, symbol)
 
     # ── Full analysis ─────────────────────────────────────────
     ew   = identify_elliott_waves(df_p)

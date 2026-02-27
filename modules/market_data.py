@@ -298,7 +298,7 @@ def _fetch_yf_v7(ticker: str, timeframe: str) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════
 # MAIN OHLCV FETCHER — Tries all 4 strategies
 # ══════════════════════════════════════════════════════════════
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)   # 30s — near-live for analysis
 def get_ohlcv(symbol: str, timeframe: str = "H1",
               period_override: str = None) -> pd.DataFrame:
     """
@@ -348,10 +348,40 @@ def get_ohlcv(symbol: str, timeframe: str = "H1",
     return pd.DataFrame()
 
 
+def inject_live_price(df: pd.DataFrame, symbol: str) -> tuple:
+    """
+    Update the last candle of df with the current live price.
+    Returns (updated_df, live_price, fetch_time_str).
+    Last candle close/high/low get updated so EW & SMC use fresh price.
+    """
+    import pytz
+    from datetime import datetime
+
+    if df is None or df.empty:
+        return df, None, None
+
+    live  = get_live_price(symbol)
+    price = live.get("price")
+
+    if not price:
+        return df, None, None
+
+    df = df.copy()
+    df.iloc[-1, df.columns.get_loc("close")] = float(price)
+    # Update high/low of last candle too
+    if float(price) > float(df.iloc[-1]["high"]):
+        df.iloc[-1, df.columns.get_loc("high")] = float(price)
+    if float(price) < float(df.iloc[-1]["low"]):
+        df.iloc[-1, df.columns.get_loc("low")] = float(price)
+
+    now_lkt = datetime.now(pytz.timezone("Asia/Colombo")).strftime("%H:%M:%S LKT")
+    return df, float(price), now_lkt
+
+
 # ══════════════════════════════════════════════════════════════
 # LIVE PRICE FETCHER
 # ══════════════════════════════════════════════════════════════
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)   # 15s live price cache
 def get_live_price(symbol: str) -> dict:
     """Get current live price with multiple fallbacks."""
     ticker = SYMBOL_MAP.get(symbol, symbol)
