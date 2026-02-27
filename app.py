@@ -1,6 +1,6 @@
 """
 app.py
-Infinite-WavePulse Pro - Main Streamlit Application
+FX-WavePulse Pro - Main Streamlit Application
 """
 
 import streamlit as st
@@ -13,7 +13,7 @@ import uuid
 
 # ── Page Config (must be first Streamlit call) ──────────────────────────────
 st.set_page_config(
-    page_title="Infinite-WavePulse Pro",
+    page_title="FX-WavePulse Pro",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -317,7 +317,7 @@ def render_login():
         <div style="font-size:3rem; margin-bottom:0.5rem;">📈</div>
         <div style="font-size:2rem; font-weight:700; background: linear-gradient(90deg,#00D4AA,#3B82F6,#8B5CF6);
              -webkit-background-clip:text; -webkit-text-fill-color:transparent; letter-spacing:-0.03em;">
-            Infinite-WavePulse Pro
+            FX-WavePulse Pro
         </div>
         <div style="color:#6B7A99; font-size:0.82rem; font-family:'JetBrains Mono'; margin-top:4px;">
             Elliott Wave · Smart Money Concepts · Multi-Timeframe
@@ -401,7 +401,7 @@ def render_sidebar():
     with st.sidebar:
         st.markdown(f"""
         <div style="padding:1rem 0.5rem; border-bottom:1px solid #1E2A42; margin-bottom:1rem;">
-            <div style="font-size:1.2rem; font-weight:700; color:#00D4AA;">Infinite-WavePulse Pro</div>
+            <div style="font-size:1.2rem; font-weight:700; color:#00D4AA;">FX-WavePulse Pro</div>
             <div style="font-size:0.75rem; color:#6B7A99; font-family:'JetBrains Mono';">v3.0 · Elliott + SMC + AI</div>
         </div>
         <div style="background:#111827; border-radius:8px; padding:0.7rem 1rem; margin-bottom:1rem; border:1px solid #1E2A42;">
@@ -478,7 +478,7 @@ def render_dashboard():
     st.markdown("""
     <div class="brand-header">
         <div>
-            <div class="brand-title">📈 Infinite-WavePulse Pro</div>
+            <div class="brand-title">📈 FX-WavePulse Pro</div>
             <div class="brand-subtitle">Elliott Wave · Smart Money Concepts · Multi-Timeframe Analysis</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
@@ -1031,67 +1031,111 @@ def render_signals():
 def render_analysis():
     st.markdown("## 🔬 Chart Analysis")
 
-    col1, col2 = st.columns([1, 1])
+    from modules.market_data import inject_live_price
+
+    # ── Controls ──────────────────────────────────────────────
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
-        category = st.selectbox("Category", list(SYMBOL_CATEGORIES.keys()), key="analysis_cat")
-        symbol   = st.selectbox("Symbol", SYMBOL_CATEGORIES[category], key="analysis_sym")
+        category  = st.selectbox("Category", list(SYMBOL_CATEGORIES.keys()), key="analysis_cat")
+        symbol    = st.selectbox("Symbol", SYMBOL_CATEGORIES[category], key="analysis_sym")
     with col2:
-        timeframe = st.selectbox("Timeframe", ["M5","M15","H1","H4","D1"], index=2)
-
-    col3, col4 = st.columns([1, 1])
+        timeframe = st.selectbox("Timeframe", ["M5","M15","H1","H4","D1"], index=2,
+                                 key="analysis_tf")
+        col2a, col2b = st.columns(2)
+        with col2a:
+            show_ew  = st.checkbox("Elliott Wave", value=True,  key="analysis_ew")
+        with col2b:
+            show_smc = st.checkbox("SMC Zones",    value=True,  key="analysis_smc")
     with col3:
-        show_ew  = st.checkbox("Elliott Wave", value=True)
-    with col4:
-        show_smc = st.checkbox("SMC Zones (OB / FVG / BOS)", value=True)
+        st.markdown("<div style='margin-top:1.8rem;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh Live Data", use_container_width=True, key="analysis_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+        auto_ref = st.checkbox("⏱ Auto-refresh (30s)", value=False, key="analysis_auto")
 
-    with st.spinner(f"Fetching {symbol} {timeframe} data..."):
-        df = get_ohlcv(symbol, timeframe)
+    # ── Auto-refresh ──────────────────────────────────────────
+    if auto_ref:
+        import time
+        last_ref = st.session_state.get("analysis_last_refresh", 0)
+        if time.time() - last_ref > 30:
+            st.session_state["analysis_last_refresh"] = time.time()
+            st.cache_data.clear()
+            st.rerun()
 
-    if df is None or df.empty:
+    # ── Fetch OHLCV (30s cache) ───────────────────────────────
+    with st.spinner(f"Fetching {symbol} {timeframe}..."):
+        df_raw = get_ohlcv(symbol, timeframe)
+
+    if df_raw is None or df_raw.empty:
         st.error(f"⚠️ Could not fetch data for **{symbol}** on **{timeframe}**.")
         with st.expander("🔧 Troubleshooting"):
-            st.markdown(f"""
-            **Possible reasons:**
-            - `{symbol}` may not have data at `{timeframe}` granularity on Yahoo Finance
-            - Intraday data (M5/M15) is only available for the **last 60 days**
-            - Some exotic pairs have limited history — try **H1** or **D1**
-            - Yahoo Finance rate limit — wait 30 seconds and retry
-
-            **Try these instead:**
-            - Change timeframe to `H1` or `D1`
-            - Switch to a Major pair: EURUSD, GBPUSD, XAUUSD
-            - Click **Refresh** below to clear the cache
+            st.markdown("""
+            - Intraday (M5/M15) available last 60 days only
+            - Try **H1** or **D1** timeframe
+            - Click **Refresh Live Data** above
             """)
-            if st.button("🔄 Clear Cache & Retry"):
-                st.cache_data.clear()
-                st.rerun()
         return
 
-    ew_result = identify_elliott_waves(df) if show_ew else None
-    smc_result = analyze_smc(df) if show_smc else None
+    # ── Inject live price into last candle ────────────────────
+    df, live_price, fetch_time = inject_live_price(df_raw, symbol)
 
-    # Chart
-    fig = create_candlestick_chart(df, symbol, timeframe, 
-                                    ew_result if show_ew else None,
-                                    smc_result if show_smc else None)
+    # ── Data freshness banner ─────────────────────────────────
+    if live_price and fetch_time:
+        candle_close = float(df_raw.iloc[-1]["close"])
+        price_diff   = live_price - candle_close
+        diff_pips    = abs(price_diff) * 10000
+        diff_color   = "#00D4AA" if price_diff >= 0 else "#FF4B6E"
+        diff_arrow   = "▲" if price_diff >= 0 else "▼"
+        st.markdown(
+            f'<div style="background:#0D1117;border:1px solid #00D4AA33;border-radius:8px;'
+            f'padding:6px 14px;margin-bottom:8px;display:flex;justify-content:space-between;'
+            f'align-items:center;flex-wrap:wrap;gap:8px;">'
+            f'<span style="font-size:0.82rem;color:#6B7A99;">📡 Live data injected</span>'
+            f'<span style="font-family:monospace;font-size:0.88rem;">'
+            f'<b style="color:#E8EDF5;">{symbol}</b> &nbsp;'
+            f'<span style="color:{diff_color};font-weight:700;">{live_price:.5f}</span>'
+            f'&nbsp;<span style="color:{diff_color};font-size:0.75rem;">'
+            f'{diff_arrow} {diff_pips:.1f} pips vs cached candle</span>'
+            f'</span>'
+            f'<span style="font-size:0.75rem;color:#6B7A99;">🕐 {fetch_time}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.warning("⚠️ Live price unavailable — showing cached candle data.")
+        df = df_raw
+
+    # ── EW / SMC Analysis on live-injected data ───────────────
+    with st.spinner("Analysing..."):
+        ew_result  = identify_elliott_waves(df) if show_ew  else None
+        smc_result = analyze_smc(df)            if show_smc else None
+
+    # ── Chart ─────────────────────────────────────────────────
+    fig = create_candlestick_chart(df, symbol, timeframe,
+                                   ew_result  if show_ew  else None,
+                                   smc_result if show_smc else None)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Analysis summary
+    # ── Analysis Summary ──────────────────────────────────────
     col_ew, col_smc = st.columns(2)
 
     if ew_result and show_ew:
         with col_ew:
             st.markdown("### 🌊 Elliott Wave Summary")
-            w3x_badge = '<span style="background:#F5C51822;color:#F5C518;border:1px solid #F5C51844;border-radius:6px;padding:1px 7px;font-size:0.72rem;">⚡ Wave 3 Extended</span>' if getattr(ew_result,"wave3_extended",False) else ""
+            w3x_badge = (
+                '<span style="background:#F5C51822;color:#F5C518;border:1px solid '
+                '#F5C51844;border-radius:6px;padding:1px 7px;font-size:0.72rem;">⚡ Wave 3 Extended</span>'
+            ) if getattr(ew_result, "wave3_extended", False) else ""
             tp1 = ew_result.projected_target
-            tp2 = getattr(ew_result,"projected_tp2",None)
-            tp3 = getattr(ew_result,"projected_tp3",None)
+            tp2 = getattr(ew_result, "projected_tp2", None)
+            tp3 = getattr(ew_result, "projected_tp3", None)
             def fmtp(v): return f"{v:.5f}" if v and 0 < abs(v) < 100 else (f"{v:.3f}" if v else "—")
+            live_tag = f'<span style="font-size:0.7rem;color:#00D4AA;margin-left:6px;">📡 live</span>'
             st.markdown(f"""
             <div class="metric-card">
                 <div style="font-size:0.85rem;line-height:1.9;">
                     <div><b>Pattern:</b> <code>{ew_result.pattern_type}</code> {w3x_badge}</div>
-                    <div><b>Trend:</b> <span class="{'up' if ew_result.trend=='bullish' else 'down'}">{ew_result.trend.upper()}</span></div>
+                    <div><b>Trend:</b> <span class="{'up' if ew_result.trend=='bullish' else 'down'}">{ew_result.trend.upper()}</span>{live_tag}</div>
                     <div><b>Current Wave:</b> <code>{ew_result.current_wave}</code></div>
                     <div><b>Confidence:</b> {ew_result.confidence*100:.0f}%</div>
                     <div><b>TP1:</b> <code style="color:#00D4AA">{fmtp(tp1)}</code></div>
@@ -1106,19 +1150,26 @@ def render_analysis():
     if smc_result and show_smc:
         with col_smc:
             st.markdown("### 💡 SMC Summary")
-            ob_txt  = f"✅ {smc_result.current_ob.ob_type.upper()} @ {smc_result.current_ob.mid:.5f} (×{smc_result.current_ob.touch_count})" if smc_result.current_ob else "None"
-            fvg_txt = f"✅ {smc_result.nearest_fvg.fvg_type.upper()} — {smc_result.nearest_fvg.fill_pct:.0f}% filled" if smc_result.nearest_fvg else "None"
-            bos_txt = f"✅ {smc_result.last_bos.direction.upper()} (conf:{smc_result.last_bos.is_confirmed})" if smc_result.last_bos else "None"
+            ob_txt   = f"✅ {smc_result.current_ob.ob_type.upper()} @ {smc_result.current_ob.mid:.5f} (×{getattr(smc_result.current_ob,'touch_count',0)})" if smc_result.current_ob else "None"
+            fvg_txt  = f"✅ {smc_result.nearest_fvg.fvg_type.upper()} — {smc_result.nearest_fvg.fill_pct:.0f}% filled" if smc_result.nearest_fvg else "None"
+            bos_txt  = f"✅ {smc_result.last_bos.direction.upper()}" if smc_result.last_bos else "None"
             choch_txt= f"✅ {smc_result.last_choch.direction.upper()}" if smc_result.last_choch else "None"
-            sweep_txt= f"⚡ {smc_result.liquidity_sweeps[-1].sweep_type.replace('_',' ').title()}" if smc_result.liquidity_sweeps else "None"
-            zone_color = "#FF4B6E" if smc_result.premium_zone and float(df["close"].iloc[-1]) >= smc_result.premium_zone else ("#00D4AA" if smc_result.discount_zone and float(df["close"].iloc[-1]) <= smc_result.discount_zone else "#F5C518")
+            sweep_txt= f"⚡ {smc_result.liquidity_sweeps[-1].sweep_type.replace('_',' ').title()}" if getattr(smc_result,'liquidity_sweeps',[]) else "None"
+
+            cp_now = float(df["close"].iloc[-1])
+            prem   = getattr(smc_result, "premium_zone",  None)
+            disc   = getattr(smc_result, "discount_zone", None)
+            if   prem and cp_now >= prem:  zone_lbl, zone_c = "PREMIUM",     "#FF4B6E"
+            elif disc and cp_now <= disc:  zone_lbl, zone_c = "DISCOUNT",    "#00D4AA"
+            else:                          zone_lbl, zone_c = "EQUILIBRIUM", "#F5C518"
+
             st.markdown(f"""
             <div class="metric-card">
                 <div style="font-size:0.84rem;line-height:1.9;">
-                    <div><b>Trend:</b> <span class="{'up' if smc_result.trend=='bullish' else 'down'}">{smc_result.trend.upper()}</span>
-                        &nbsp;<span style="font-size:0.72rem;color:{zone_color};background:{zone_color}22;border-radius:6px;padding:1px 7px;">
-                            {'PREMIUM' if smc_result.premium_zone and float(df["close"].iloc[-1])>=smc_result.premium_zone else ('DISCOUNT' if smc_result.discount_zone and float(df["close"].iloc[-1])<=smc_result.discount_zone else 'EQUILIBRIUM')}
-                        </span>
+                    <div><b>Trend:</b>
+                        <span class="{'up' if smc_result.trend=='bullish' else 'down'}">{smc_result.trend.upper()}</span>
+                        &nbsp;<span style="font-size:0.72rem;color:{zone_c};background:{zone_c}22;
+                            border-radius:6px;padding:1px 7px;">{zone_lbl}</span>
                     </div>
                     <div><b>CHoCH:</b> <code>{choch_txt}</code></div>
                     <div><b>BOS:</b> <code>{bos_txt}</code></div>
@@ -1126,7 +1177,7 @@ def render_analysis():
                     <div><b>FVG:</b> <code>{fvg_txt}</code></div>
                     <div><b>Liq. Sweep:</b> <code>{sweep_txt}</code></div>
                     <div><b>Confidence:</b> {smc_result.confidence*100:.0f}%</div>
-                    <div style="color:#6B7A99;font-size:0.77rem;margin-top:4px;">{smc_result.bias[:120]}</div>
+                    <div style="color:#6B7A99;font-size:0.77rem;margin-top:4px;">{str(smc_result.bias)[:120]}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
