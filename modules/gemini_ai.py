@@ -18,7 +18,7 @@ from datetime import datetime
 import pytz
 
 COLOMBO_TZ   = pytz.timezone("Asia/Colombo")
-GEMINI_MODEL = "gemini-3-flash-preview"
+GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_URL   = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key="
