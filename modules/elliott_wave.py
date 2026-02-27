@@ -314,7 +314,9 @@ def identify_elliott_waves(df: pd.DataFrame, order: int = None) -> ElliottWaveRe
     if best_abc and best_ac > 0.30:
         cand, trend, a_sz = best_abc
         prices = [c["price"] for c in cand]
-        sign   = 1 if trend=="bearish" else -1
+        # Bearish ABC: C wave completes downward → TPs go DOWN (sign = -1)
+        # Bullish ABC: C wave completes upward  → TPs go UP   (sign = +1)
+        sign   = -1 if trend == "bearish" else 1
         c_tp1  = prices[1] + sign * a_sz * 1.000
         c_tp2  = prices[1] + sign * a_sz * 1.272
         c_tp3  = prices[1] + sign * a_sz * 1.618

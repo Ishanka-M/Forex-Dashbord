@@ -183,7 +183,7 @@ def generate_signal(symbol: str,
     tp2 = getattr(ew, "projected_tp2", None)
     tp3 = getattr(ew, "projected_tp3", None)
 
-    # Validate direction
+    # Validate: correct direction from entry
     def _valid_tp(t):
         if t is None: return False
         return (t > cp) if is_buy else (t < cp)
@@ -192,13 +192,30 @@ def generate_signal(symbol: str,
     if not _valid_tp(tp2): tp2 = None
     if not _valid_tp(tp3): tp3 = None
 
-    # Fallback: minimum 2R, 3R, 5R
+    # Fallback base values (R-multiples from risk)
     if tp1 is None:
         tp1 = cp + risk * 2.0 if is_buy else cp - risk * 2.0
     if tp2 is None:
         tp2 = cp + risk * 3.2 if is_buy else cp - risk * 3.2
     if tp3 is None:
         tp3 = cp + risk * 5.0 if is_buy else cp - risk * 5.0
+
+    # ── ORDER FIX: TP1 < TP2 < TP3 for BUY, TP1 > TP2 > TP3 for SELL ──
+    # Sort all three and assign in correct progressive order
+    tps = sorted([tp1, tp2, tp3])          # ascending
+    if is_buy:
+        tp1, tp2, tp3 = tps[0], tps[1], tps[2]   # smallest first
+    else:
+        tp1, tp2, tp3 = tps[2], tps[1], tps[0]   # largest first
+
+    # Ensure each TP is at least 0.5R further than the previous
+    min_step = risk * 0.5
+    if is_buy:
+        if tp2 < tp1 + min_step: tp2 = tp1 + min_step
+        if tp3 < tp2 + min_step: tp3 = tp2 + min_step
+    else:
+        if tp2 > tp1 - min_step: tp2 = tp1 - min_step
+        if tp3 > tp2 - min_step: tp3 = tp2 - min_step
 
     rr = round(abs(tp1 - cp) / risk, 2)
     if rr < 1.8: return None   # Hard minimum RR
