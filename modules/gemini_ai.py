@@ -18,7 +18,7 @@ from datetime import datetime
 import pytz
 
 COLOMBO_TZ   = pytz.timezone("Asia/Colombo")
-GEMINI_MODEL = "gemini-3-flash-preview"
+GEMINI_MODEL = "gemini-3-0-flash-preview"
 GEMINI_URL   = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent?key="
@@ -28,15 +28,33 @@ _KS = "_gm_key_state"
 
 # ══ Key rotation ═══════════════════════════════════════════════
 def _get_api_keys() -> list:
+    """
+    Supports Secrets formats:
+      1. [gemini_api_keys] section:  gemini_key_1 = "AIza..."
+      2. Top-level list:             gemini_api_keys = ["AIza...", ...]
+      3. Top-level comma string:     gemini_api_keys = "AIza...,AIza..."
+      4. Top-level individual keys:  gemini_key_1 = "AIza..."
+    """
     keys = []
     try:
+        # Format 1 & 2 & 3: "gemini_api_keys" exists
         if "gemini_api_keys" in st.secrets:
-            raw  = st.secrets["gemini_api_keys"]
-            keys = [k.strip() for k in (raw if isinstance(raw, list)
-                    else raw.split(",")) if k.strip()]
-        else:
-            for i in range(1, 8):
-                k = st.secrets.get(f"gemini_key_{i}", "")
+            raw = st.secrets["gemini_api_keys"]
+            # Format 1: section with gemini_key_N sub-keys
+            if hasattr(raw, "keys"):
+                for i in range(1, 10):
+                    k = raw.get(f"gemini_key_{i}", "")
+                    if k and k.strip(): keys.append(k.strip())
+            # Format 2: list
+            elif isinstance(raw, (list, tuple)):
+                keys = [k.strip() for k in raw if str(k).strip()]
+            # Format 3: comma-separated string
+            elif isinstance(raw, str):
+                keys = [k.strip() for k in raw.split(",") if k.strip()]
+        # Format 4: top-level gemini_key_N
+        if not keys:
+            for i in range(1, 10):
+                k = str(st.secrets.get(f"gemini_key_{i}", "") or "").strip()
                 if k: keys.append(k)
     except Exception:
         pass
