@@ -621,44 +621,52 @@ def _render_signal_card(sig: TradeSignal):
         except Exception:
             return "—"
 
-    entry      = float(sig.entry_price)
-    sl         = float(sig.sl_price)
-    tp1        = float(sig.tp_price)
-    tp2        = float(sig.tp2_price) if sig.tp2_price else None
-    tp3        = float(sig.tp3_price) if sig.tp3_price else None
-    risk_pips  = abs(entry - sl) * 10000
-    tp1_pips   = abs(tp1 - entry) * 10000
-    rr1        = round(abs(tp1 - entry) / abs(entry - sl), 1) if abs(entry - sl) > 0 else 0
+    entry     = float(sig.entry_price)   # = market price (cp)
+    sl        = float(sig.sl_price)
+    tp1       = float(sig.tp_price)
+    tp2       = float(sig.tp2_price) if sig.tp2_price else None
+    tp3       = float(sig.tp3_price) if sig.tp3_price else None
+    risk_pips = abs(entry - sl) * 10000
 
-    entry_type  = getattr(sig, "entry_type",    "MARKET")
-    entry_note  = getattr(sig, "entry_note",    "")
-    mkt_price   = getattr(sig, "entry_market",  entry)
-    ez_top      = getattr(sig, "entry_zone_top", 0)
-    ez_bot      = getattr(sig, "entry_zone_bot", 0)
-    sl_struct   = getattr(sig, "sl_structure",   "")
-    rsi_val     = getattr(sig, "momentum_rsi",   0)
-    mom_ok      = getattr(sig, "momentum_ok",    False)
-    candle_pat  = getattr(sig, "candle_pattern", "")
+    entry_note = str(getattr(sig, "entry_note",    "") or "")
+    ez_top     = float(getattr(sig, "entry_zone_top", 0) or 0)
+    ez_bot     = float(getattr(sig, "entry_zone_bot", 0) or 0)
+    sl_struct  = str(getattr(sig, "sl_structure",   "") or "")
+    rsi_val    = float(getattr(sig, "momentum_rsi",   0) or 0)
+    mom_ok     = bool(getattr(sig, "momentum_ok",    False))
+    candle_pat = str(getattr(sig, "candle_pattern", "") or "")
+    at_zone    = ez_top > 0 and ez_bot > 0   # True = price is AT an OB/FVG
 
-    et_color = "#00D4AA" if entry_type == "LIMIT" else "#F5C518"
-    et_label = "📌 LIMIT ORDER" if entry_type == "LIMIT" else "⚡ MARKET ORDER"
-    border_c = "#00D4AA" if is_buy else "#FF4B6E"
+    border_c   = "#00D4AA" if is_buy else "#FF4B6E"
 
-    entry_zone_html = ""
-    if entry_type == "LIMIT" and ez_top and ez_bot:
-        entry_zone_html = (
-            f'<div style="font-size:0.76rem;color:#F5C518;margin:4px 0 2px;">'
-            f'📍 Place limit between <b style="color:#F5C518">{fmt(ez_bot)}</b>'
-            f' – <b style="color:#F5C518">{fmt(ez_top)}</b></div>'
+    # Zone info badge (shown in header)
+    if at_zone:
+        zone_badge = (f'<span style="font-size:0.72rem;background:#00D4AA1A;color:#00D4AA;'
+                      f'border:1px solid #00D4AA44;border-radius:6px;padding:2px 8px;">✅ AT OB/FVG</span>')
+    else:
+        zone_badge = (f'<span style="font-size:0.72rem;background:#F5C5181A;color:#F5C518;'
+                      f'border:1px solid #F5C51844;border-radius:6px;padding:2px 8px;">⚡ MARKET</span>')
+
+    # Entry note — truncate cleanly
+    note_display = (entry_note[:55] + "…") if len(entry_note) > 55 else entry_note
+
+    # OB/FVG zone reference box (shown below table if at zone)
+    zone_html = ""
+    if at_zone:
+        zone_html = (
+            f'<div style="margin:5px 0;padding:5px 10px;background:#00D4AA0A;'
+            f'border-left:2px solid #00D4AA55;border-radius:0 6px 6px 0;font-size:0.75rem;">'
+            f'<span style="color:#00D4AA;font-weight:700;">📍 Zone:</span> '
+            f'<span style="color:#E8EDF5;font-family:monospace;">{fmt(ez_bot)} – {fmt(ez_top)}</span>'
+            f'<span style="color:#6B7A99;margin-left:8px;">{note_display}</span></div>'
         )
 
     def tp_row(label, price, label_color, action_text):
-        if not price:
-            return ""
+        if not price: return ""
         pips = abs(price - entry) * 10000
         rr   = round(abs(price - entry) / abs(entry - sl), 1) if abs(entry - sl) > 0 else 0
         return (
-            f'<tr style="border-bottom:1px solid #1E2A4220;">'
+            f'<tr style="border-bottom:1px solid #1E2A4215;">'
             f'<td style="color:{label_color};padding:5px 8px;font-weight:700;">{label}</td>'
             f'<td style="font-family:monospace;color:{label_color};padding:5px 8px;'
             f'font-weight:800;font-size:1rem;">{fmt(price)}</td>'
@@ -668,7 +676,7 @@ def _render_signal_card(sig: TradeSignal):
             f'opacity:0.85;">{action_text}</td></tr>'
         )
 
-    rsi_c = "#00D4AA" if mom_ok else "#FF4B6E"
+    rsi_c = "#00D4AA" if mom_ok else "#F5C518"
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#0D1117,#0f1923);
@@ -686,48 +694,45 @@ def _render_signal_card(sig: TradeSignal):
                 </span>
             </div>
             <div style="display:flex;gap:8px;align-items:center;">
-                <span style="font-size:0.72rem;background:{et_color}1A;color:{et_color};
-                    border:1px solid {et_color}44;border-radius:6px;padding:2px 8px;">
-                    {et_label}
-                </span>
+                {zone_badge}
                 <span class="signal-badge {score_cls}">{score}%</span>
             </div>
         </div>
 
         <!-- Price table -->
-        <table style="width:100%;border-collapse:collapse;margin-bottom:6px;">
+        <table style="width:100%;border-collapse:collapse;margin-bottom:4px;">
             <tr style="border-bottom:1px solid #1E2A42;">
                 <td style="color:#6B7A99;padding:5px 8px;">Entry</td>
                 <td style="font-family:monospace;color:#E8EDF5;padding:5px 8px;
-                    font-weight:800;font-size:1rem;">{fmt(entry)}</td>
-                <td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">
-                    Market now: {fmt(mkt_price)}</td>
-                <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;">
-                    {(entry_note[:42] + '…') if len(entry_note) > 42 else entry_note}</td>
+                    font-weight:800;font-size:1.05rem;">{fmt(entry)}</td>
+                <td colspan="2" style="color:#6B7A99;font-size:0.76rem;padding:5px 8px;">
+                    Enter at market price now</td>
             </tr>
             <tr style="border-bottom:1px solid #1E2A42;">
                 <td style="color:#FF4B6E;padding:5px 8px;font-weight:700;">SL</td>
                 <td style="font-family:monospace;color:#FF4B6E;padding:5px 8px;
-                    font-weight:800;font-size:1rem;">{fmt(sl)}</td>
+                    font-weight:800;font-size:1.05rem;">{fmt(sl)}</td>
                 <td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">
                     −{risk_pips:.0f} pips &nbsp;·&nbsp; 1R</td>
-                <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;">
-                    {(sl_struct[:38] + '…') if len(sl_struct) > 38 else sl_struct}</td>
+                <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;max-width:160px;
+                    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    {(sl_struct[:40] + "…") if len(sl_struct) > 40 else sl_struct}</td>
             </tr>
             {tp_row("TP1 ⭐", tp1, "#00D4AA", "Close 50% → Move SL to BE")}
             {tp_row("TP2",    tp2, "#3B82F6", "Close 30% → Trail SL")}
             {tp_row("TP3",    tp3, "#8B5CF6", "Let it run")}
         </table>
 
-        {entry_zone_html}
+        {zone_html}
 
         <!-- Momentum -->
-        <div style="display:flex;gap:1.2rem;font-size:0.78rem;margin-top:8px;
+        <div style="display:flex;gap:1.2rem;font-size:0.78rem;margin-top:6px;
              flex-wrap:wrap;align-items:center;">
-            <span>RSI: <b style="color:{rsi_c};">{rsi_val:.0f}</b></span>
-            <span>Momentum: <b style="color:{'#00D4AA' if mom_ok else '#FF4B6E'};">
-                {'✅ Aligned' if mom_ok else '⚠️ Weak — caution'}</b></span>
-            {'<span style="color:#F5C518;">' + candle_pat + '</span>' if candle_pat else ''}
+            <span style="color:#6B7A99;">RSI: <b style="color:{rsi_c};">{rsi_val:.0f}</b></span>
+            <span style="color:#6B7A99;">Momentum:
+                <b style="color:{'#00D4AA' if mom_ok else '#F5C518'};">
+                {'✅ Aligned' if mom_ok else '⚠️ Weak'}</b></span>
+            {'<span style="color:#F5C518;font-size:0.78rem;">' + candle_pat + '</span>' if candle_pat else ''}
         </div>
 
         <!-- Score bar -->
@@ -735,14 +740,14 @@ def _render_signal_card(sig: TradeSignal):
             <div class="score-bar {bar_cls}" style="width:{score}%;"></div>
         </div>
 
-        <!-- TP management tip -->
-        <div style="margin-top:8px;padding:6px 10px;background:#00D4AA08;
-             border-left:2px solid #00D4AA44;border-radius:0 6px 6px 0;
+        <!-- TP strategy -->
+        <div style="margin-top:8px;padding:6px 10px;background:#00D4AA06;
+             border-left:2px solid #00D4AA33;border-radius:0 6px 6px 0;
              font-size:0.75rem;color:#6B7A99;line-height:1.6;">
-            💡 <b style="color:#00D4AA;">Trade Plan:</b>
-            Enter → TP1 hit → Close 50% of position →
+            💡 <b style="color:#00D4AA;">TP Strategy:</b>
+            TP1 hit → Close 50% →
             Move SL to <b style="color:#E8EDF5;">Breakeven ({fmt(entry)})</b> →
-            Remaining 50% runs to TP2/TP3 <b style="color:#00D4AA;">risk-free</b>
+            TP2/TP3 runs <b style="color:#00D4AA;">risk-free</b>
         </div>
     </div>
     """, unsafe_allow_html=True)
