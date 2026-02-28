@@ -676,7 +676,11 @@ def _render_signal_card(sig: TradeSignal):
             f'opacity:0.85;">{action_text}</td></tr>'
         )
 
-    rsi_c = "#00D4AA" if mom_ok else "#F5C518"
+    rsi_c        = "#00D4AA" if mom_ok else "#F5C518"
+    mom_color    = "#00D4AA" if mom_ok else "#F5C518"
+    mom_text     = "✅ Aligned" if mom_ok else "⚠️ Weak"
+    candle_html  = f'<span style="color:#F5C518;font-size:0.78rem;">{candle_pat}</span>' if candle_pat else ""
+    sl_struct_display = (sl_struct[:40] + "…") if len(sl_struct) > 40 else sl_struct
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#0D1117,#0f1923);
@@ -713,10 +717,10 @@ def _render_signal_card(sig: TradeSignal):
                 <td style="font-family:monospace;color:#FF4B6E;padding:5px 8px;
                     font-weight:800;font-size:1.05rem;">{fmt(sl)}</td>
                 <td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">
-                    −{risk_pips:.0f} pips &nbsp;·&nbsp; 1R</td>
+                    -{risk_pips:.0f} pips &nbsp;·&nbsp; 1R</td>
                 <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;max-width:160px;
                     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                    {(sl_struct[:40] + "…") if len(sl_struct) > 40 else sl_struct}</td>
+                    {sl_struct_display}</td>
             </tr>
             {tp_row("TP1 ⭐", tp1, "#00D4AA", "Close 50% → Move SL to BE")}
             {tp_row("TP2",    tp2, "#3B82F6", "Close 30% → Trail SL")}
@@ -730,9 +734,8 @@ def _render_signal_card(sig: TradeSignal):
              flex-wrap:wrap;align-items:center;">
             <span style="color:#6B7A99;">RSI: <b style="color:{rsi_c};">{rsi_val:.0f}</b></span>
             <span style="color:#6B7A99;">Momentum:
-                <b style="color:{'#00D4AA' if mom_ok else '#F5C518'};">
-                {'✅ Aligned' if mom_ok else '⚠️ Weak'}</b></span>
-            {'<span style="color:#F5C518;font-size:0.78rem;">' + candle_pat + '</span>' if candle_pat else ''}
+                <b style="color:{mom_color};">{mom_text}</b></span>
+            {candle_html}
         </div>
 
         <!-- Score bar -->
