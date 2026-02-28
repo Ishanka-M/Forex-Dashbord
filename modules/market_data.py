@@ -71,11 +71,11 @@ SYMBOL_MAP = {
     "USDMXN": "USDMXN=X",
     "USDZAR": "USDZAR=X",
     "USDTRY": "USDTRY=X",
-    # Metals
-    "XAUUSD": "GC=F",
-    "XAGUSD": "SI=F",
-    "XPTUSD": "PL=F",
-    # Commodities
+    # Metals — FIXED: use =X spot tickers instead of futures (GC=F, SI=F, PL=F)
+    "XAUUSD": "XAUUSD=X",
+    "XAGUSD": "XAGUSD=X",
+    "XPTUSD": "XPTUSD=X",
+    # Commodities — kept as futures (these work fine)
     "USOIL":  "CL=F",
     "UKOIL":  "BZ=F",
     # Crypto
@@ -478,4 +478,3 @@ def get_colombo_time() -> str:
 
 def get_all_symbols() -> list:
     return list(SYMBOL_MAP.keys())
-
