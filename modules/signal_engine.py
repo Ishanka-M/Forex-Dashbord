@@ -59,7 +59,7 @@ class TradeSignal:
     smc_bias:          str
     risk_reward:       float
     generated_at:      str
-    entry_type:        str   = "LIMIT"   # LIMIT or MARKET
+    entry_type:        str   = "MARKET"  # always MARKET — entry at current price
     entry_zone_top:    float = 0.0       # Limit entry zone top
     entry_zone_bot:    float = 0.0       # Limit entry zone bottom
     entry_note:        str  = ""         # Why this entry
@@ -285,62 +285,66 @@ def generate_signal(symbol: str,
         if is_buy  and price_zone == "PREMIUM":  zone_penalty = -20
         if not is_buy and price_zone == "DISCOUNT": zone_penalty = -20
 
-    # ── Optimal Entry — Limit at OB/FVG zone ─────────────────
+    # ── Entry price = CURRENT MARKET PRICE (cp) always ───────
+    # OB/FVG zones are used for:
+    #   1. SL placement (behind the zone)
+    #   2. Confluence scoring (+points if price is AT the zone)
+    #   3. Gemini context
+    # We do NOT set entry far from cp — that creates the 200-pip gap bug.
     ob  = smc.current_ob
     fvg = smc.nearest_fvg
 
-    entry_price    = cp          # fallback = market
+    entry_price    = cp    # ALWAYS market price
     entry_type     = "MARKET"
     entry_zone_top = 0.0
     entry_zone_bot = 0.0
-    entry_note     = "Market entry (no OB/FVG retest available)"
+
+    # Check if price is currently AT an OB/FVG (ideal entry zone)
+    # "AT" = within 0.5 ATR of the zone edge
+    AT_ZONE = atr * 0.5
+
+    at_ob  = False
+    at_fvg = False
 
     if is_buy:
-        # Best: price at or above bullish OB bottom (we're retesting the OB)
         if ob and ob.ob_type == "bullish" and not ob.is_mitigated:
-            if ob.bottom <= cp <= ob.top + atr * 0.5:
-                # Price IS in the OB zone — perfect entry
-                entry_price    = round(ob.mid, 5)
-                entry_zone_top = round(ob.top, 5)
+            if ob.bottom - AT_ZONE <= cp <= ob.top + AT_ZONE:
+                at_ob          = True
+                entry_zone_top = round(ob.top,    5)
                 entry_zone_bot = round(ob.bottom, 5)
-                entry_type     = "LIMIT"
-                entry_note     = f"Limit at Bullish OB {ob.bottom:.5f}–{ob.top:.5f}"
-            elif cp > ob.top:
-                # Price above OB — wait for pullback to OB
-                entry_price    = round(ob.top, 5)
-                entry_zone_top = round(ob.top, 5)
-                entry_zone_bot = round(ob.bottom, 5)
-                entry_type     = "LIMIT"
-                entry_note     = f"Wait pullback to OB @ {ob.bottom:.5f}–{ob.top:.5f}"
-        # Fallback: FVG fill entry
-        elif fvg and fvg.fvg_type == "bullish" and not fvg.is_filled:
-            if fvg.bottom <= cp <= fvg.top + atr:
-                entry_price    = round(fvg.mid, 5)
-                entry_zone_top = round(fvg.top, 5)
+                entry_note     = f"✅ Price at Bullish OB {ob.bottom:.5f}–{ob.top:.5f} — ideal entry"
+            else:
+                pips_away = abs(cp - ob.top) * 10000
+                entry_note = f"Market entry — Bullish OB is {pips_away:.0f} pips away (reference)"
+        if not at_ob and fvg and fvg.fvg_type == "bullish" and not fvg.is_filled:
+            if fvg.bottom - AT_ZONE <= cp <= fvg.top + AT_ZONE:
+                at_fvg         = True
+                entry_zone_top = round(fvg.top,    5)
                 entry_zone_bot = round(fvg.bottom, 5)
-                entry_type     = "LIMIT"
-                entry_note     = f"Limit at Bullish FVG {fvg.bottom:.5f}–{fvg.top:.5f}"
-    else:  # SELL
+                entry_note     = f"✅ Price at Bullish FVG {fvg.bottom:.5f}–{fvg.top:.5f} — ideal entry"
+        if not at_ob and not at_fvg:
+            entry_note = entry_note if entry_note else "Market entry at current price"
+    else:
         if ob and ob.ob_type == "bearish" and not ob.is_mitigated:
-            if ob.bottom - atr * 0.5 <= cp <= ob.top:
-                entry_price    = round(ob.mid, 5)
-                entry_zone_top = round(ob.top, 5)
+            if ob.bottom - AT_ZONE <= cp <= ob.top + AT_ZONE:
+                at_ob          = True
+                entry_zone_top = round(ob.top,    5)
                 entry_zone_bot = round(ob.bottom, 5)
-                entry_type     = "LIMIT"
-                entry_note     = f"Limit at Bearish OB {ob.bottom:.5f}–{ob.top:.5f}"
-            elif cp < ob.bottom:
-                entry_price    = round(ob.bottom, 5)
-                entry_zone_top = round(ob.top, 5)
-                entry_zone_bot = round(ob.bottom, 5)
-                entry_type     = "LIMIT"
-                entry_note     = f"Wait pullback to OB @ {ob.bottom:.5f}–{ob.top:.5f}"
-        elif fvg and fvg.fvg_type == "bearish" and not fvg.is_filled:
-            if fvg.bottom - atr <= cp <= fvg.top:
-                entry_price    = round(fvg.mid, 5)
-                entry_zone_top = round(fvg.top, 5)
+                entry_note     = f"✅ Price at Bearish OB {ob.bottom:.5f}–{ob.top:.5f} — ideal entry"
+            else:
+                pips_away = abs(ob.bottom - cp) * 10000
+                entry_note = f"Market entry — Bearish OB is {pips_away:.0f} pips away (reference)"
+        if not at_ob and fvg and fvg.fvg_type == "bearish" and not fvg.is_filled:
+            if fvg.bottom - AT_ZONE <= cp <= fvg.top + AT_ZONE:
+                at_fvg         = True
+                entry_zone_top = round(fvg.top,    5)
                 entry_zone_bot = round(fvg.bottom, 5)
-                entry_type     = "LIMIT"
-                entry_note     = f"Limit at Bearish FVG {fvg.bottom:.5f}–{fvg.top:.5f}"
+                entry_note     = f"✅ Price at Bearish FVG {fvg.bottom:.5f}–{fvg.top:.5f} — ideal entry"
+        if not at_ob and not at_fvg:
+            entry_note = entry_note if entry_note else "Market entry at current price"
+
+    # Bonus scoring for being at OB/FVG (applied later in scoring section)
+    _at_zone_bonus = at_ob or at_fvg
 
     # ── Candle pattern at entry ───────────────────────────────
     candle_pat = _candle_pattern(df_p, is_buy)
@@ -516,12 +520,12 @@ def generate_signal(symbol: str,
         score += 8; confluences.append(f"Pattern: {candle_pat}")
         quality_flags.append(f"✅ {candle_pat}")
 
-    # Optimal entry bonus
-    if entry_type == "LIMIT":
-        score += 10; confluences.append(f"Limit entry: {entry_note}")
-        quality_flags.append("✅ Limit entry at OB/FVG")
+    # Zone entry bonus — price AT OB/FVG = high quality entry
+    if _at_zone_bonus:
+        score += 15; confluences.append(f"Price at OB/FVG zone ✅ — {entry_note}")
+        quality_flags.append("✅ Price at OB/FVG (ideal entry)")
     else:
-        quality_flags.append("⚠️ Market entry (less optimal)")
+        quality_flags.append("⚡ Market entry — no nearby zone")
 
     # Zone
     score += zone_penalty
