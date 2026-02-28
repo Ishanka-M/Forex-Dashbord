@@ -614,14 +614,14 @@ def _render_signal_card(sig: TradeSignal):
     is_buy    = sig.direction == "BUY"
 
     def fmt(v):
-        if v is None: return "—"
+        if v is None: return "-"
         try:
             fv = float(v)
             return f"{fv:.5f}" if fv < 100 else f"{fv:.3f}"
         except Exception:
-            return "—"
+            return "-"
 
-    entry     = float(sig.entry_price)   # = market price (cp)
+    entry     = float(sig.entry_price)
     sl        = float(sig.sl_price)
     tp1       = float(sig.tp_price)
     tp2       = float(sig.tp2_price) if sig.tp2_price else None
@@ -635,125 +635,120 @@ def _render_signal_card(sig: TradeSignal):
     rsi_val    = float(getattr(sig, "momentum_rsi",   0) or 0)
     mom_ok     = bool(getattr(sig, "momentum_ok",    False))
     candle_pat = str(getattr(sig, "candle_pattern", "") or "")
-    at_zone    = ez_top > 0 and ez_bot > 0   # True = price is AT an OB/FVG
+    at_zone    = ez_top > 0 and ez_bot > 0
 
     border_c   = "#00D4AA" if is_buy else "#FF4B6E"
+    zone_label = "AT OB/FVG" if at_zone else "MARKET"
+    zone_bg    = "#00D4AA1A" if at_zone else "#F5C5181A"
+    zone_color = "#00D4AA"   if at_zone else "#F5C518"
+    zone_border= "#00D4AA44" if at_zone else "#F5C51844"
+    zone_icon  = "&#x2705;" if at_zone else "&#x26A1;"
 
-    # Zone info badge (shown in header)
-    if at_zone:
-        zone_badge = (f'<span style="font-size:0.72rem;background:#00D4AA1A;color:#00D4AA;'
-                      f'border:1px solid #00D4AA44;border-radius:6px;padding:2px 8px;">✅ AT OB/FVG</span>')
-    else:
-        zone_badge = (f'<span style="font-size:0.72rem;background:#F5C5181A;color:#F5C518;'
-                      f'border:1px solid #F5C51844;border-radius:6px;padding:2px 8px;">⚡ MARKET</span>')
+    note_display    = (entry_note[:55] + "...") if len(entry_note) > 55 else entry_note
+    sl_struct_short = (sl_struct[:40] + "...") if len(sl_struct) > 40 else sl_struct
+    rsi_c     = "#00D4AA" if mom_ok else "#F5C518"
+    mom_color = "#00D4AA" if mom_ok else "#F5C518"
+    mom_text  = "Aligned" if mom_ok else "Weak"
+    mom_icon  = "&#x2705;" if mom_ok else "&#x26A0;&#xFE0F;"
 
-    # Entry note — truncate cleanly
-    note_display = (entry_note[:55] + "…") if len(entry_note) > 55 else entry_note
-
-    # OB/FVG zone reference box (shown below table if at zone)
-    zone_html = ""
-    if at_zone:
-        zone_html = (
-            f'<div style="margin:5px 0;padding:5px 10px;background:#00D4AA0A;'
-            f'border-left:2px solid #00D4AA55;border-radius:0 6px 6px 0;font-size:0.75rem;">'
-            f'<span style="color:#00D4AA;font-weight:700;">📍 Zone:</span> '
-            f'<span style="color:#E8EDF5;font-family:monospace;">{fmt(ez_bot)} – {fmt(ez_top)}</span>'
-            f'<span style="color:#6B7A99;margin-left:8px;">{note_display}</span></div>'
-        )
-
-    def tp_row(label, price, label_color, action_text):
-        if not price: return ""
+    # Build TP rows
+    def tp_row(label, price, color, action):
+        if not price:
+            return ""
         pips = abs(price - entry) * 10000
         rr   = round(abs(price - entry) / abs(entry - sl), 1) if abs(entry - sl) > 0 else 0
         return (
-            f'<tr style="border-bottom:1px solid #1E2A4215;">'
-            f'<td style="color:{label_color};padding:5px 8px;font-weight:700;">{label}</td>'
-            f'<td style="font-family:monospace;color:{label_color};padding:5px 8px;'
-            f'font-weight:800;font-size:1rem;">{fmt(price)}</td>'
-            f'<td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">'
-            f'+{pips:.0f} pips &nbsp;·&nbsp; {rr}R</td>'
-            f'<td style="color:{label_color};font-size:0.72rem;padding:5px 8px;'
-            f'opacity:0.85;">{action_text}</td></tr>'
+            '<tr style="border-bottom:1px solid #1E2A4215;">'
+            '<td style="color:' + color + ';padding:5px 8px;font-weight:700;">' + label + '</td>'
+            '<td style="font-family:monospace;color:' + color + ';padding:5px 8px;font-weight:800;font-size:1rem;">' + fmt(price) + '</td>'
+            '<td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">+' + str(int(pips)) + ' pips &nbsp;&#183;&nbsp; ' + str(rr) + 'R</td>'
+            '<td style="color:' + color + ';font-size:0.72rem;padding:5px 8px;opacity:0.85;">' + action + '</td>'
+            '</tr>'
         )
 
-    rsi_c        = "#00D4AA" if mom_ok else "#F5C518"
-    mom_color    = "#00D4AA" if mom_ok else "#F5C518"
-    mom_text     = "✅ Aligned" if mom_ok else "⚠️ Weak"
-    candle_html  = f'<span style="color:#F5C518;font-size:0.78rem;">{candle_pat}</span>' if candle_pat else ""
-    sl_struct_display = (sl_struct[:40] + "…") if len(sl_struct) > 40 else sl_struct
+    tp1_row = tp_row("TP1 *", tp1, "#00D4AA", "Close 50% - Move SL to BE")
+    tp2_row = tp_row("TP2",   tp2, "#3B82F6", "Close 30% - Trail SL")
+    tp3_row = tp_row("TP3",   tp3, "#8B5CF6", "Let it run")
 
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg,#0D1117,#0f1923);
-         border:1px solid {border_c}33;border-left:3px solid {border_c};
-         border-radius:12px;padding:1rem 1.2rem;margin:0.4rem 0;">
+    zone_box = ""
+    if at_zone:
+        zone_box = (
+            '<div style="margin:5px 0;padding:5px 10px;background:#00D4AA0A;'
+            'border-left:2px solid #00D4AA55;border-radius:0 6px 6px 0;font-size:0.75rem;">'
+            '<span style="color:#00D4AA;font-weight:700;">Zone: </span>'
+            '<span style="color:#E8EDF5;font-family:monospace;">' + fmt(ez_bot) + ' - ' + fmt(ez_top) + '</span>'
+            '<span style="color:#6B7A99;margin-left:8px;">' + note_display + '</span>'
+            '</div>'
+        )
 
-        <!-- Header -->
-        <div style="display:flex;justify-content:space-between;align-items:center;
-             margin-bottom:10px;flex-wrap:wrap;gap:6px;">
-            <div>
-                <span style="font-weight:800;font-size:1.1rem;color:#E8EDF5;">{sig.symbol}</span>
-                <span class="signal-badge {dir_badge}" style="margin-left:8px;">{sig.direction}</span>
-                <span style="font-size:0.72rem;color:#6B7A99;margin-left:6px;">
-                    {sig.timeframe} · {sig.strategy.upper()}
-                </span>
-            </div>
-            <div style="display:flex;gap:8px;align-items:center;">
-                {zone_badge}
-                <span class="signal-badge {score_cls}">{score}%</span>
-            </div>
-        </div>
+    candle_span = ""
+    if candle_pat:
+        candle_span = '<span style="color:#F5C518;font-size:0.78rem;">' + candle_pat + '</span>'
 
-        <!-- Price table -->
-        <table style="width:100%;border-collapse:collapse;margin-bottom:4px;">
-            <tr style="border-bottom:1px solid #1E2A42;">
-                <td style="color:#6B7A99;padding:5px 8px;">Entry</td>
-                <td style="font-family:monospace;color:#E8EDF5;padding:5px 8px;
-                    font-weight:800;font-size:1.05rem;">{fmt(entry)}</td>
-                <td colspan="2" style="color:#6B7A99;font-size:0.76rem;padding:5px 8px;">
-                    Enter at market price now</td>
-            </tr>
-            <tr style="border-bottom:1px solid #1E2A42;">
-                <td style="color:#FF4B6E;padding:5px 8px;font-weight:700;">SL</td>
-                <td style="font-family:monospace;color:#FF4B6E;padding:5px 8px;
-                    font-weight:800;font-size:1.05rem;">{fmt(sl)}</td>
-                <td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">
-                    -{risk_pips:.0f} pips &nbsp;·&nbsp; 1R</td>
-                <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;max-width:160px;
-                    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                    {sl_struct_display}</td>
-            </tr>
-            {tp_row("TP1 ⭐", tp1, "#00D4AA", "Close 50% → Move SL to BE")}
-            {tp_row("TP2",    tp2, "#3B82F6", "Close 30% → Trail SL")}
-            {tp_row("TP3",    tp3, "#8B5CF6", "Let it run")}
-        </table>
+    html = (
+        '<div style="background:linear-gradient(135deg,#0D1117,#0f1923);'
+        'border:1px solid ' + border_c + '33;border-left:3px solid ' + border_c + ';'
+        'border-radius:12px;padding:1rem 1.2rem;margin:0.4rem 0;">'
 
-        {zone_html}
+        # Header
+        '<div style="display:flex;justify-content:space-between;align-items:center;'
+        'margin-bottom:10px;flex-wrap:wrap;gap:6px;">'
+        '<div>'
+        '<span style="font-weight:800;font-size:1.1rem;color:#E8EDF5;">' + sig.symbol + '</span>'
+        '<span class="signal-badge ' + dir_badge + '" style="margin-left:8px;">' + sig.direction + '</span>'
+        '<span style="font-size:0.72rem;color:#6B7A99;margin-left:6px;">' + sig.timeframe + ' &middot; ' + sig.strategy.upper() + '</span>'
+        '</div>'
+        '<div style="display:flex;gap:8px;align-items:center;">'
+        '<span style="font-size:0.72rem;background:' + zone_bg + ';color:' + zone_color + ';'
+        'border:1px solid ' + zone_border + ';border-radius:6px;padding:2px 8px;">' + zone_icon + ' ' + zone_label + '</span>'
+        '<span class="signal-badge ' + score_cls + '">' + str(score) + '%</span>'
+        '</div>'
+        '</div>'
 
-        <!-- Momentum -->
-        <div style="display:flex;gap:1.2rem;font-size:0.78rem;margin-top:6px;
-             flex-wrap:wrap;align-items:center;">
-            <span style="color:#6B7A99;">RSI: <b style="color:{rsi_c};">{rsi_val:.0f}</b></span>
-            <span style="color:#6B7A99;">Momentum:
-                <b style="color:{mom_color};">{mom_text}</b></span>
-            {candle_html}
-        </div>
+        # Price table
+        '<table style="width:100%;border-collapse:collapse;margin-bottom:4px;">'
+        '<tr style="border-bottom:1px solid #1E2A42;">'
+        '<td style="color:#6B7A99;padding:5px 8px;">Entry</td>'
+        '<td style="font-family:monospace;color:#E8EDF5;padding:5px 8px;font-weight:800;font-size:1.05rem;">' + fmt(entry) + '</td>'
+        '<td colspan="2" style="color:#6B7A99;font-size:0.76rem;padding:5px 8px;">Enter at market price now</td>'
+        '</tr>'
+        '<tr style="border-bottom:1px solid #1E2A42;">'
+        '<td style="color:#FF4B6E;padding:5px 8px;font-weight:700;">SL</td>'
+        '<td style="font-family:monospace;color:#FF4B6E;padding:5px 8px;font-weight:800;font-size:1.05rem;">' + fmt(sl) + '</td>'
+        '<td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">-' + str(int(risk_pips)) + ' pips &nbsp;&#183;&nbsp; 1R</td>'
+        '<td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + sl_struct_short + '</td>'
+        '</tr>'
+        + tp1_row + tp2_row + tp3_row +
+        '</table>'
 
-        <!-- Score bar -->
-        <div class="score-bar-container" style="margin-top:8px;">
-            <div class="score-bar {bar_cls}" style="width:{score}%;"></div>
-        </div>
+        + zone_box +
 
-        <!-- TP strategy -->
-        <div style="margin-top:8px;padding:6px 10px;background:#00D4AA06;
-             border-left:2px solid #00D4AA33;border-radius:0 6px 6px 0;
-             font-size:0.75rem;color:#6B7A99;line-height:1.6;">
-            💡 <b style="color:#00D4AA;">TP Strategy:</b>
-            TP1 hit → Close 50% →
-            Move SL to <b style="color:#E8EDF5;">Breakeven ({fmt(entry)})</b> →
-            TP2/TP3 runs <b style="color:#00D4AA;">risk-free</b>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+        # Momentum
+        '<div style="display:flex;gap:1.2rem;font-size:0.78rem;margin-top:6px;flex-wrap:wrap;align-items:center;">'
+        '<span style="color:#6B7A99;">RSI: <b style="color:' + rsi_c + ';">' + str(int(rsi_val)) + '</b></span>'
+        '<span style="color:#6B7A99;">Momentum: <b style="color:' + mom_color + ';">' + mom_icon + ' ' + mom_text + '</b></span>'
+        + candle_span +
+        '</div>'
+
+        # Score bar
+        '<div class="score-bar-container" style="margin-top:8px;">'
+        '<div class="score-bar ' + bar_cls + '" style="width:' + str(score) + '%;"></div>'
+        '</div>'
+
+        # TP Strategy
+        '<div style="margin-top:8px;padding:6px 10px;background:#00D4AA06;'
+        'border-left:2px solid #00D4AA33;border-radius:0 6px 6px 0;'
+        'font-size:0.75rem;color:#6B7A99;line-height:1.6;">'
+        '&#x1F4A1; <b style="color:#00D4AA;">TP Strategy:</b> '
+        'TP1 hit &#x2192; Close 50% &#x2192; '
+        'Move SL to <b style="color:#E8EDF5;">Breakeven (' + fmt(entry) + ')</b> &#x2192; '
+        'TP2/TP3 runs <b style="color:#00D4AA;">risk-free</b>'
+        '</div>'
+
+        '</div>'
+    )
+
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════
