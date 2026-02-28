@@ -1121,159 +1121,351 @@ def render_signals():
 # ══════════════════════════════════════════════════════════════
 # CHART ANALYSIS PAGE
 # ══════════════════════════════════════════════════════════════
+
+
+# TradingView symbol conversion
+_TV_SYMBOL_MAP = {
+    # Forex Majors
+    "EURUSD":"FX:EURUSD","GBPUSD":"FX:GBPUSD","USDJPY":"FX:USDJPY",
+    "USDCHF":"FX:USDCHF","AUDUSD":"FX:AUDUSD","NZDUSD":"FX:NZDUSD",
+    "USDCAD":"FX:USDCAD",
+    # Cross Pairs
+    "EURGBP":"FX:EURGBP","EURJPY":"FX:EURJPY","GBPJPY":"FX:GBPJPY",
+    "AUDJPY":"FX:AUDJPY","CADJPY":"FX:CADJPY","CHFJPY":"FX:CHFJPY",
+    "EURCHF":"FX:EURCHF","EURAUD":"FX:EURAUD","EURCAD":"FX:EURCAD",
+    "GBPCHF":"FX:GBPCHF","GBPAUD":"FX:GBPAUD","GBPCAD":"FX:GBPCAD",
+    "AUDCAD":"FX:AUDCAD","AUDCHF":"FX:AUDCHF","AUDNZD":"FX:AUDNZD",
+    "NZDJPY":"FX:NZDJPY","NZDCAD":"FX:NZDCAD","NZDCHF":"FX:NZDCHF",
+    "CADCHF":"FX:CADCHF",
+    # Exotic
+    "USDSEK":"FX:USDSEK","USDNOK":"FX:USDNOK","USDSGD":"FX:USDSGD",
+    "USDMXN":"FX:USDMXN","USDZAR":"FX:USDZAR","USDTRY":"FX:USDTRY",
+    # Metals
+    "XAUUSD":"TVC:GOLD","XAGUSD":"TVC:SILVER","XPTUSD":"TVC:PLATINUM",
+    # Oil
+    "USOIL":"TVC:USOIL","UKOIL":"TVC:UKOIL",
+    # Crypto
+    "BTCUSD":"BINANCE:BTCUSDT","ETHUSD":"BINANCE:ETHUSDT",
+    "BNBUSD":"BINANCE:BNBUSDT","SOLUSD":"BINANCE:SOLUSDT",
+    "XRPUSD":"BINANCE:XRPUSDT",
+    # Indices
+    "US30":"TVC:DJI","NAS100":"NASDAQ:NDX","SPX500":"SP:SPX",
+    "UK100":"TVC:UKX","GER40":"XETR:DAX","JPN225":"TVC:NI225",
+}
+
+_TV_TF_MAP = {
+    "M1":"1","M5":"5","M15":"15","M30":"30",
+    "H1":"60","H4":"240","D1":"D","W1":"W",
+}
+
+
+def _tv_ticker_widget(symbols: list) -> str:
+    """TradingView Ticker Tape widget HTML — live scrolling prices."""
+    syms_json = ",".join(
+        f'{{"proName":"{_TV_SYMBOL_MAP.get(s, "FX:"+s)}","title":"{s}"}}'
+        for s in symbols[:12]
+    )
+    return f"""
+<div class="tradingview-widget-container" style="margin-bottom:12px;">
+  <div class="tradingview-widget-container__widget"></div>
+  <script type="text/javascript"
+    src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js"
+    async>
+  {{
+    "symbols": [{syms_json}],
+    "showSymbolLogo": true,
+    "isTransparent": true,
+    "displayMode": "adaptive",
+    "colorTheme": "dark",
+    "locale": "en"
+  }}
+  </script>
+</div>"""
+
+
+def _tv_chart_widget(tv_symbol: str, timeframe: str,
+                     height: int = 520, studies: list = None) -> str:
+    """TradingView Advanced Chart widget — full live interactive chart."""
+    tf   = _TV_TF_MAP.get(timeframe, "60")
+    stud = studies or []
+    stud_json = ",".join(f'"{s}"' for s in stud)
+    return f"""
+<div class="tradingview-widget-container" style="height:{height}px;width:100%;">
+  <div id="tradingview_chart" style="height:100%;width:100%;"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget({{
+    "autosize": true,
+    "symbol": "{tv_symbol}",
+    "interval": "{tf}",
+    "timezone": "Asia/Colombo",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#0D1117",
+    "enable_publishing": false,
+    "hide_top_toolbar": false,
+    "hide_legend": false,
+    "save_image": true,
+    "container_id": "tradingview_chart",
+    "studies": [{stud_json}],
+    "overrides": {{
+      "mainSeriesProperties.candleStyle.upColor":       "#00D4AA",
+      "mainSeriesProperties.candleStyle.downColor":     "#FF4B6E",
+      "mainSeriesProperties.candleStyle.borderUpColor": "#00D4AA",
+      "mainSeriesProperties.candleStyle.borderDownColor":"#FF4B6E",
+      "mainSeriesProperties.candleStyle.wickUpColor":   "#00D4AA",
+      "mainSeriesProperties.candleStyle.wickDownColor": "#FF4B6E",
+      "paneProperties.background":                      "#0D1117",
+      "paneProperties.backgroundType":                  "solid",
+      "paneProperties.gridLinesMode":                   "Both",
+      "paneProperties.vertGridProperties.color":        "#1E2A4222",
+      "paneProperties.horzGridProperties.color":        "#1E2A4222",
+      "scalesProperties.textColor":                     "#6B7A99"
+    }}
+  }});
+  </script>
+</div>"""
+
+
+def _tv_mini_widget(tv_symbol: str, height: int = 220) -> str:
+    """TradingView Mini Symbol Overview — compact live price + sparkline."""
+    return f"""
+<div class="tradingview-widget-container" style="height:{height}px;">
+  <div class="tradingview-widget-container__widget" style="height:100%;"></div>
+  <script type="text/javascript"
+    src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js"
+    async>
+  {{
+    "symbol": "{tv_symbol}",
+    "width": "100%",
+    "height": {height},
+    "locale": "en",
+    "dateRange": "1D",
+    "colorTheme": "dark",
+    "isTransparent": true,
+    "autosize": false,
+    "largeChartUrl": ""
+  }}
+  </script>
+</div>"""
+
+
+def _tv_technical_analysis_widget(tv_symbol: str, timeframe: str) -> str:
+    """TradingView Technical Analysis widget — buy/sell/neutral gauge."""
+    tf_map = {"M5":"5m","M15":"15m","H1":"1h","H4":"4h","D1":"1D"}
+    tf = tf_map.get(timeframe, "1h")
+    return f"""
+<div class="tradingview-widget-container">
+  <div class="tradingview-widget-container__widget"></div>
+  <script type="text/javascript"
+    src="https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js"
+    async>
+  {{
+    "interval": "{tf}",
+    "width": "100%",
+    "isTransparent": true,
+    "height": 400,
+    "symbol": "{tv_symbol}",
+    "showIntervalTabs": true,
+    "displayMode": "single",
+    "locale": "en",
+    "colorTheme": "dark"
+  }}
+  </script>
+</div>"""
+
+
 def render_analysis():
-    st.markdown("## 🔬 Chart Analysis")
+    st.markdown("## 🔬 Live Chart Analysis")
 
     from modules.market_data import inject_live_price
 
-    # ── Controls ──────────────────────────────────────────────
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # ── Controls row ──────────────────────────────────────────
+    col1, col2, col3, col4 = st.columns([1.2, 1.2, 1, 0.8])
     with col1:
-        category  = st.selectbox("Category", list(SYMBOL_CATEGORIES.keys()), key="analysis_cat")
-        symbol    = st.selectbox("Symbol", SYMBOL_CATEGORIES[category], key="analysis_sym")
+        category = st.selectbox("Category", list(SYMBOL_CATEGORIES.keys()), key="analysis_cat")
+        symbol   = st.selectbox("Symbol", SYMBOL_CATEGORIES[category], key="analysis_sym")
     with col2:
-        timeframe = st.selectbox("Timeframe", ["M5","M15","H1","H4","D1"], index=2,
-                                 key="analysis_tf")
+        timeframe = st.selectbox("Timeframe",
+                                 ["M1","M5","M15","M30","H1","H4","D1","W1"],
+                                 index=4, key="analysis_tf")
         col2a, col2b = st.columns(2)
         with col2a:
             show_ew  = st.checkbox("Elliott Wave", value=True,  key="analysis_ew")
         with col2b:
             show_smc = st.checkbox("SMC Zones",    value=True,  key="analysis_smc")
     with col3:
-        st.markdown("<div style='margin-top:1.8rem;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Refresh Live Data", use_container_width=True, key="analysis_refresh"):
+        show_rsi  = st.checkbox("RSI",  value=True,  key="analysis_rsi")
+        show_macd = st.checkbox("MACD", value=False, key="analysis_macd")
+        show_bb   = st.checkbox("BB",   value=False, key="analysis_bb")
+    with col4:
+        st.markdown("<div style='margin-top:0.3rem;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh", use_container_width=True, key="analysis_refresh"):
             st.cache_data.clear()
             st.rerun()
-        auto_ref = st.checkbox("⏱ Auto-refresh (30s)", value=False, key="analysis_auto")
+        auto_ref = st.checkbox("⏱ Auto 30s", value=False, key="analysis_auto")
 
-    # ── Auto-refresh ──────────────────────────────────────────
+    # Auto-refresh
     if auto_ref:
-        import time
-        last_ref = st.session_state.get("analysis_last_refresh", 0)
-        if time.time() - last_ref > 30:
-            st.session_state["analysis_last_refresh"] = time.time()
+        import time as _time
+        last = st.session_state.get("_analysis_last_ref", 0)
+        if _time.time() - last > 30:
+            st.session_state["_analysis_last_ref"] = _time.time()
             st.cache_data.clear()
             st.rerun()
 
-    # ── Fetch OHLCV (30s cache) ───────────────────────────────
-    with st.spinner(f"Fetching {symbol} {timeframe}..."):
-        df_raw = get_ohlcv(symbol, timeframe)
+    tv_sym = _TV_SYMBOL_MAP.get(symbol, f"FX:{symbol}")
 
-    if df_raw is None or df_raw.empty:
-        st.error(f"⚠️ Could not fetch data for **{symbol}** on **{timeframe}**.")
-        with st.expander("🔧 Troubleshooting"):
-            st.markdown("""
-            - Intraday (M5/M15) available last 60 days only
-            - Try **H1** or **D1** timeframe
-            - Click **Refresh Live Data** above
-            """)
-        return
+    # ── Live Ticker Tape — top of page ────────────────────────
+    ticker_syms = SYMBOL_CATEGORIES.get("⭐ Major Pairs", [])[:8] + [symbol]
+    ticker_syms = list(dict.fromkeys(ticker_syms))   # deduplicate, preserve order
+    st.components.v1.html(_tv_ticker_widget(ticker_syms), height=72, scrolling=False)
 
-    # ── Inject live price into last candle ────────────────────
-    df, live_price, fetch_time = inject_live_price(df_raw, symbol)
+    # ── Tab layout: Live Chart | Technical Analysis | EW/SMC ──
+    tab_chart, tab_ta, tab_ewsmc = st.tabs([
+        "📈 Live TradingView Chart",
+        "🎯 Technical Analysis",
+        "🌊 EW + SMC Analysis",
+    ])
 
-    # ── Data freshness banner ─────────────────────────────────
-    if live_price and fetch_time:
-        candle_close = float(df_raw.iloc[-1]["close"])
-        price_diff   = live_price - candle_close
-        diff_pips    = abs(price_diff) * 10000
-        diff_color   = "#00D4AA" if price_diff >= 0 else "#FF4B6E"
-        diff_arrow   = "▲" if price_diff >= 0 else "▼"
-        st.markdown(
-            f'<div style="background:#0D1117;border:1px solid #00D4AA33;border-radius:8px;'
-            f'padding:6px 14px;margin-bottom:8px;display:flex;justify-content:space-between;'
-            f'align-items:center;flex-wrap:wrap;gap:8px;">'
-            f'<span style="font-size:0.82rem;color:#6B7A99;">📡 Live data injected</span>'
-            f'<span style="font-family:monospace;font-size:0.88rem;">'
-            f'<b style="color:#E8EDF5;">{symbol}</b> &nbsp;'
-            f'<span style="color:{diff_color};font-weight:700;">{live_price:.5f}</span>'
-            f'&nbsp;<span style="color:{diff_color};font-size:0.75rem;">'
-            f'{diff_arrow} {diff_pips:.1f} pips vs cached candle</span>'
-            f'</span>'
-            f'<span style="font-size:0.75rem;color:#6B7A99;">🕐 {fetch_time}</span>'
-            f'</div>',
-            unsafe_allow_html=True
+    with tab_chart:
+        # Build studies list
+        studies = []
+        if show_rsi:  studies.append("RSI@tv-basicstudies")
+        if show_macd: studies.append("MACD@tv-basicstudies")
+        if show_bb:   studies.append("BB@tv-basicstudies")
+
+        st.components.v1.html(
+            _tv_chart_widget(tv_sym, timeframe, height=580, studies=studies),
+            height=590, scrolling=False
         )
-    else:
-        st.warning("⚠️ Live price unavailable — showing cached candle data.")
-        df = df_raw
+        st.caption(
+            f"📡 Live TradingView chart — {symbol} {timeframe} · "
+            f"Timezone: Colombo (LKT) · Candles: 🟢 Bullish #00D4AA · 🔴 Bearish #FF4B6E"
+        )
 
-    # ── EW / SMC Analysis on live-injected data ───────────────
-    with st.spinner("Analysing..."):
-        ew_result  = identify_elliott_waves(df) if show_ew  else None
-        smc_result = analyze_smc(df)            if show_smc else None
+    with tab_ta:
+        col_mini, col_gauge = st.columns([1, 1])
+        with col_mini:
+            st.markdown(f"**{symbol} — Live Price**")
+            st.components.v1.html(
+                _tv_mini_widget(tv_sym, height=220),
+                height=230, scrolling=False
+            )
+        with col_gauge:
+            st.markdown(f"**Technical Rating — {timeframe}**")
+            st.components.v1.html(
+                _tv_technical_analysis_widget(tv_sym, timeframe),
+                height=420, scrolling=False
+            )
 
-    # ── Chart ─────────────────────────────────────────────────
-    fig = create_candlestick_chart(df, symbol, timeframe,
-                                   ew_result  if show_ew  else None,
-                                   smc_result if show_smc else None)
-    st.plotly_chart(fig, use_container_width=True)
+    with tab_ewsmc:
+        # Fetch + inject live price for EW/SMC
+        with st.spinner(f"Fetching {symbol} {timeframe} OHLCV..."):
+            df_raw = get_ohlcv(symbol, timeframe)
 
-    # ── Analysis Summary ──────────────────────────────────────
-    col_ew, col_smc = st.columns(2)
+        if df_raw is None or df_raw.empty:
+            st.error(f"⚠️ OHLCV data unavailable for **{symbol} {timeframe}**.")
+            st.info("💡 Try H1 or D1 timeframe. Live TradingView chart above still works.")
+        else:
+            df, live_price, fetch_time = inject_live_price(df_raw, symbol)
+            if not live_price:
+                df = df_raw
 
-    if ew_result and show_ew:
-        with col_ew:
-            st.markdown("### 🌊 Elliott Wave Summary")
-            w3x_badge = (
-                '<span style="background:#F5C51822;color:#F5C518;border:1px solid '
-                '#F5C51844;border-radius:6px;padding:1px 7px;font-size:0.72rem;">⚡ Wave 3 Extended</span>'
-            ) if getattr(ew_result, "wave3_extended", False) else ""
-            tp1 = ew_result.projected_target
-            tp2 = getattr(ew_result, "projected_tp2", None)
-            tp3 = getattr(ew_result, "projected_tp3", None)
-            def fmtp(v): return f"{v:.5f}" if v and 0 < abs(v) < 100 else (f"{v:.3f}" if v else "—")
-            live_tag = f'<span style="font-size:0.7rem;color:#00D4AA;margin-left:6px;">📡 live</span>'
-            st.markdown(f"""
-            <div class="metric-card">
-                <div style="font-size:0.85rem;line-height:1.9;">
-                    <div><b>Pattern:</b> <code>{ew_result.pattern_type}</code> {w3x_badge}</div>
-                    <div><b>Trend:</b> <span class="{'up' if ew_result.trend=='bullish' else 'down'}">{ew_result.trend.upper()}</span>{live_tag}</div>
-                    <div><b>Current Wave:</b> <code>{ew_result.current_wave}</code></div>
-                    <div><b>Confidence:</b> {ew_result.confidence*100:.0f}%</div>
-                    <div><b>TP1:</b> <code style="color:#00D4AA">{fmtp(tp1)}</code></div>
-                    <div><b>TP2 (1.618):</b> <code style="color:#3B82F6">{fmtp(tp2)}</code></div>
-                    <div><b>TP3 (2.618):</b> <code style="color:#8B5CF6">{fmtp(tp3)}</code></div>
-                    <div><b>SL:</b> <code style="color:#FF4B6E">{fmtp(ew_result.projected_sl)}</code></div>
-                    <div style="color:#6B7A99;font-size:0.78rem;margin-top:4px;">{ew_result.description}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # Live price banner
+            if live_price and fetch_time:
+                diff       = live_price - float(df_raw.iloc[-1]["close"])
+                diff_pips  = abs(diff) * 10000
+                diff_c     = "#00D4AA" if diff >= 0 else "#FF4B6E"
+                diff_arrow = "▲" if diff >= 0 else "▼"
+                st.markdown(
+                    f'<div style="background:#0D1117;border:1px solid #00D4AA33;'
+                    f'border-radius:8px;padding:6px 14px;margin-bottom:8px;'
+                    f'display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">'
+                    f'<span style="font-size:0.8rem;color:#6B7A99;">📡 Live injected</span>'
+                    f'<span style="font-family:monospace;">'
+                    f'<b style="color:#E8EDF5;">{symbol}</b>&nbsp;'
+                    f'<span style="color:{diff_c};font-weight:700;">{live_price:.5f}</span>'
+                    f'&nbsp;<span style="font-size:0.75rem;color:{diff_c};">'
+                    f'{diff_arrow} {diff_pips:.1f} pips</span></span>'
+                    f'<span style="font-size:0.75rem;color:#6B7A99;">🕐 {fetch_time}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
-    if smc_result and show_smc:
-        with col_smc:
-            st.markdown("### 💡 SMC Summary")
-            ob_txt   = f"✅ {smc_result.current_ob.ob_type.upper()} @ {smc_result.current_ob.mid:.5f} (×{getattr(smc_result.current_ob,'touch_count',0)})" if smc_result.current_ob else "None"
-            fvg_txt  = f"✅ {smc_result.nearest_fvg.fvg_type.upper()} — {smc_result.nearest_fvg.fill_pct:.0f}% filled" if smc_result.nearest_fvg else "None"
-            bos_txt  = f"✅ {smc_result.last_bos.direction.upper()}" if smc_result.last_bos else "None"
-            choch_txt= f"✅ {smc_result.last_choch.direction.upper()}" if smc_result.last_choch else "None"
-            sweep_txt= f"⚡ {smc_result.liquidity_sweeps[-1].sweep_type.replace('_',' ').title()}" if getattr(smc_result,'liquidity_sweeps',[]) else "None"
+            # EW/SMC analysis
+            with st.spinner("Running EW + SMC analysis on live data..."):
+                ew_result  = identify_elliott_waves(df) if show_ew  else None
+                smc_result = analyze_smc(df)            if show_smc else None
 
-            cp_now = float(df["close"].iloc[-1])
-            prem   = getattr(smc_result, "premium_zone",  None)
-            disc   = getattr(smc_result, "discount_zone", None)
-            if   prem and cp_now >= prem:  zone_lbl, zone_c = "PREMIUM",     "#FF4B6E"
-            elif disc and cp_now <= disc:  zone_lbl, zone_c = "DISCOUNT",    "#00D4AA"
-            else:                          zone_lbl, zone_c = "EQUILIBRIUM", "#F5C518"
+            # Plotly overlay chart (EW+SMC annotations)
+            fig = create_candlestick_chart(df, symbol, timeframe,
+                                           ew_result  if show_ew  else None,
+                                           smc_result if show_smc else None)
+            st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown(f"""
-            <div class="metric-card">
-                <div style="font-size:0.84rem;line-height:1.9;">
-                    <div><b>Trend:</b>
-                        <span class="{'up' if smc_result.trend=='bullish' else 'down'}">{smc_result.trend.upper()}</span>
-                        &nbsp;<span style="font-size:0.72rem;color:{zone_c};background:{zone_c}22;
-                            border-radius:6px;padding:1px 7px;">{zone_lbl}</span>
+            # EW + SMC side-by-side summary
+            col_ew, col_smc = st.columns(2)
+
+            if ew_result and show_ew:
+                with col_ew:
+                    st.markdown("### 🌊 Elliott Wave")
+                    w3x = '<span style="background:#F5C51822;color:#F5C518;border:1px solid #F5C51844;border-radius:6px;padding:1px 6px;font-size:0.7rem;">⚡ Wave 3 Extended</span>' if getattr(ew_result,"wave3_extended",False) else ""
+                    def fmtp(v):
+                        if not v: return "—"
+                        return f"{float(v):.5f}" if abs(float(v)) < 100 else f"{float(v):.3f}"
+                    tp1e = ew_result.projected_target
+                    tp2e = getattr(ew_result, "projected_tp2", None)
+                    tp3e = getattr(ew_result, "projected_tp3", None)
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size:0.84rem;line-height:2.0;">
+                            <div><b>Pattern:</b> <code>{ew_result.pattern_type}</code> {w3x}</div>
+                            <div><b>Trend:</b> <span class="{'up' if ew_result.trend=='bullish' else 'down'}">{ew_result.trend.upper()}</span> <span style="font-size:0.7rem;color:#00D4AA;">📡 live</span></div>
+                            <div><b>Wave:</b> <code>{ew_result.current_wave}</code> &nbsp; <b>Conf:</b> {ew_result.confidence*100:.0f}%</div>
+                            <div><b>TP1:</b> <code style="color:#00D4AA">{fmtp(tp1e)}</code></div>
+                            <div><b>TP2:</b> <code style="color:#3B82F6">{fmtp(tp2e)}</code></div>
+                            <div><b>TP3:</b> <code style="color:#8B5CF6">{fmtp(tp3e)}</code></div>
+                            <div><b>SL:</b> <code style="color:#FF4B6E">{fmtp(ew_result.projected_sl)}</code></div>
+                            <div style="color:#6B7A99;font-size:0.76rem;margin-top:4px;">{ew_result.description}</div>
+                        </div>
                     </div>
-                    <div><b>CHoCH:</b> <code>{choch_txt}</code></div>
-                    <div><b>BOS:</b> <code>{bos_txt}</code></div>
-                    <div><b>Order Block:</b> <code>{ob_txt}</code></div>
-                    <div><b>FVG:</b> <code>{fvg_txt}</code></div>
-                    <div><b>Liq. Sweep:</b> <code>{sweep_txt}</code></div>
-                    <div><b>Confidence:</b> {smc_result.confidence*100:.0f}%</div>
-                    <div style="color:#6B7A99;font-size:0.77rem;margin-top:4px;">{str(smc_result.bias)[:120]}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+
+            if smc_result and show_smc:
+                with col_smc:
+                    st.markdown("### 💡 SMC Zones")
+                    ob_t   = f"✅ {smc_result.current_ob.ob_type.upper()} @ {smc_result.current_ob.mid:.5f} (×{getattr(smc_result.current_ob,'touch_count',0)})" if smc_result.current_ob else "None"
+                    fvg_t  = f"✅ {smc_result.nearest_fvg.fvg_type.upper()} — {smc_result.nearest_fvg.fill_pct:.0f}% filled" if smc_result.nearest_fvg else "None"
+                    bos_t  = f"✅ {smc_result.last_bos.direction.upper()}" if smc_result.last_bos else "None"
+                    choch_t= f"✅ {smc_result.last_choch.direction.upper()}" if smc_result.last_choch else "None"
+                    sw_t   = f"⚡ {smc_result.liquidity_sweeps[-1].sweep_type.replace('_',' ').title()}" if getattr(smc_result,'liquidity_sweeps',[]) else "None"
+                    cp_now = float(df["close"].iloc[-1])
+                    prem   = getattr(smc_result,"premium_zone",None)
+                    disc   = getattr(smc_result,"discount_zone",None)
+                    if prem and cp_now >= prem:     zone_lbl,zone_c = "PREMIUM","#FF4B6E"
+                    elif disc and cp_now <= disc:   zone_lbl,zone_c = "DISCOUNT","#00D4AA"
+                    else:                           zone_lbl,zone_c = "EQUILIBRIUM","#F5C518"
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div style="font-size:0.84rem;line-height:2.0;">
+                            <div><b>Trend:</b>
+                                <span class="{'up' if smc_result.trend=='bullish' else 'down'}">{smc_result.trend.upper()}</span>
+                                &nbsp;<span style="font-size:0.72rem;color:{zone_c};background:{zone_c}22;border-radius:6px;padding:1px 7px;">{zone_lbl}</span>
+                            </div>
+                            <div><b>CHoCH:</b> <code>{choch_t}</code></div>
+                            <div><b>BOS:</b>   <code>{bos_t}</code></div>
+                            <div><b>OB:</b>    <code>{ob_t}</code></div>
+                            <div><b>FVG:</b>   <code>{fvg_t}</code></div>
+                            <div><b>Sweep:</b> <code>{sw_t}</code></div>
+                            <div><b>Conf:</b>  {smc_result.confidence*100:.0f}%</div>
+                            <div style="color:#6B7A99;font-size:0.76rem;margin-top:4px;">{str(smc_result.bias)[:120]}</div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+
 
 
 # ══════════════════════════════════════════════════════════════
