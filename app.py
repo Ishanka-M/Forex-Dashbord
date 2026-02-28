@@ -606,50 +606,143 @@ def render_dashboard():
 # SIGNAL CARD HELPER
 # ══════════════════════════════════════════════════════════════
 def _render_signal_card(sig: TradeSignal):
+    """Manual-trader optimized card — MT4/MT5 copy-paste ready."""
     score     = sig.probability_score
     score_cls = "badge-score-high" if score >= 70 else ("badge-score-medium" if score >= 50 else "badge-score-low")
     bar_cls   = "score-high" if score >= 70 else ("score-medium" if score >= 50 else "score-low")
-    dir_class = "buy" if sig.direction == "BUY" else "sell"
     dir_badge = "badge-buy" if sig.direction == "BUY" else "badge-sell"
-
-    confluence_str = " · ".join(sig.confluences[:3]) if sig.confluences else "—"
+    is_buy    = sig.direction == "BUY"
 
     def fmt(v):
         if v is None: return "—"
-        return f"{v:.5f}" if v < 100 else f"{v:.2f}"
+        try:
+            fv = float(v)
+            return f"{fv:.5f}" if fv < 100 else f"{fv:.3f}"
+        except Exception:
+            return "—"
 
-    entry_fmt = fmt(sig.entry_price)
-    sl_fmt    = fmt(sig.sl_price)
-    tp1_fmt   = fmt(sig.tp_price)
-    tp2_fmt   = fmt(getattr(sig, "tp2_price", None))
-    tp3_fmt   = fmt(getattr(sig, "tp3_price", None))
+    entry      = float(sig.entry_price)
+    sl         = float(sig.sl_price)
+    tp1        = float(sig.tp_price)
+    tp2        = float(sig.tp2_price) if sig.tp2_price else None
+    tp3        = float(sig.tp3_price) if sig.tp3_price else None
+    risk_pips  = abs(entry - sl) * 10000
+    tp1_pips   = abs(tp1 - entry) * 10000
+    rr1        = round(abs(tp1 - entry) / abs(entry - sl), 1) if abs(entry - sl) > 0 else 0
 
-    tp2_html = f'<div><span style="color:#6B7A99">TP2</span> <span style="color:#3B82F6">{tp2_fmt}</span></div>' if tp2_fmt != "—" else ""
-    tp3_html = f'<div><span style="color:#6B7A99">TP3</span> <span style="color:#8B5CF6">{tp3_fmt}</span></div>' if tp3_fmt != "—" else ""
+    entry_type  = getattr(sig, "entry_type",    "MARKET")
+    entry_note  = getattr(sig, "entry_note",    "")
+    mkt_price   = getattr(sig, "entry_market",  entry)
+    ez_top      = getattr(sig, "entry_zone_top", 0)
+    ez_bot      = getattr(sig, "entry_zone_bot", 0)
+    sl_struct   = getattr(sig, "sl_structure",   "")
+    rsi_val     = getattr(sig, "momentum_rsi",   0)
+    mom_ok      = getattr(sig, "momentum_ok",    False)
+    candle_pat  = getattr(sig, "candle_pattern", "")
+
+    et_color = "#00D4AA" if entry_type == "LIMIT" else "#F5C518"
+    et_label = "📌 LIMIT ORDER" if entry_type == "LIMIT" else "⚡ MARKET ORDER"
+    border_c = "#00D4AA" if is_buy else "#FF4B6E"
+
+    entry_zone_html = ""
+    if entry_type == "LIMIT" and ez_top and ez_bot:
+        entry_zone_html = (
+            f'<div style="font-size:0.76rem;color:#F5C518;margin:4px 0 2px;">'
+            f'📍 Place limit between <b style="color:#F5C518">{fmt(ez_bot)}</b>'
+            f' – <b style="color:#F5C518">{fmt(ez_top)}</b></div>'
+        )
+
+    def tp_row(label, price, label_color, action_text):
+        if not price:
+            return ""
+        pips = abs(price - entry) * 10000
+        rr   = round(abs(price - entry) / abs(entry - sl), 1) if abs(entry - sl) > 0 else 0
+        return (
+            f'<tr style="border-bottom:1px solid #1E2A4220;">'
+            f'<td style="color:{label_color};padding:5px 8px;font-weight:700;">{label}</td>'
+            f'<td style="font-family:monospace;color:{label_color};padding:5px 8px;'
+            f'font-weight:800;font-size:1rem;">{fmt(price)}</td>'
+            f'<td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">'
+            f'+{pips:.0f} pips &nbsp;·&nbsp; {rr}R</td>'
+            f'<td style="color:{label_color};font-size:0.72rem;padding:5px 8px;'
+            f'opacity:0.85;">{action_text}</td></tr>'
+        )
+
+    rsi_c = "#00D4AA" if mom_ok else "#FF4B6E"
 
     st.markdown(f"""
-    <div class="signal-card {dir_class}">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+    <div style="background:linear-gradient(135deg,#0D1117,#0f1923);
+         border:1px solid {border_c}33;border-left:3px solid {border_c};
+         border-radius:12px;padding:1rem 1.2rem;margin:0.4rem 0;">
+
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;
+             margin-bottom:10px;flex-wrap:wrap;gap:6px;">
             <div>
-                <span style="font-weight:700; font-size:1.05rem;">{sig.symbol}</span>
+                <span style="font-weight:800;font-size:1.1rem;color:#E8EDF5;">{sig.symbol}</span>
                 <span class="signal-badge {dir_badge}" style="margin-left:8px;">{sig.direction}</span>
-                <span style="font-size:0.72rem; color:#6B7A99; margin-left:6px;">{sig.timeframe} · {sig.strategy.upper()}</span>
+                <span style="font-size:0.72rem;color:#6B7A99;margin-left:6px;">
+                    {sig.timeframe} · {sig.strategy.upper()}
+                </span>
             </div>
-            <span class="signal-badge {score_cls}">{score}%</span>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span style="font-size:0.72rem;background:{et_color}1A;color:{et_color};
+                    border:1px solid {et_color}44;border-radius:6px;padding:2px 8px;">
+                    {et_label}
+                </span>
+                <span class="signal-badge {score_cls}">{score}%</span>
+            </div>
         </div>
-        <div style="font-size:0.8rem; color:#6B7A99; margin-bottom:8px; font-family:'JetBrains Mono';">
-            {confluence_str}
+
+        <!-- Price table -->
+        <table style="width:100%;border-collapse:collapse;margin-bottom:6px;">
+            <tr style="border-bottom:1px solid #1E2A42;">
+                <td style="color:#6B7A99;padding:5px 8px;">Entry</td>
+                <td style="font-family:monospace;color:#E8EDF5;padding:5px 8px;
+                    font-weight:800;font-size:1rem;">{fmt(entry)}</td>
+                <td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">
+                    Market now: {fmt(mkt_price)}</td>
+                <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;">
+                    {(entry_note[:42] + '…') if len(entry_note) > 42 else entry_note}</td>
+            </tr>
+            <tr style="border-bottom:1px solid #1E2A42;">
+                <td style="color:#FF4B6E;padding:5px 8px;font-weight:700;">SL</td>
+                <td style="font-family:monospace;color:#FF4B6E;padding:5px 8px;
+                    font-weight:800;font-size:1rem;">{fmt(sl)}</td>
+                <td style="color:#6B7A99;font-size:0.78rem;padding:5px 8px;">
+                    −{risk_pips:.0f} pips &nbsp;·&nbsp; 1R</td>
+                <td style="color:#6B7A99;font-size:0.72rem;padding:5px 8px;">
+                    {(sl_struct[:38] + '…') if len(sl_struct) > 38 else sl_struct}</td>
+            </tr>
+            {tp_row("TP1 ⭐", tp1, "#00D4AA", "Close 50% → Move SL to BE")}
+            {tp_row("TP2",    tp2, "#3B82F6", "Close 30% → Trail SL")}
+            {tp_row("TP3",    tp3, "#8B5CF6", "Let it run")}
+        </table>
+
+        {entry_zone_html}
+
+        <!-- Momentum -->
+        <div style="display:flex;gap:1.2rem;font-size:0.78rem;margin-top:8px;
+             flex-wrap:wrap;align-items:center;">
+            <span>RSI: <b style="color:{rsi_c};">{rsi_val:.0f}</b></span>
+            <span>Momentum: <b style="color:{'#00D4AA' if mom_ok else '#FF4B6E'};">
+                {'✅ Aligned' if mom_ok else '⚠️ Weak — caution'}</b></span>
+            {'<span style="color:#F5C518;">' + candle_pat + '</span>' if candle_pat else ''}
         </div>
-        <div style="display:flex; gap:1.2rem; font-family:'JetBrains Mono'; font-size:0.82rem; flex-wrap:wrap;">
-            <div><span style="color:#6B7A99">Entry</span> <span style="color:#E8EDF5; font-weight:500">{entry_fmt}</span></div>
-            <div><span style="color:#6B7A99">SL</span> <span style="color:#FF4B6E">{sl_fmt}</span></div>
-            <div><span style="color:#6B7A99">TP1</span> <span style="color:#00D4AA">{tp1_fmt}</span></div>
-            {tp2_html}
-            {tp3_html}
-            <div><span style="color:#6B7A99">RR</span> <span style="color:#8B5CF6">1:{sig.risk_reward}</span></div>
-        </div>
+
+        <!-- Score bar -->
         <div class="score-bar-container" style="margin-top:8px;">
             <div class="score-bar {bar_cls}" style="width:{score}%;"></div>
+        </div>
+
+        <!-- TP management tip -->
+        <div style="margin-top:8px;padding:6px 10px;background:#00D4AA08;
+             border-left:2px solid #00D4AA44;border-radius:0 6px 6px 0;
+             font-size:0.75rem;color:#6B7A99;line-height:1.6;">
+            💡 <b style="color:#00D4AA;">Trade Plan:</b>
+            Enter → TP1 hit → Close 50% of position →
+            Move SL to <b style="color:#E8EDF5;">Breakeven ({fmt(entry)})</b> →
+            Remaining 50% runs to TP2/TP3 <b style="color:#00D4AA;">risk-free</b>
         </div>
     </div>
     """, unsafe_allow_html=True)
